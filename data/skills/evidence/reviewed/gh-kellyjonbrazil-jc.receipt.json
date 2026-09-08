@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-kellyjonbrazil-jc",
+  "reviewed_at": "2026-09-08T19:14:25.501482+00:00",
+  "advisory_sha256": "93c609a3040e4f4bca4c0c887776128e1111698a66686ce9e4ba19443b28b7aa",
+  "sources": [
+    {
+      "repository": "https://github.com/kellyjonbrazil/jc",
+      "revision": "8290734a87a30e5f0af7e1fba5ecbda2e1c145a8",
+      "path": "README.md",
+      "sha256": "2adc9fd30f124fd006d6ae1e3c8cf48baf10c08e1758fdcb04cf0b0b233f6270",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/2adc9fd30f124fd006d6ae1e3c8cf48baf10c08e1758fdcb04cf0b0b233f6270.source",
+      "license_receipt": {
+        "path": "LICENSE.md",
+        "spdx_id": "MIT",
+        "sha256": "6493f2db400f4166ca0956cf192a41aa092bd1396ff463e7fdaf51f257c10497",
+        "evidence_path": "evidence/reviewed/6493f2db400f4166ca0956cf192a41aa092bd1396ff463e7fdaf51f257c10497.license"
+      }
+    }
+  ]
+}

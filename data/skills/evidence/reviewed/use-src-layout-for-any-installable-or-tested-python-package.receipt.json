@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "use-src-layout-for-any-installable-or-tested-python-package",
+  "reviewed_at": "2026-09-08T19:14:25.551937+00:00",
+  "advisory_sha256": "e815f13ae11041ffafc06ca7a36ef4816805e57bd53b73f1aef834d8537cf96a",
+  "sources": [
+    {
+      "url": "https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/",
+      "checked_url": "https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/",
+      "revision": null,
+      "path": "web-document",
+      "checked_at": "2026-09-08T16:59:19.102380+00:00",
+      "sha256": "9b50403974b28103f0f381a71b4a7d795f7c46a79d2029f87ce6dbf23569beb3",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "evidence_path": "evidence/reviewed/9b50403974b28103f0f381a71b4a7d795f7c46a79d2029f87ce6dbf23569beb3.source"
+    }
+  ]
+}

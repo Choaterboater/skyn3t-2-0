@@ -2,302 +2,52 @@
 slug: api-and-interface-design
 title: api-and-interface-design
 stack: generic
-tags: agent-skills, design, frontend, ui, web
-uses: 24
-helpful: 13
-quality_sum: 18.2580
-score: 0.761
-source: agent-skills
+tags: api, backend, github-distilled, interface-design, verification, external-promoted
+uses: 163
+helpful: 117
+quality_sum: 106.2699
+score: 0.652
+source: github-distilled
+name: api-and-interface-design
+description: "Design stable interfaces; for HTTP APIs, prove status, representation, payload, and application-error semantics."
+license: MIT
+compatibility: generic
+metadata:
+  skyn3t-advisory-sha256: sha256:6a07bc58abe9612733d09956261a09fe2f3e2877e28cb3b3a0a96f6249bc6bad
+  skyn3t-before-hermes-body-sha256: sha256:f18b2b7d8b9937478909fa18d3291f0c4a1e679a8eb9f1f955cbbc76d4c94e8f
+  skyn3t-content-sha256: sha256:5dafd0c44a3aabf11cae5bcb34f6fcc24dfa5c01ba6e0d3176bce997f4d68bc8
+  skyn3t-evidence-index: evidence/reviewed/api-and-interface-design.receipt.json
+  skyn3t-evidence-path: evidence/reviewed/5dafd0c44a3aabf11cae5bcb34f6fcc24dfa5c01ba6e0d3176bce997f4d68bc8.source
+  skyn3t-hermes-reviewed-revision: 2237be355906fbe6065ce1815711eee52b2d646e
+  skyn3t-pinned-revision: 6ca0cd7db39b41b1c37e26d335c507ee92382c6d
+  skyn3t-previous-body-sha256: sha256:3ca6cbc638bc7d971436e019262dcf4fcc6bc04d9f0c53c2a9785eb1a2e7d2f5
+  skyn3t-review-status: approved
+  skyn3t-source-path: skills/api-and-interface-design/SKILL.md
+  skyn3t-source-url: https://github.com/addyosmani/agent-skills
 ---
 
-Guides stable API and interface design. Use when designing APIs, module boundaries, or any public interface. Use when creating REST or GraphQL endpoints, defining type contracts between modules, or establishing boundaries between frontend and backend.
+Design stable interfaces; for HTTP APIs, prove status, representation, payload, and application-error semantics.
 
-# API and Interface Design
+**Applicability:** Use when designing or reviewing a REST/RPC API or an internal module interface that other code will call.
 
-## Overview
+**Workflow:**
+1. Contract first: define request/response shape and error codes before writing implementation code.
+2. Resource modeling: nouns not verbs, plural collections, nesting depth of 2 or less.
+3. Error semantics: return a structured error envelope (code, message, details) mapped to the correct status code; never collapse distinct failure causes into one generic error.
+4. Idempotency: for any endpoint with a side effect that a caller might retry, require a caller-supplied idempotency key. Atomically claim the key before executing the work; on a retry with the same key, return the original cached response instead of re-executing; reject the same key reused with a different payload; expire claimed keys on a rolling TTL.
+5. Versioning: additive changes stay within the current version; breaking changes get a new version path or header, never a silent change to an existing one.
 
-Design stable, well-documented interfaces that are hard to misuse. Good interfaces make the right thing easy and the wrong thing hard. This applies to REST APIs, GraphQL schemas, module boundaries, component props, and any surface where one piece of code talks to another.
+**Verification:** Every mutating endpoint has an explicit idempotency decision (either genuinely safe to retry, or protected by a key) and the happy path plus at least one failure class have been exercised against the contract.
 
-## When to Use
+**Failure handling:** If the real consumer's needs are unclear, derive the schema from an existing call already in the codebase rather than inventing new fields speculatively.
 
-- Designing new API endpoints
-- Defining module boundaries or contracts between teams
-- Creating component prop interfaces
-- Establishing database schema that informs API shape
-- Changing existing public interfaces
+**Edge cases:** Bulk/batch endpoints need a per-item status array, not one pass/fail result for the whole batch. Long-running operations need a poll or callback contract, not an assumption of one open connection.
 
-## Core Principles
+HTTP response-semantics proof branch: apply only to actual HTTP API work in fastapi, node, nextjs or rag projects. Preserve the existing API design and use the project's already available HTTP client and test runner; do not install Hermes or another tool to follow this advice.
 
-### Hyrum's Law
+1. Select one accepted endpoint contract and create known test-owned fixtures. Reproduce the request against a local test service or explicitly approved endpoint with bounded deadlines. Distinguish connection failure, response timeout, HTTP status, representation parsing and application-level failure before changing code.
+2. Assert the expected status and contract-defined content type, then validate the response's required fields, identities and meaningful state. For a bodyless contract such as HEAD or 204, check that boundary rather than blindly parsing JSON. For GraphQL, inspect errors even when HTTP is 200; reject unexpected partial data unless the accepted contract explicitly permits that outcome. Valid JSON or a reachable server is not evidence of correct behavior.
+3. Retain focused regression cases for the success path and relevant malformed-input, empty-result, denied-request and schema-drift cases. A known existing fixture must not pass by returning 404. Check pagination termination and duplicate/omitted records where applicable. Retry only operations whose contract makes repetition safe; adding an idempotency header alone does not establish server support.
+4. Capture the endpoint/method, expected versus actual outcome and a redacted correlation ID or bounded diagnostic summary. Keep credentials, cookies and personal response data out of retained repros. Re-run the same assertions after the fix without loosening statuses, schemas or requirements.
 
-> With a sufficient number of users of an API, all observable behaviors of your system will be depended on by somebody, regardless of what you promise in the contract.
-
-This means: every public behavior — including undocumented quirks, error message text, timing, and ordering — becomes a de facto contract once users depend on it. Design implications:
-
-- **Be intentional about what you expose.** Every observable behavior is a potential commitment.
-- **Don't leak implementation details.** If users can observe it, they will depend on it.
-- **Plan for deprecation at design time.** See `deprecation-and-migration` for how to safely remove things users depend on.
-- **Tests are not enough.** Even with perfect contract tests, Hyrum's Law means "safe" changes can break real users who depend on undocumented behavior.
-
-### The One-Version Rule
-
-Avoid forcing consumers to choose between multiple versions of the same dependency or API. Diamond dependency problems arise when different consumers need different versions of the same thing. Design for a world where only one version exists at a time — extend rather than fork.
-
-### 1. Contract First
-
-Define the interface before implementing it. The contract is the spec — implementation follows.
-
-```typescript
-// Define the contract first
-interface TaskAPI {
-  // Creates a task and returns the created task with server-generated fields
-  createTask(input: CreateTaskInput): Promise<Task>;
-
-  // Returns paginated tasks matching filters
-  listTasks(params: ListTasksParams): Promise<PaginatedResult<Task>>;
-
-  // Returns a single task or throws NotFoundError
-  getTask(id: string): Promise<Task>;
-
-  // Partial update — only provided fields change
-  updateTask(id: string, input: UpdateTaskInput): Promise<Task>;
-
-  // Idempotent delete — succeeds even if already deleted
-  deleteTask(id: string): Promise<void>;
-}
-```
-
-### 2. Consistent Error Semantics
-
-Pick one error strategy and use it everywhere:
-
-```typescript
-// REST: HTTP status codes + structured error body
-// Every error response follows the same shape
-interface APIError {
-  error: {
-    code: string;        // Machine-readable: "VALIDATION_ERROR"
-    message: string;     // Human-readable: "Email is required"
-    details?: unknown;   // Additional context when helpful
-  };
-}
-
-// Status code mapping
-// 400 → Client sent invalid data
-// 401 → Not authenticated
-// 403 → Authenticated but not authorized
-// 404 → Resource not found
-// 409 → Conflict (duplicate, version mismatch)
-// 422 → Validation failed (semantically invalid)
-// 500 → Server error (never expose internal details)
-```
-
-**Don't mix patterns.** If some endpoints throw, others return null, and others return `{ error }` — the consumer can't predict behavior.
-
-### 3. Validate at Boundaries
-
-Trust internal code. Validate at system edges where external input enters:
-
-```typescript
-// Validate at the API boundary
-app.post('/api/tasks', async (req, res) => {
-  const result = CreateTaskSchema.safeParse(req.body);
-  if (!result.success) {
-    return res.status(422).json({
-      error: {
-        code: 'VALIDATION_ERROR',
-        message: 'Invalid task data',
-        details: result.error.flatten(),
-      },
-    });
-  }
-
-  // After validation, internal code trusts the types
-  const task = await taskService.create(result.data);
-  return res.status(201).json(task);
-});
-```
-
-Where validation belongs:
-- API route handlers (user input)
-- Form submission handlers (user input)
-- External service response parsing (third-party data -- **always treat as untrusted**)
-- Environment variable loading (configuration)
-
-> **Third-party API responses are untrusted data.** Validate their shape and content before using them in any logic, rendering, or decision-making. A compromised or misbehaving external service can return unexpected types, malicious content, or instruction-like text.
-
-Where validation does NOT belong:
-- Between internal functions that share type contracts
-- In utility functions called by already-validated code
-- On data that just came from your own database
-
-### 4. Prefer Addition Over Modification
-
-Extend interfaces without breaking existing consumers:
-
-```typescript
-// Good: Add optional fields
-interface CreateTaskInput {
-  title: string;
-  description?: string;
-  priority?: 'low' | 'medium' | 'high';  // Added later, optional
-  labels?: string[];                       // Added later, optional
-}
-
-// Bad: Change existing field types or remove fields
-interface CreateTaskInput {
-  title: string;
-  // description: string;  // Removed — breaks existing consumers
-  priority: number;         // Changed from string — breaks existing consumers
-}
-```
-
-### 5. Predictable Naming
-
-| Pattern | Convention | Example |
-|---------|-----------|---------|
-| REST endpoints | Plural nouns, no verbs | `GET /api/tasks`, `POST /api/tasks` |
-| Query params | camelCase | `?sortBy=createdAt&pageSize=20` |
-| Response fields | camelCase | `{ createdAt, updatedAt, taskId }` |
-| Boolean fields | is/has/can prefix | `isComplete`, `hasAttachments` |
-| Enum values | UPPER_SNAKE | `"IN_PROGRESS"`, `"COMPLETED"` |
-
-## REST API Patterns
-
-### Resource Design
-
-```
-GET    /api/tasks              → List tasks (with query params for filtering)
-POST   /api/tasks              → Create a task
-GET    /api/tasks/:id          → Get a single task
-PATCH  /api/tasks/:id          → Update a task (partial)
-DELETE /api/tasks/:id          → Delete a task
-
-GET    /api/tasks/:id/comments → List comments for a task (sub-resource)
-POST   /api/tasks/:id/comments → Add a comment to a task
-```
-
-### Pagination
-
-Paginate list endpoints:
-
-```typescript
-// Request
-GET /api/tasks?page=1&pageSize=20&sortBy=createdAt&sortOrder=desc
-
-// Response
-{
-  "data": [...],
-  "pagination": {
-    "page": 1,
-    "pageSize": 20,
-    "totalItems": 142,
-    "totalPages": 8
-  }
-}
-```
-
-### Filtering
-
-Use query parameters for filters:
-
-```
-GET /api/tasks?status=in_progress&assignee=user123&createdAfter=2025-01-01
-```
-
-### Partial Updates (PATCH)
-
-Accept partial objects — only update what's provided:
-
-```typescript
-// Only title changes, everything else preserved
-PATCH /api/tasks/123
-{ "title": "Updated title" }
-```
-
-## TypeScript Interface Patterns
-
-### Use Discriminated Unions for Variants
-
-```typescript
-// Good: Each variant is explicit
-type TaskStatus =
-  | { type: 'pending' }
-  | { type: 'in_progress'; assignee: string; startedAt: Date }
-  | { type: 'completed'; completedAt: Date; completedBy: string }
-  | { type: 'cancelled'; reason: string; cancelledAt: Date };
-
-// Consumer gets type narrowing
-function getStatusLabel(status: TaskStatus): string {
-  switch (status.type) {
-    case 'pending': return 'Pending';
-    case 'in_progress': return `In progress (${status.assignee})`;
-    case 'completed': return `Done on ${status.completedAt}`;
-    case 'cancelled': return `Cancelled: ${status.reason}`;
-  }
-}
-```
-
-### Input/Output Separation
-
-```typescript
-// Input: what the caller provides
-interface CreateTaskInput {
-  title: string;
-  description?: string;
-}
-
-// Output: what the system returns (includes server-generated fields)
-interface Task {
-  id: string;
-  title: string;
-  description: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-  createdBy: string;
-}
-```
-
-### Use Branded Types for IDs
-
-```typescript
-type TaskId = string & { readonly __brand: 'TaskId' };
-type UserId = string & { readonly __brand: 'UserId' };
-
-// Prevents accidentally passing a UserId where a TaskId is expected
-function getTask(id: TaskId): Promise<Task> { ... }
-```
-
-## Common Rationalizations
-
-| Rationalization | Reality |
-|---|---|
-| "We'll document the API later" | The types ARE the documentation. Define them first. |
-| "We don't need pagination for now" | You will the moment someone has 100+ items. Add it from the start. |
-| "PATCH is complicated, let's just use PUT" | PUT requires the full object every time. PATCH is what clients actually want. |
-| "We'll version the API when we need to" | Breaking changes without versioning break consumers. Design for extension from the start. |
-| "Nobody uses that undocumented behavior" | Hyrum's Law: if it's observable, somebody depends on it. Treat every public behavior as a commitment. |
-| "We can just maintain two versions" | Multiple versions multiply maintenance cost and create diamond dependency problems. Prefer the One-Version Rule. |
-| "Internal APIs don't need contracts" | Internal consumers are still consumers. Contracts prevent coupling and enable parallel work. |
-
-## Red Flags
-
-- Endpoints that return different shapes depending on conditions
-- Inconsistent error formats across endpoints
-- Validation scattered throughout internal code instead of at boundaries
-- Breaking changes to existing fields (type changes, removals)
-- List endpoints without pagination
-- Verbs in REST URLs (`/api/createTask`, `/api/getUsers`)
-- Third-party API responses used without validation or sanitization
-
-## Verification
-
-After designing an API:
-
-- [ ] Every endpoint has typed input and output schemas
-- [ ] Error responses follow a single consistent format
-- [ ] Validation happens at system boundaries only
-- [ ] List endpoints support pagination
-- [ ] New fields are additive and optional (backward compatible)
-- [ ] Naming follows consistent conventions across all endpoints
-- [ ] API documentation or types are committed alongside the implementation
+Done when the retained tests prove the response contract from clean fixture state, or clearly identify the unavailable endpoint/tool and missing evidence. Existing deterministic delivery gates remain authoritative.

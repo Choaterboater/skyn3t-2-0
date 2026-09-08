@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "layered-express-api-routes-controllers-services-models",
+  "reviewed_at": "2026-09-08T19:14:25.542218+00:00",
+  "advisory_sha256": "5160d31ddd628b7768614722328dadea82bc49de2b6c356205b45c08349d0f66",
+  "sources": [
+    {
+      "url": "https://github.com/hagopj13/node-express-boilerplate",
+      "checked_url": "https://raw.githubusercontent.com/hagopj13/node-express-boilerplate/179ae84efec61b14206d0305d941daed6c6d07f9/README.md",
+      "revision": "179ae84efec61b14206d0305d941daed6c6d07f9",
+      "path": "README.md",
+      "checked_at": "2026-09-08T16:59:16.712995+00:00",
+      "sha256": "4ca014b3375a761590375e3ab5b30cbdc722813e4c5acf79073e750656a47306",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "repository": "https://github.com/hagopj13/node-express-boilerplate",
+      "evidence_path": "evidence/reviewed/4ca014b3375a761590375e3ab5b30cbdc722813e4c5acf79073e750656a47306.source"
+    }
+  ]
+}

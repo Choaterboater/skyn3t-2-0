@@ -45,6 +45,14 @@ PROMOTE_MIN_USES = 4
 PROMOTE_MIN_RATE = 0.66
 _SCORES_FILENAME = ".skill_scores.json"
 _HUB_REPORT_FILENAME = ".skill_hub_imports.json"
+# Optional retirement/shelving registry: slugs a curator explicitly removed
+# from the live library (content-quality retirements, narrow legacy shelving,
+# etc.) that must never silently reactivate — via disk load, built-in seeding,
+# ``add``, directory import, or pattern auto-promotion. Absence of the file is
+# normal and leaves behavior unchanged; see ``_load_retirements``.
+_RETIREMENTS_FILENAME = ".skill_retirements.json"
+_RETIREMENTS_SCHEMA_VERSION = 1
+_RETIREMENT_DISPOSITIONS = frozenset({"retired", "reference-only"})
 _EVIDENCE_DIRNAME = "evidence"
 _MAX_RETAINED_EVIDENCE_BYTES = 512_000
 _MAX_HUB_FILES = 300
@@ -811,6 +819,80 @@ def _hub_skill_slug(hub_id: str, skill: Skill, source_path: str) -> str:
     return f"hub-{hub_id}-{_slugify(skill.slug)[:42]}-{path_suffix}"
 
 
+def _shape_has_structural_substance(value: object) -> bool:
+    """Whether a build-pattern ``shape`` carries any real structure.
+
+    A win-rate statistic alone (a bare number/bool, an empty shape, or a
+    shape whose only leaves are numbers/bools) is not actionable advice — it
+    is a count with nothing to reuse. A shape crosses into "structure" the
+    moment any leaf is a non-empty string: named stages, files, routes,
+    components, plans, etc. Recurses through nested dicts/lists so both a
+    flat ``{"stages": ["plan", "code", "test"]}`` and a nested
+    ``{"pipeline": [{"name": "plan", ...}, ...]}`` are recognized, while a
+    bare ``{"stages": 11}`` (a count, not a list of names) is not.
+    """
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, dict):
+        return any(_shape_has_structural_substance(v) for v in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return any(_shape_has_structural_substance(v) for v in value)
+    # Numbers, bools, None, and anything else with no nested strings carry no
+    # reusable structure by themselves.
+    return False
+
+
+def _validate_skill_retirements(payload: object, *, source: str) -> dict[str, dict[str, Any]]:
+    """Validate a parsed retirement-registry payload; raise on any defect.
+
+    Only the load-bearing shape is enforced — ``schema_version``, a
+    ``skills`` object keyed by non-empty slug strings, and a recognized
+    ``disposition`` per entry. Any additional receipt metadata a curator
+    attaches (``archive_path``, ``body_sha256``, ``created_at``, ...) passes
+    through untouched: this never reads or dereferences it, it is opaque
+    bookkeeping for the humans running the retirement. Raising (instead of
+    logging-and-ignoring) is deliberate: a malformed registry must never be
+    treated the same as "no registry", which would silently let already
+    shelved content reactivate.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError(f"skill retirement registry at {source} must be a JSON object")
+    schema_version = payload.get("schema_version")
+    if (
+        not isinstance(schema_version, int)
+        or isinstance(schema_version, bool)
+        or schema_version != _RETIREMENTS_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            f"skill retirement registry at {source} has unsupported schema_version "
+            f"{schema_version!r} (expected {_RETIREMENTS_SCHEMA_VERSION})"
+        )
+    skills_raw = payload.get("skills")
+    if not isinstance(skills_raw, dict):
+        raise ValueError(f"skill retirement registry at {source} is missing a 'skills' object")
+    validated: dict[str, dict[str, Any]] = {}
+    for slug, entry in skills_raw.items():
+        if not isinstance(slug, str) or not slug.strip():
+            raise ValueError(
+                f"skill retirement registry at {source} has a non-string or empty slug "
+                f"key: {slug!r}"
+            )
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"skill retirement registry at {source} entry for {slug!r} must be a "
+                "JSON object"
+            )
+        disposition = entry.get("disposition")
+        if not isinstance(disposition, str) or disposition not in _RETIREMENT_DISPOSITIONS:
+            raise ValueError(
+                f"skill retirement registry at {source} entry for {slug!r} has invalid "
+                f"disposition {disposition!r} (expected one of "
+                f"{sorted(_RETIREMENT_DISPOSITIONS)})"
+            )
+        validated[slug] = dict(entry)
+    return validated
+
+
 class SkillLibrary:
     """A scored, file-backed library of advisory skills."""
 
@@ -818,11 +900,63 @@ class SkillLibrary:
         self.dir = Path(skills_dir) if skills_dir else None
         self._skills: dict[str, Skill] = {}
         self._hub_report: dict[str, Any] = {"schema_version": 1, "updated_at": 0.0, "reports": []}
+        self._retirements: dict[str, dict[str, Any]] = {}
         if self.dir is not None:
+            # Load + validate the retirement registry BEFORE reading any skill
+            # files, so ``_load`` can exclude retired slugs from the very
+            # first scan rather than loading then retroactively filtering.
+            self._load_retirements()
             self._load()
             self._load_hub_report()
 
     # ---- persistence (best-effort) ------------------------------------
+    def _load_retirements(self) -> None:
+        """Load the optional retirement/shelving registry (fail-closed).
+
+        No file -> ``{}``, identical to today's behavior. A file that exists
+        but is unreadable, not JSON, a symlink, or fails schema validation
+        raises ``ValueError`` instead of being logged-and-skipped like this
+        class's other best-effort loaders: silently continuing would be
+        indistinguishable from "no registry" and let retired/shelved content
+        quietly reactivate.
+        """
+        if self.dir is None:
+            return
+        path = self.dir / _RETIREMENTS_FILENAME
+        if path.is_symlink():
+            raise ValueError(
+                f"skill retirement registry at {path} must be a regular file, not a symlink"
+            )
+        if not path.exists():
+            return
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise ValueError(
+                f"skill retirement registry at {path} could not be read: {exc}"
+            ) from exc
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"skill retirement registry at {path} is not valid JSON: {exc}"
+            ) from exc
+        self._retirements = _validate_skill_retirements(payload, source=str(path))
+        if _log:
+            _log.info(
+                "skills.retirements_loaded", path=str(path), count=len(self._retirements)
+            )
+
+    def is_retired(self, slug: str) -> bool:
+        """Whether ``slug`` is shelved via the retirement registry.
+
+        Covers both the ``retired`` and ``reference-only`` dispositions —
+        callers that need one check for "must not reactivate this slug"
+        (load, seed, add, import, pattern promotion) use this rather than
+        inspecting disposition values themselves.
+        """
+        return slug in self._retirements
+
     def _load(self) -> None:
         if self.dir is None or not self.dir.exists():
             return
@@ -830,6 +964,10 @@ class SkillLibrary:
             try:
                 sk = parse_skill(f.read_text(encoding="utf-8"), fallback_slug=f.stem)
                 if not sk.body.strip():
+                    continue
+                if self.is_retired(sk.slug):
+                    if _log:
+                        _log.info("skills.load_skipped_retired", slug=sk.slug, file=str(f))
                     continue
                 _quarantine_unpinned_legacy_github_skill(sk)
                 _quarantine_unevidenced_agent_catalog_skill(sk)
@@ -1000,6 +1138,14 @@ class SkillLibrary:
         if not isinstance(body, str) or not body.strip():
             raise ValueError("skill body must not be empty")
         slug = slug or _slugify(title)
+        if self.is_retired(slug):
+            disposition = self._retirements.get(slug, {}).get("disposition", "retired")
+            raise ValueError(
+                f"cannot add skill '{slug}': it is marked {disposition!r} in the skill "
+                f"retirement registry ({_RETIREMENTS_FILENAME}) and must not be "
+                "resurrected — use a different slug, or remove its entry from the "
+                "registry to deliberately reinstate it"
+            )
         skill = Skill(
             slug=slug,
             title=title,
@@ -1052,10 +1198,13 @@ class SkillLibrary:
         per file) — e.g. a repo/dir of skill ``.md`` files like agent-skills.
 
         Recurses; for nested ``SKILL.md`` files the parent dir name is the slug
-        basis. Idempotent by slug (re-import overwrites). Best-effort; never
-        raises. Returns the number imported. ``provenance`` is optional so the
-        legacy local import path stays behaviorally identical; curated callers
-        should use :meth:`import_curated_directory` to require an origin and pin.
+        basis. Idempotent by slug (re-import overwrites). A slug shelved via the
+        retirement registry is skipped and logged rather than overwritten — the
+        registry is a curator decision, not something a bulk re-import should be
+        able to undo. Best-effort; never raises. Returns the number imported.
+        ``provenance`` is optional so the legacy local import path stays
+        behaviorally identical; curated callers should use
+        :meth:`import_curated_directory` to require an origin and pin.
         """
         base = Path(path)
         if not base.is_dir():
@@ -1073,6 +1222,10 @@ class SkillLibrary:
             except (OSError, UnicodeDecodeError, ValueError):
                 continue
             if not sk.body.strip():
+                continue
+            if self.is_retired(sk.slug):
+                if _log:
+                    _log.info("skills.import_skipped_retired", slug=sk.slug, file=str(f))
                 continue
             if sk.source == "manual":
                 sk.source = source
@@ -1244,7 +1397,9 @@ class SkillLibrary:
         This is intentionally single-skill and dry-run-first. It never promotes
         a skill or erases the original legacy record. ``dry_run=False`` stores a
         new external candidate only after its immutable evidence receipt is
-        retained below the local library.
+        retained below the local library. Raises ``ValueError`` — before any
+        evidence is retained or status is mutated — if the generated candidate
+        slug is shelved via the retirement registry.
         """
         plan = self.plan_legacy_external_migration(
             slug,
@@ -1274,6 +1429,13 @@ class SkillLibrary:
             source_path=source_path,
             evidence=evidence,
         )
+        if self.is_retired(candidate_slug):
+            disposition = self._retirements.get(candidate_slug, {}).get("disposition", "retired")
+            raise ValueError(
+                f"cannot migrate legacy skill {slug!r}: generated candidate "
+                f"{candidate_slug!r} is marked {disposition!r} in the skill retirement "
+                f"registry ({_RETIREMENTS_FILENAME}) and must not be resurrected"
+            )
         existing = self.get(candidate_slug)
         if existing is not None:
             existing_tags = {tag.strip().lower() for tag in existing.tags if tag.strip()}
@@ -1386,7 +1548,13 @@ class SkillLibrary:
         return result
 
     def _import_local_hub(self, configured_path: str) -> dict[str, Any]:
-        """Import one explicitly configured local hub without executing it."""
+        """Import one explicitly configured local hub without executing it.
+
+        Writes directly to ``self._skills`` (this path predates, and bypasses,
+        :meth:`add`/:meth:`import_directory`), so a candidate whose slug is
+        shelved via the retirement registry is skipped and logged — counted
+        as ``skipped`` — before its evidence is retained or it is written.
+        """
         report: dict[str, Any] = {
             "configured_path": configured_path,
             "status": "skipped",
@@ -1495,6 +1663,16 @@ class SkillLibrary:
                     compatibility=parsed.provenance.compatibility if parsed.provenance else None,
                 ),
             )
+            if self.is_retired(candidate.slug):
+                if _log:
+                    _log.info(
+                        "skills.hub_import_skipped_retired",
+                        slug=candidate.slug,
+                        hub_id=hub_id,
+                        file=str(source_file),
+                    )
+                report["skipped"] += 1
+                continue
             try:
                 from skyn3t.intelligence.skill_hygiene import classify_skill
 
@@ -1681,10 +1859,11 @@ class SkillLibrary:
         Catalog text remains non-binding advice. Activation requires a retained
         candidate/quarantine state plus a compact-body hash and safe path receipt,
         so a legacy catalog file or altered advisory body cannot become active
-        merely by carrying a status tag.
+        merely by carrying a status tag. A slug shelved via the retirement
+        registry is refused even if it somehow still exists in memory.
         """
         sk = self._skills.get(slug)
-        if sk is None:
+        if sk is None or self.is_retired(slug):
             return None
         tags = _catalog_tagset(sk)
         if not (
@@ -1707,10 +1886,14 @@ class SkillLibrary:
 
         This is the read-only counterpart to :meth:`promote_external`, intended
         for API/UI readiness indicators. It includes the retained-byte receipt
-        check required for a migrated legacy candidate.
+        check required for a migrated legacy candidate. A slug shelved via the
+        retirement registry can never qualify, even if it somehow still exists
+        in memory.
         """
         sk = self._skills.get(slug)
         if sk is None or (sk.source or "").strip().lower() != "github-distilled":
+            return False
+        if self.is_retired(slug):
             return False
         tagset = {tag.strip().lower() for tag in sk.tags if tag.strip()}
         if _EXTERNAL_CANDIDATE_TAG not in tagset or not (tagset & _QUARANTINE_TAGS):
@@ -1757,6 +1940,19 @@ class SkillLibrary:
 
         ``pattern`` is duck-typed: needs ``uses``, ``win_rate`` (or ``score``),
         ``stack``, ``shape``, and ``fp``. Returns the new Skill or ``None``.
+
+        A shape that is empty or carries only bare statistics (for example
+        ``{"stages": 11}``, a win-rate/uses count with no elaboration of what
+        the stages actually are) is refused: a raw number is not reusable
+        advice, and an identical count recurring across every stack teaches
+        nothing stack-specific. Shapes with real structure — named files,
+        routes, components, plans, or stage-name lists — still promote; see
+        :func:`_shape_has_structural_substance`.
+
+        A pattern whose target slug is shelved via the retirement registry is
+        also refused (never raises — this runs inside the routine build
+        pipeline, so a curator's retirement decision must degrade to a quiet
+        no-op here, unlike :meth:`add`'s explicit refusal for direct callers).
         """
         uses = int(getattr(pattern, "uses", 0))
         rate = getattr(pattern, "win_rate", None)
@@ -1766,13 +1962,35 @@ class SkillLibrary:
         if uses < min_uses or float(rate) < min_rate:
             return None
 
+        shape = getattr(pattern, "shape", {})
+        stack = getattr(pattern, "stack", "generic")
+        if not _shape_has_structural_substance(shape):
+            if _log:
+                _log.info(
+                    "skills.pattern_promotion_refused",
+                    reason="stats_only_shape",
+                    stack=stack,
+                    uses=uses,
+                    fp=str(getattr(pattern, "fp", "")),
+                )
+            return None
+
         fp = getattr(pattern, "fp", _slugify(str(uses)))
-        slug = f"pattern-{getattr(pattern, 'stack', 'generic')}-{fp}"
+        slug = f"pattern-{stack}-{fp}"
+        if self.is_retired(slug):
+            if _log:
+                _log.info(
+                    "skills.pattern_promotion_refused",
+                    reason="retired_slug",
+                    stack=stack,
+                    uses=uses,
+                    fp=str(fp),
+                    slug=slug,
+                )
+            return None
         if slug in self._skills:
             return self._skills[slug]
 
-        shape = getattr(pattern, "shape", {})
-        stack = getattr(pattern, "stack", "generic")
         body_lines = [
             f"This build shape wins for **{stack}** "
             f"({float(rate):.0%} over {uses} builds). Reuse its structure:",
@@ -1901,11 +2119,22 @@ _SEED_SKILLS = [
 
 
 def seed_default_skills(library: SkillLibrary) -> int:
-    """Add the built-in starter skills the library doesn't already have."""
+    """Add the built-in starter skills the library doesn't already have.
+
+    A slug shelved via the retirement registry is skipped rather than
+    re-added — a curator's deliberate removal of a built-in seed skill (for
+    example a content-quality retirement) must not silently reappear the next
+    time the process starts and re-seeds.
+    """
     added = 0
     for title, stack, body, tags in _SEED_SKILLS:
         slug = _slugify(title)
-        if library.get(slug) is None:
-            library.add(title=title, body=body, stack=stack, tags=tags, source="seed", slug=slug)
-            added += 1
+        if library.get(slug) is not None:
+            continue
+        if library.is_retired(slug):
+            if _log:
+                _log.info("skills.seed_skipped_retired", slug=slug)
+            continue
+        library.add(title=title, body=body, stack=stack, tags=tags, source="seed", slug=slug)
+        added += 1
     return added

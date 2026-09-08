@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "slug": "ship-a-env-example-and-load-env-in-dev-only",
+  "reviewed_at": "2026-09-08T19:14:25.510588+00:00",
+  "advisory_sha256": "83fad1e5a3c3c33554421310e72600c07c4c64e3c21c59890a938b78c8b5e667",
+  "sources": [
+    {
+      "url": "https://12factor.net/config",
+      "rationale": "Directly supports the underlying philosophy (store config in env vars, safe to open-source) but contains zero occurrences of '.env', '.env.example', or 'dotenv' \u2014 cited only for that philosophy, not the file-based mechanism.",
+      "id": "9f249521b7e21f44620e1ca59cf6bce41425ff514460d2e295472d8e93beb37a",
+      "checked_url": "https://12factor.net/config",
+      "resolved_url": "https://12factor.net/config",
+      "checked_at": "2026-09-08T18:34:05.913050+00:00",
+      "sha256": "d9630f27e8943621882fd31e5481c60f07d1b834e990de93214a8c5e78fe8850",
+      "bytes": 10058,
+      "evidence_path": "evidence/reviewed/d9630f27e8943621882fd31e5481c60f07d1b834e990de93214a8c5e78fe8850.source"
+    },
+    {
+      "url": "https://github.com/motdotla/dotenv/blob/2fc7eac8ad77cbd5f7814355c7fa352dbcf3c358/README.md",
+      "repository": "https://github.com/motdotla/dotenv",
+      "revision": "2fc7eac8ad77cbd5f7814355c7fa352dbcf3c358",
+      "path": "README.md",
+      "license": "BSD-2-Clause",
+      "rationale": "Fetched 2026-09-08; substantiates the dev-only require('dotenv').config() auto-load mechanism verbatim, and its own 'Production' section is the source of the caveat about the alternative dotenvx-encrypted-file workflow.",
+      "id": "f84c2aa9ca131c184f3a8a759cf2306412ae450ce3b792e878b11b7ac3498d05",
+      "checked_url": "https://raw.githubusercontent.com/motdotla/dotenv/2fc7eac8ad77cbd5f7814355c7fa352dbcf3c358/README.md",
+      "resolved_url": "https://raw.githubusercontent.com/motdotla/dotenv/2fc7eac8ad77cbd5f7814355c7fa352dbcf3c358/README.md",
+      "checked_at": "2026-09-08T18:34:06.159694+00:00",
+      "sha256": "32554ec7ef5890a5bdb45de92c7a0b6deacf8a96399502bd22234f6259c9ec27",
+      "bytes": 23898,
+      "evidence_path": "evidence/reviewed/32554ec7ef5890a5bdb45de92c7a0b6deacf8a96399502bd22234f6259c9ec27.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "74b629b24865e1e83c5277ee84590b7937644d6fd959d0c7bdce758676cd2ced",
+        "evidence_path": "evidence/reviewed/74b629b24865e1e83c5277ee84590b7937644d6fd959d0c7bdce758676cd2ced.license"
+      }
+    },
+    {
+      "url": "https://github.com/rolodato/dotenv-safe/blob/6e452c6075d5e01d993e800cbc780be47c14e07e/README.markdown",
+      "repository": "https://github.com/rolodato/dotenv-safe",
+      "revision": "6e452c6075d5e01d993e800cbc780be47c14e07e",
+      "path": "README.markdown",
+      "license": "MIT",
+      "rationale": "Fetched 2026-09-08; verbatim source for the '.env.example names are committed and validated against .env at boot, throwing MissingEnvVarsError' mechanism that is this skill's central actionable claim.",
+      "id": "0d4b0f5c9d12663a80c6851ea04ca270ec07d488c0fc24e9d3f11cdb519c007d",
+      "checked_url": "https://raw.githubusercontent.com/rolodato/dotenv-safe/6e452c6075d5e01d993e800cbc780be47c14e07e/README.markdown",
+      "resolved_url": "https://raw.githubusercontent.com/rolodato/dotenv-safe/6e452c6075d5e01d993e800cbc780be47c14e07e/README.markdown",
+      "checked_at": "2026-09-08T18:34:06.862684+00:00",
+      "sha256": "a596d19da01dcb443a134a4de12af822af69bc05a427658bac7d5c4be52e5e7d",
+      "bytes": 4870,
+      "evidence_path": "evidence/reviewed/a596d19da01dcb443a134a4de12af822af69bc05a427658bac7d5c4be52e5e7d.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "d1e4ae98265f1aff5ca44652d2063a9137be656f6a89bca59fc9c26648df5420",
+        "evidence_path": "evidence/reviewed/d1e4ae98265f1aff5ca44652d2063a9137be656f6a89bca59fc9c26648df5420.license"
+      }
+    }
+  ]
+}

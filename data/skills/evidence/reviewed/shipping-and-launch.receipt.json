@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "shipping-and-launch",
+  "reviewed_at": "2026-09-08T19:14:25.448194+00:00",
+  "advisory_sha256": "a8e3c2b7208261376f33b7d95551db6e3969174e6d0d796cdd04f35d6ce6e7df",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/shipping-and-launch/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "d3db7406f7758829347508b276cbe5454af92bf1a0c9f0643eb2d0fec992e460",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/shipping-and-launch/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/shipping-and-launch/SKILL.md",
+      "checked_at": "2026-09-08T17:51:22.773221+00:00",
+      "sha256": "af610cf4892db7eab2e91c899e33feba90e1000bac4528b2f8dde930816ac125",
+      "bytes": 11404,
+      "evidence_path": "evidence/reviewed/af610cf4892db7eab2e91c899e33feba90e1000bac4528b2f8dde930816ac125.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

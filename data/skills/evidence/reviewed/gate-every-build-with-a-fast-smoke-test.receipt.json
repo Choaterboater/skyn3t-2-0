@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "gate-every-build-with-a-fast-smoke-test",
+  "reviewed_at": "2026-09-08T19:14:25.540390+00:00",
+  "advisory_sha256": "08f4cdb65b2e7a3d2805df449c450c86f2b8cd597834472f234043d63e6d231c",
+  "sources": [
+    {
+      "url": "https://www.harness.io/harness-devops-academy/integrating-smoke-testing-into-your-ci-cd-pipeline-what-devops-needs-to-know",
+      "checked_url": "https://www.harness.io/harness-devops-academy/integrating-smoke-testing-into-your-ci-cd-pipeline-what-devops-needs-to-know",
+      "revision": null,
+      "path": "web-document",
+      "checked_at": "2026-09-08T16:59:13.267390+00:00",
+      "sha256": "ea693a438ef8a5a7be0ac019355b2ccada7b8871d8a696269d366077e06c413a",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "evidence_path": "evidence/reviewed/ea693a438ef8a5a7be0ac019355b2ccada7b8871d8a696269d366077e06c413a.source"
+    }
+  ]
+}

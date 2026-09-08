@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-antoineross-hikari",
+  "reviewed_at": "2026-09-08T19:14:25.471407+00:00",
+  "advisory_sha256": "2d29ed7c84492764956f13507af31e38047fc2e0271bf46656f334f0fd6029b1",
+  "sources": [
+    {
+      "repository": "https://github.com/antoineross/hikari",
+      "revision": "c1f16f54ecc0b804567728f922999ad463af39e6",
+      "path": "README.md",
+      "sha256": "a1546b56b8ce135a5f2a70a5db329b6f4446a83742df7ae26ed06837653d1631",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/a1546b56b8ce135a5f2a70a5db329b6f4446a83742df7ae26ed06837653d1631.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "e2d9108b76c30aefb22113146b6801792de5ad204c8fdcd0678d2b3ddc5cba33",
+        "evidence_path": "evidence/reviewed/e2d9108b76c30aefb22113146b6801792de5ad204c8fdcd0678d2b3ddc5cba33.license"
+      }
+    }
+  ]
+}

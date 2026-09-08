@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-amxv-mcp-manager",
+  "reviewed_at": "2026-09-08T19:14:25.469752+00:00",
+  "advisory_sha256": "63d18ade95604040e7963f85ecb000efadb1d7ae3054e6ba948f3cac2158ecf7",
+  "sources": [
+    {
+      "repository": "https://github.com/amxv/mcp-manager",
+      "revision": "59871bf37732ff73b90404e7b1cd1cdf468e1188",
+      "path": "README.md",
+      "sha256": "954d13ac5aab243f9dd4cf37d0d00052f885f9bb000fe46672c4d5100c919fef",
+      "license": "Apache-2.0",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/954d13ac5aab243f9dd4cf37d0d00052f885f9bb000fe46672c4d5100c919fef.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "Apache-2.0",
+        "sha256": "944a12ee3e16aefc26a583280bb092f34c534694068c0247183a6f67960f2ae5",
+        "evidence_path": "evidence/reviewed/944a12ee3e16aefc26a583280bb092f34c534694068c0247183a6f67960f2ae5.license"
+      }
+    }
+  ]
+}

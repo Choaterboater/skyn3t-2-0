@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "slug": "expo-native-networking",
+  "reviewed_at": "2026-09-08T19:14:25.529400+00:00",
+  "advisory_sha256": "b39f8bcd6ce3a553b10378bc8472101560cf2861f1b0b457be80cb91fed667df",
+  "sources": [
+    {
+      "repository": "https://github.com/expo/skills",
+      "revision": "170589a7ee8963156f63de8202fa96cf08a9e610",
+      "path": "plugins/expo/skills/expo-data-fetching/SKILL.md",
+      "license": "MIT",
+      "license_path": "plugins/expo/LICENSE",
+      "id": "7ab9f07182390bc13ac9516be2ac9304ba1e4c34792d59b004f298a035350403",
+      "checked_url": "https://raw.githubusercontent.com/expo/skills/170589a7ee8963156f63de8202fa96cf08a9e610/plugins/expo/skills/expo-data-fetching/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/expo/skills/170589a7ee8963156f63de8202fa96cf08a9e610/plugins/expo/skills/expo-data-fetching/SKILL.md",
+      "checked_at": "2026-09-08T17:51:19.546507+00:00",
+      "sha256": "cb79a899ccfaed4fa544034440138f34982b18752248066af98feeb50e43f35d",
+      "bytes": 11374,
+      "evidence_path": "evidence/reviewed/cb79a899ccfaed4fa544034440138f34982b18752248066af98feeb50e43f35d.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/expo/skills/170589a7ee8963156f63de8202fa96cf08a9e610/plugins/expo/LICENSE",
+        "path": "plugins/expo/LICENSE",
+        "sha256": "49c5f9c7097c9a940ff663a54c27a4c60e379df6cc2b3052df0d37a09a85df93",
+        "evidence_path": "evidence/reviewed/49c5f9c7097c9a940ff663a54c27a4c60e379df6cc2b3052df0d37a09a85df93.license"
+      }
+    },
+    {
+      "repository": "https://github.com/expo/skills",
+      "revision": "170589a7ee8963156f63de8202fa96cf08a9e610",
+      "path": "plugins/expo/skills/expo-data-fetching/references/offline-and-cancellation.md",
+      "license": "MIT",
+      "license_path": "plugins/expo/LICENSE",
+      "id": "0337ab7643589f9a0ab0696eb8fafb2932975e1d204db330102b4297def7f65e",
+      "checked_url": "https://raw.githubusercontent.com/expo/skills/170589a7ee8963156f63de8202fa96cf08a9e610/plugins/expo/skills/expo-data-fetching/references/offline-and-cancellation.md",
+      "resolved_url": "https://raw.githubusercontent.com/expo/skills/170589a7ee8963156f63de8202fa96cf08a9e610/plugins/expo/skills/expo-data-fetching/references/offline-and-cancellation.md",
+      "checked_at": "2026-09-08T17:51:19.708283+00:00",
+      "sha256": "750f7f25acc4e6143a6ff4daacffbcd5daf64370540a75e7b3a4f3b4b1aa462c",
+      "bytes": 1400,
+      "evidence_path": "evidence/reviewed/750f7f25acc4e6143a6ff4daacffbcd5daf64370540a75e7b3a4f3b4b1aa462c.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/expo/skills/170589a7ee8963156f63de8202fa96cf08a9e610/plugins/expo/LICENSE",
+        "path": "plugins/expo/LICENSE",
+        "sha256": "49c5f9c7097c9a940ff663a54c27a4c60e379df6cc2b3052df0d37a09a85df93",
+        "evidence_path": "evidence/reviewed/49c5f9c7097c9a940ff663a54c27a4c60e379df6cc2b3052df0d37a09a85df93.license"
+      }
+    }
+  ]
+}

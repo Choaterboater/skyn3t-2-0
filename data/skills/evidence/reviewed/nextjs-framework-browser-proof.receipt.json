@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "nextjs-framework-browser-proof",
+  "reviewed_at": "2026-09-08T19:14:25.530165+00:00",
+  "advisory_sha256": "914cd53117197d9abdf99c901a4764497f14fff18a3724d76a13a107fc974811",
+  "sources": [
+    {
+      "repository": "https://github.com/vercel/next.js",
+      "revision": "c11c0942f217e56c68ec944002cf4ca7c8519833",
+      "path": "skills/next-dev-loop/SKILL.md",
+      "license": "MIT",
+      "license_path": "license.md",
+      "id": "1323779c76f56826b4f4319b5e0b0bfd015abb4b1a940d4182560378164adba1",
+      "checked_url": "https://raw.githubusercontent.com/vercel/next.js/c11c0942f217e56c68ec944002cf4ca7c8519833/skills/next-dev-loop/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/vercel/next.js/c11c0942f217e56c68ec944002cf4ca7c8519833/skills/next-dev-loop/SKILL.md",
+      "checked_at": "2026-09-08T17:51:20.094559+00:00",
+      "sha256": "6b8749833d92be29d11598fffcb6863ae32421c88b16299af808f7de3faf7d85",
+      "bytes": 8057,
+      "evidence_path": "evidence/reviewed/6b8749833d92be29d11598fffcb6863ae32421c88b16299af808f7de3faf7d85.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/vercel/next.js/c11c0942f217e56c68ec944002cf4ca7c8519833/license.md",
+        "path": "license.md",
+        "sha256": "ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224",
+        "evidence_path": "evidence/reviewed/ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224.license"
+      }
+    }
+  ]
+}

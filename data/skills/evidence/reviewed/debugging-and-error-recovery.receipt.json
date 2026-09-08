@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "debugging-and-error-recovery",
+  "reviewed_at": "2026-09-08T19:14:25.436612+00:00",
+  "advisory_sha256": "ca5ed3c71786df96885d67045bcfd9ef054bf0a4f4b6be24c2645eba59d9dada",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/debugging-and-error-recovery/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "2e6361fa80d572292c84950ec64d7cdd6ebe06535d3e920ff252863de4c14a1c",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/debugging-and-error-recovery/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/debugging-and-error-recovery/SKILL.md",
+      "checked_at": "2026-09-08T17:51:21.917952+00:00",
+      "sha256": "21f3960f5d7ae2cc95c40896545004dbbcbbd752ea65fc2d53962554d4174220",
+      "bytes": 10913,
+      "evidence_path": "evidence/reviewed/21f3960f5d7ae2cc95c40896545004dbbcbbd752ea65fc2d53962554d4174220.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

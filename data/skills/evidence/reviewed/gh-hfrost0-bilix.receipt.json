@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-hfrost0-bilix",
+  "reviewed_at": "2026-09-08T19:14:25.494640+00:00",
+  "advisory_sha256": "a958f2babb308ad8956113b36f6e077e1e4ef39086c26d6b4dd2fd5afce93311",
+  "sources": [
+    {
+      "repository": "https://github.com/hfrost0/bilix",
+      "revision": "bb5b234cdfe3fafc4db9d992b91091f2edf791e5",
+      "path": "README.md",
+      "sha256": "fb931e65e6b1cb5fa85fdff4e5179112c17ef294706ad8444c043112b5b087cd",
+      "license": "Apache-2.0",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/fb931e65e6b1cb5fa85fdff4e5179112c17ef294706ad8444c043112b5b087cd.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "Apache-2.0",
+        "sha256": "ab3f647e4cc1427354a1924cff7f1b2c2a1e2e17df4ffbfbc1cd26581a462afb",
+        "evidence_path": "evidence/reviewed/ab3f647e4cc1427354a1924cff7f1b2c2a1e2e17df4ffbfbc1cd26581a462afb.license"
+      }
+    }
+  ]
+}

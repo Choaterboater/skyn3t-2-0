@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "use-annotated-dependencies-with-yield-for-db-sessions-and-chained-auth",
+  "reviewed_at": "2026-09-08T19:14:25.551062+00:00",
+  "advisory_sha256": "ecf662edcafe2ad6526235257b64fe29273e157ddd14e0b7532db3206136de33",
+  "sources": [
+    {
+      "url": "https://fastapi.tiangolo.com/tutorial/dependencies/",
+      "checked_url": "https://fastapi.tiangolo.com/tutorial/dependencies/",
+      "revision": null,
+      "path": "web-document",
+      "checked_at": "2026-09-08T16:59:18.855470+00:00",
+      "sha256": "b0971ffc15ed763978972374483eb14b2dfda77b5277b3eef5025cdaf6900f24",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "evidence_path": "evidence/reviewed/b0971ffc15ed763978972374483eb14b2dfda77b5277b3eef5025cdaf6900f24.source"
+    }
+  ]
+}

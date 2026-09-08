@@ -185,6 +185,89 @@ separate, one-skill human action:
 skyn3t cortex promote-skill <new-candidate-slug>
 ```
 
+## Retiring or shelving skills
+
+Retirement is separate from quarantine. A quarantined candidate remains in the
+library for evidence review; retired material and reference-only documents are
+kept outside the injectable library, with their original content and usage
+receipts preserved for recovery.
+
+The optional `.skill_retirements.json` file in the skills directory records
+explicit exclusions:
+
+```json
+{
+  "schema_version": 1,
+  "skills": {
+    "retired-example": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/review/retired/retired-example.md",
+      "body_sha256": "<sha256-of-the-original-advisory-body>"
+    }
+  }
+}
+```
+
+`reference-only` is the other supported disposition. Archive paths are receipts,
+not instructions to read, execute, or delete a file. The registry itself does
+not move files; an operator must retain the archived content before removing its
+live copy.
+
+The library enforces these exclusions during loading, direct addition,
+directory and configured-hub imports, legacy candidate creation, seed creation,
+and pattern/external/catalog promotion. Thus an
+archived seed cannot reappear at the next startup. A malformed registry is an
+explicit initialization error, not permission to load excluded advice.
+Without a registry, normal library behavior is unchanged.
+
+Restore a record only after reviewing its current suitability: preserve a copy
+of the current library, remove that record's exclusion, restore the selected
+archived file, and reload the library. Existing external-evidence and promotion
+requirements still apply. Keep current usage scores when restoring individual
+records; older score snapshots are historical evidence, not replacements for
+subsequent learning.
+
+Winning-pattern statistics alone are not a reusable skill. Automatic promotion
+still requires the existing usage/success thresholds, but empty or statistical
+shapes such as `{"stages": 11}` do not produce instructional records.
+
+Keyword and semantic selection use the same advisory renderer for the real
+skill library. A semantic match therefore retains the procedure's prerequisites,
+failure handling, and completion criteria instead of cutting them off at an
+arbitrary 400-character boundary.
+
+## Versioned reviewed snapshot
+
+The Git checkout carries the reviewed skill Markdown files, retirement registry,
+receipt indexes, and redistributable source/license evidence listed in
+`data/skills/.distribution.json`. The manifest is a publication/integrity
+inventory, not another importer or an activation mechanism. The normal library
+loader still reads the configured skills directory.
+
+The ignore rule remains in place for new runtime ingests, `.skill_scores.json`,
+local hub state, and maintenance backups. Reviewed files are explicitly tracked;
+publishing a new snapshot requires updating its inventory and deliberately
+staging the reviewed paths rather than force-adding the whole data directory.
+Normal usage grading updates the ignored score sidecar, not committed Markdown.
+
+Receipt indexes may describe a source observed during local review whose raw
+bytes are not redistributed. Every such omitted evidence path is listed under
+`local_only_evidence` with its hash and reason. A source URL/hash is not a claim
+that its raw content is bundled or that its license is known. Activated
+`github-distilled` procedures normally retain their primary byte evidence in the
+published snapshot. The explicit publication exception is an upstream document
+with a webhook-shaped example blocked by push protection: its raw bytes remain
+local, with the original URL/hash and curated advice unchanged. Protection is
+not bypassed, and a redacted file is not mislabeled as the original source.
+Unresolved candidates remain held. Third-party source/license/notice
+files retain their own terms rather than inheriting the repository's MIT license.
+
+Run the existing `tests/test_reviewed_skill_snapshot.py` tests after a snapshot
+change. They copy only the publication inventory into an empty directory, so an
+operator's untracked evidence cache cannot conceal missing published files.
+This snapshot does not silently migrate or overwrite another configured data
+directory, and it is not a new wheel-installation data migration.
+
 ## Deliberate limits
 
 This first phase does not automatically mutate runtime settings, write code,

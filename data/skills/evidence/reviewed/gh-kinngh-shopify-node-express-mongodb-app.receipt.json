@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-kinngh-shopify-node-express-mongodb-app",
+  "reviewed_at": "2026-09-08T19:14:25.502187+00:00",
+  "advisory_sha256": "71ddae922fd1ece0f5547b6452c126f2d72d387d47a15b11fc6e61d9617bb554",
+  "sources": [
+    {
+      "repository": "https://github.com/kinngh/shopify-node-express-mongodb-app",
+      "revision": "807509334c2ca780ef7dedfa86455f544bc95315",
+      "path": "README.md",
+      "sha256": "5b26444cd70bd3d0f0f5725da15dfbd23de30c162320a1e7c4eb853f768fca6e",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/5b26444cd70bd3d0f0f5725da15dfbd23de30c162320a1e7c4eb853f768fca6e.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "83e5089c2d67df7e6a085655e75dca674ba7a27a20278994036c7309a253d054",
+        "evidence_path": "evidence/reviewed/83e5089c2d67df7e6a085655e75dca674ba7a27a20278994036c7309a253d054.license"
+      }
+    }
+  ]
+}

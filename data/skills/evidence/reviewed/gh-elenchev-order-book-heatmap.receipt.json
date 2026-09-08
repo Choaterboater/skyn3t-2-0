@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-elenchev-order-book-heatmap",
+  "reviewed_at": "2026-09-08T19:14:25.458647+00:00",
+  "advisory_sha256": "92a70068ec35ced2421d2e1ef1d3fb48a127ff9649ebf15f08b7465095f6e235",
+  "sources": [
+    {
+      "repository": "https://github.com/elenchev/order-book-heatmap",
+      "revision": "cc26b5ae830f591c024458f0df94b0220a960054",
+      "path": "README.md",
+      "sha256": "f4567b73f0a719a6309e748cee6b61485c4be2f11c3bb11bbab7665ce06e847b",
+      "license": "BSD-2-Clause",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/f4567b73f0a719a6309e748cee6b61485c4be2f11c3bb11bbab7665ce06e847b.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "BSD-2-Clause",
+        "sha256": "ce974ebd7f4b34f6d075ca20fb3251a9f41a1c89a35072220f3d767ee1d72338",
+        "evidence_path": "evidence/reviewed/ce974ebd7f4b34f6d075ca20fb3251a9f41a1c89a35072220f3d767ee1d72338.license"
+      }
+    }
+  ]
+}

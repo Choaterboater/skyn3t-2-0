@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "slug": "gh-adilmoujahid-donorschoose-visualization",
+  "reviewed_at": "2026-09-08T19:14:25.453619+00:00",
+  "advisory_sha256": "148aec412b54ba5a21f528f0abb3fb96ddb9c0a61189f118e2b1ddae3edb11fc",
+  "sources": [
+    {
+      "repository": "https://github.com/adilmoujahid/donorschoose_visualization",
+      "revision": "1b0305e2b2c70cab0a135cd179b9cf7748d3a029",
+      "path": "README.md",
+      "sha256": "947251c2c699d6a83f5865f39d834d2ebb1501eee9190c3ca113bb6b361cf452",
+      "license": null,
+      "archived": false,
+      "evidence_path": "evidence/reviewed/947251c2c699d6a83f5865f39d834d2ebb1501eee9190c3ca113bb6b361cf452.source"
+    }
+  ]
+}

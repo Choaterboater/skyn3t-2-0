@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "slug": "gh-dicklesworthstone-swiss-army-llama",
+  "reviewed_at": "2026-09-08T19:14:25.482412+00:00",
+  "advisory_sha256": "47defdfeac7cec1f3cd436b2a742e33ffb68c091ff573ef0eed5a8f5e8b14781",
+  "sources": [
+    {
+      "repository": "https://github.com/dicklesworthstone/swiss_army_llama",
+      "revision": "7bd155410ff2cdf71b4ddf4ccd5a626a600690b3",
+      "path": "README.md",
+      "sha256": "15a27a7f40ae30593ca3ebccabc0f2d9472d24ac65be8dbf9cd7d6a1bd29a9b6",
+      "license": null,
+      "archived": false,
+      "evidence_path": "evidence/reviewed/15a27a7f40ae30593ca3ebccabc0f2d9472d24ac65be8dbf9cd7d6a1bd29a9b6.source"
+    }
+  ]
+}

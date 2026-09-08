@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "feature-based-project-structure-with-unidirectional-imports",
+  "reviewed_at": "2026-09-08T19:14:25.539469+00:00",
+  "advisory_sha256": "aa7554f17c8a137adc286c4d2843f944bc6f71e247176fe2575f9c94e033f6ec",
+  "sources": [
+    {
+      "url": "https://github.com/alan2207/bulletproof-react/blob/master/docs/project-structure.md",
+      "checked_url": "https://raw.githubusercontent.com/alan2207/bulletproof-react/9506629ed003a561c6627735480cce4994244bb4/docs/project-structure.md",
+      "revision": "9506629ed003a561c6627735480cce4994244bb4",
+      "path": "docs/project-structure.md",
+      "checked_at": "2026-09-08T16:59:13.152281+00:00",
+      "sha256": "4457a40bab2bace057cf48f17f50922378e423a41e21c2d1bb5391d4c1be8452",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "repository": "https://github.com/alan2207/bulletproof-react",
+      "evidence_path": "evidence/reviewed/4457a40bab2bace057cf48f17f50922378e423a41e21c2d1bb5391d4c1be8452.source"
+    }
+  ]
+}

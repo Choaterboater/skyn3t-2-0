@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "layered-error-boundaries-plus-react-query-error-strategy",
+  "reviewed_at": "2026-09-08T19:14:25.541474+00:00",
+  "advisory_sha256": "4e8287d743b30e25e636810d6bbe0ebcf26eebdb2ca1319909c82a7bd59d5da5",
+  "sources": [
+    {
+      "url": "https://tkdodo.eu/blog/react-query-error-handling",
+      "checked_url": "https://tkdodo.eu/blog/react-query-error-handling",
+      "revision": null,
+      "path": "web-document",
+      "checked_at": "2026-09-08T16:59:13.866033+00:00",
+      "sha256": "15a34522165fe11e2df95e7ca318404b5aba75c7ad13ca9b6360427ecbb78830",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "evidence_path": "evidence/reviewed/15a34522165fe11e2df95e7ca318404b5aba75c7ad13ca9b6360427ecbb78830.source"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-auth0-developer-hub-auth0-b2b-saas-starter",
+  "reviewed_at": "2026-09-08T19:14:25.473522+00:00",
+  "advisory_sha256": "daafcf905e7da91a812f138a56e624a33f707ad4c6088cf6298bd2aef49034f6",
+  "sources": [
+    {
+      "repository": "https://github.com/auth0-developer-hub/auth0-b2b-saas-starter",
+      "revision": "12ad50e980658da7b5893491d19138def6e92aa4",
+      "path": "README.md",
+      "sha256": "051761f79b67d9f7122c93b3af472e747ccf5e9a6b5df65a6114d36c233349bb",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/051761f79b67d9f7122c93b3af472e747ccf5e9a6b5df65a6114d36c233349bb.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "be28a1e1c27d1196397da3f2b356b7f8dacaba17ecb0047978ecb8cfac99e1aa",
+        "evidence_path": "evidence/reviewed/be28a1e1c27d1196397da3f2b356b7f8dacaba17ecb0047978ecb8cfac99e1aa.license"
+      }
+    }
+  ]
+}

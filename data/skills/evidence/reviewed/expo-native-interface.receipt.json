@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "expo-native-interface",
+  "reviewed_at": "2026-09-08T19:14:25.527232+00:00",
+  "advisory_sha256": "8faeaa68bab8d0b76a7f7437657c596d2aee35c9993b356100fc3a1181735ce7",
+  "sources": [
+    {
+      "repository": "https://github.com/expo/skills",
+      "revision": "170589a7ee8963156f63de8202fa96cf08a9e610",
+      "path": "plugins/expo/skills/expo-native-ui/SKILL.md",
+      "license": "MIT",
+      "license_path": "plugins/expo/LICENSE",
+      "id": "0d76f237629d5b3ba388d49929f093a68c3a9a33086052e7faf71fdda7c9b244",
+      "checked_url": "https://raw.githubusercontent.com/expo/skills/170589a7ee8963156f63de8202fa96cf08a9e610/plugins/expo/skills/expo-native-ui/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/expo/skills/170589a7ee8963156f63de8202fa96cf08a9e610/plugins/expo/skills/expo-native-ui/SKILL.md",
+      "checked_at": "2026-09-08T17:51:18.935197+00:00",
+      "sha256": "5168dce8dc77e3aa03e82473945ab2b6846783a214eadae49454d70a2d418257",
+      "bytes": 10828,
+      "evidence_path": "evidence/reviewed/5168dce8dc77e3aa03e82473945ab2b6846783a214eadae49454d70a2d418257.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/expo/skills/170589a7ee8963156f63de8202fa96cf08a9e610/plugins/expo/LICENSE",
+        "path": "plugins/expo/LICENSE",
+        "sha256": "49c5f9c7097c9a940ff663a54c27a4c60e379df6cc2b3052df0d37a09a85df93",
+        "evidence_path": "evidence/reviewed/49c5f9c7097c9a940ff663a54c27a4c60e379df6cc2b3052df0d37a09a85df93.license"
+      }
+    }
+  ]
+}

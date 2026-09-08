@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-d3-d3-hierarchy",
+  "reviewed_at": "2026-09-08T19:14:25.480071+00:00",
+  "advisory_sha256": "30098aff62a243f791996cda8b7bc8eb94dc6de7de5a11aba3e71fbcff3d70ee",
+  "sources": [
+    {
+      "repository": "https://github.com/d3/d3-hierarchy",
+      "revision": "c4ae7066d5a52e8aeaab24b3f7113e25c38183f2",
+      "path": "README.md",
+      "sha256": "27ffc66c93029a3496495157fe17490c22034a1167410a743d210243b39e8912",
+      "license": "ISC",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/27ffc66c93029a3496495157fe17490c22034a1167410a743d210243b39e8912.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "ISC",
+        "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee",
+        "evidence_path": "evidence/reviewed/e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee.license"
+      }
+    }
+  ]
+}

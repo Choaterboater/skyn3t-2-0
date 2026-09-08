@@ -1,0 +1,1757 @@
+{
+  "schema_version": 1,
+  "skills": {
+    "gh-ritvikb99-dark-fantasy-hack-tool": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-ritvikb99-dark-fantasy-hack-tool.md",
+      "body_sha256": "2363bade43a699e9896cdcc91d64e08a9db670eec26ef1ddbebc910320876b68",
+      "file_sha256": "f35c08052c49ddb124489bc4aed3e67db693ec52a718d18c8c981717fd1fd372"
+    },
+    "gh-saas-starter-kit-saas-starter-kit-pro": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-saas-starter-kit-saas-starter-kit-pro.md",
+      "body_sha256": "b18ae0fd7138be50cfb91da2c591f97ba057443bc169b131898c97471e2d0ca0",
+      "file_sha256": "5a31d8f20279f033534369e0c229606edf804be4b8fa82236465e1a0b66d7b54"
+    },
+    "gh-skernelx-tavily-key-generator": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-skernelx-tavily-key-generator.md",
+      "body_sha256": "c5b07e426cae3eedcef5e5b535e06330965d5e4129f294c0790164916053184b",
+      "file_sha256": "6df777d346a7ccc862f09d6835ceaebb5eaa75aa44348e2d06a706c216007c6a"
+    },
+    "gh-sp00kyskelet0n-discordrat": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-sp00kyskelet0n-discordrat.md",
+      "body_sha256": "06eb14fbde1b10ec9305e92780d8193e2a164ea81f6f7655c9eb0305b0b863fa",
+      "file_sha256": "26837a9e953899e20fee58528e4e1224ba9189e45a4b3d3265c3b6deb7a607bd"
+    },
+    "gh-0wczar-airframe-react": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-0wczar-airframe-react.md",
+      "body_sha256": "ada97ec824b3a330dfa836b720f4070f17222d91d9dafef3ae0c18c48779b06e",
+      "file_sha256": "dfebb74c7bac7bfa248b5f930d53132ea3a310ec0d35f1484370badc7a16a6d1"
+    },
+    "gh-1panel-dev-maxkb": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-1panel-dev-maxkb.md",
+      "body_sha256": "8e6eb37f2e1814e99b9d72d6bfbb6ca1f6bd2cd081db24ef682996fb22309d87",
+      "file_sha256": "69207dfc7b76ac876f422a36551795f7ee39a8536b4117cea0f491439ef7c43d"
+    },
+    "gh-aapatre-automatic-udemy-course-enroller-get-paid-udemy-courses-for-free": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-aapatre-automatic-udemy-course-enroller-get-paid-udemy-courses-for-free.md",
+      "body_sha256": "02ecb3c46b605e8efaaf668a0f24ea1c77c6b35e24441f04756d10795cc97d8d",
+      "file_sha256": "8fbeb97490de3a23e1acbc37ac9d48c59802d435d6e807a0ee576d282555ea1f"
+    },
+    "gh-abhimishra91-insight": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-abhimishra91-insight.md",
+      "body_sha256": "4c59ee94413f379ac88e781c96b521ed146641e0fb8d5bbd1480fc2f45b01f1e",
+      "file_sha256": "f298b3066131ea5abaf64f6fda9e6099c2682312375f38cc6c6d371a67cb8ac0"
+    },
+    "gh-activepieces-activepieces": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-activepieces-activepieces.md",
+      "body_sha256": "19010304675d611193bf953e438337d5f4863cfa9590c3e719e8d0e39fa13f57",
+      "file_sha256": "208879b99403f761b243e238dac380c1ccfbfbfe0899ef93b89d179b4a88d202"
+    },
+    "gh-adamjanes-udemy-d3": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-adamjanes-udemy-d3.md",
+      "body_sha256": "cdb105fda3bd02c1bf24ac122cbb5d03744c1d9e73eddcac03d6a8068a8b7b1c",
+      "file_sha256": "35059e4ff3d596e339e4da6b28f3cb1ccd913595fe137a5747300d5484514044"
+    },
+    "gh-aden-hive-hive": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-aden-hive-hive.md",
+      "body_sha256": "c1288fed9d5a407422b6a1a5126bf573d998f10279e2ed4312222fd8236f0998",
+      "file_sha256": "17bf98d3618d02747af2609d2109bca9933e19120299e93c85a926bafe08e4df"
+    },
+    "gh-adrianhajdin-project-syncfusion-dashboard": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-adrianhajdin-project-syncfusion-dashboard.md",
+      "body_sha256": "23ba65e24d3924c00e6572abeb22a89b9869bcb3816cb792b92693c05645e8b3",
+      "file_sha256": "405a130ad648a156942bae8d4b80ea8ce896446207c5b818b121a7741c0abd63"
+    },
+    "gh-adrianhajdin-saas-template": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-adrianhajdin-saas-template.md",
+      "body_sha256": "92bf976e91f7c671e1977324ea09845223a3a22ed69c64d0b903689cce29ffd6",
+      "file_sha256": "7a6570f0f2f35c8aacbc06af36565db85239a4bc9d04143720aed163c74f901c"
+    },
+    "gh-ajnart-homarr": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-ajnart-homarr.md",
+      "body_sha256": "18aa6bf71a3602b2fad63b9f80b1601d8369b25e5e8b701bf08fe7f8b6dcd58d",
+      "file_sha256": "1e00af3e59dd5b5bcb3a12c15ff1cbd87270149c22576e5898a34fae3f89e495"
+    },
+    "gh-alexflipnote-givemebadge": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-alexflipnote-givemebadge.md",
+      "body_sha256": "fd9e69d0fb13b06388b6051c9456208192eede11951dca360d85c8729ed814f2",
+      "file_sha256": "2e08dad3e40a9140693f8d984a20aa5a49bff82f9fb36fb93586f94f6c8ba667"
+    },
+    "gh-alibaba-fusion-next": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-alibaba-fusion-next.md",
+      "body_sha256": "9bdc9229544969f4ce190440f07ddeb11297d6caee7e5f4e5e89a14e265d68bf",
+      "file_sha256": "cf6ec37efc89f39b1443b5cba9deb487368863110c6e689f4c795d1fbaf36d94"
+    },
+    "gh-alibaba-ice": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-alibaba-ice.md",
+      "body_sha256": "dfd860ad19368f873f4fb640d1849bb074ab70d8bedca85e8ba08ff23eea258a",
+      "file_sha256": "3f09ecc81aea46f0e08bf7f76c5c9f2f6bc46cc2341b595912101dc9317cf68f"
+    },
+    "gh-ansible-ansible": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-ansible-ansible.md",
+      "body_sha256": "8dea670444fc8a14c4d49de0533f9f2fecd043a456dfffebdc52ab160e84c1a7",
+      "file_sha256": "7d5afd22cf904fbd881cf817fcb8e7de505dc075590cdd9774ef5aa1e2df7631"
+    },
+    "gh-ant-design-ant-design-pro": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-ant-design-ant-design-pro.md",
+      "body_sha256": "15cb0f592c2e49f2d7a55e8fe31238ec7f60a201526c81b4fd043c58c5bf8f85",
+      "file_sha256": "0e5c238881f68d2775695764f8f01074c15496ee0c63e8a5d3290492618c9e9a"
+    },
+    "gh-apify-crawlee-python": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-apify-crawlee-python.md",
+      "body_sha256": "722b76ec36eea6531b0b3d07607f25734ebf4e38bbf5a0953643e5eba2476077",
+      "file_sha256": "faf171ac5803e32a17b8540f6aa483bccb9b20efdbd855acf7cf805a5561e7d6"
+    },
+    "gh-apocas-restai": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-apocas-restai.md",
+      "body_sha256": "699b11a309a59658911b8b06663e0bb2ad555e4fb72656070e24532d9aab6828",
+      "file_sha256": "99d43679759b7002f089b5aa756bba85afd53d2609ee4fece76fa11def9e52d5"
+    },
+    "gh-appsmithorg-appsmith": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-appsmithorg-appsmith.md",
+      "body_sha256": "58b64d49376b76d4b375ccbe8c5c88ab31ff4ab0c42209eaf3f4bcadb68e4619",
+      "file_sha256": "841aa8f445ca3f0069913c2f96a6e29ba7660d1af09c0c8ce1698754055cd4af"
+    },
+    "gh-appu1232-discord-selfbot": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-appu1232-discord-selfbot.md",
+      "body_sha256": "c9275fc97dfc167b45c8bc88f7df7dafa42a241b065ec05ed28debfffbba609b",
+      "file_sha256": "1a94065c4e472348379a7541df4f76d3b8cd9f12a1e7290cf794c4c9bbe99a27"
+    },
+    "gh-arco-design-arco-design": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-arco-design-arco-design.md",
+      "body_sha256": "0cc9b1fd576b654c05c736e340d782f9226a3ae942bae768df7aca523e1df9ed",
+      "file_sha256": "088d8fd2b3189a9a801c53b4f00ec2309d9b71cdaabe268d0d734ae878e8eedf"
+    },
+    "gh-aribudin-tailmater": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-aribudin-tailmater.md",
+      "body_sha256": "1bde15d9e9e181f5fed31679036edce02fb46705a0e9a4ce0d64adb94259bdbc",
+      "file_sha256": "de5cb6ddf6fe46606a348128e1eff97e375ba3bfcaaea9648d067b94394cc196"
+    },
+    "gh-assafelovic-gpt-researcher": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-assafelovic-gpt-researcher.md",
+      "body_sha256": "48131283e144381afba058cad91fe8cd8e554e18d2c4d34184a6f4185fc53dd1",
+      "file_sha256": "b9095c618e0c58a5845a7e4ec563fc8df0c84dba1fda936f84e430afb325ff64"
+    },
+    "gh-astraadev-discord-all-tools-in-one": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-astraadev-discord-all-tools-in-one.md",
+      "body_sha256": "f09a2feb3a6e412347dccbd96e37696e2ab8d2e0e1011d0fc367ebd53a6a4cf2",
+      "file_sha256": "d9b32dfe0c42fbfadaed21cd817d916f36e3f53baf2701ace0ef61ff8e50cef8"
+    },
+    "gh-astrbotdevs-astrbot": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-astrbotdevs-astrbot.md",
+      "body_sha256": "2cc8654917057630d5dd0355d26cb1889d5467f597deb4305fee30c10756ef5b",
+      "file_sha256": "b79b3f3a79e26bf6d914cdd21cb307ed39a482846b7cf15cbd48075b7bc00f98"
+    },
+    "gh-aws-aws-sam-cli": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-aws-aws-sam-cli.md",
+      "body_sha256": "71f149e344ba9eecbc53510c213b68ffe8ab568000ba280b4013e4c02ff968c0",
+      "file_sha256": "09296bd9a3bc83be9da80016bb90b1d8fd2004f6c02c5f3d75ff8f9f7f3259df"
+    },
+    "gh-axaq-traviso-js": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-axaq-traviso-js.md",
+      "body_sha256": "5d24fdee7c8feb8fe21da4d23ab50ff4fa872f70d8b9c3794e7304bc1ff64a26",
+      "file_sha256": "6f96b695a23b79cd1fad26f84977721afeab65c43b74135b6d07f2edf8fbb075"
+    },
+    "gh-betastreetomnis-xhs-ai-publisher": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-betastreetomnis-xhs-ai-publisher.md",
+      "body_sha256": "ec2b8755e649df728f1c5246dd4df97b1757a0ddb085a645205fe0c3357195ca",
+      "file_sha256": "9724a841539371a04ceaa1215bbde616a31bf08ce2978dd8a347d06db3855bb9"
+    },
+    "gh-bezkoder-nodejs-express-sequelize-mysql": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-bezkoder-nodejs-express-sequelize-mysql.md",
+      "body_sha256": "077d1390bbf274ba286ab1c040a5b7a53265f379308c744cd9e87d0a13a61ee3",
+      "file_sha256": "52ebc0569f20a362845ea399b413a9d1baffd30171011d44f8bc4ff6f621677a"
+    },
+    "gh-blazity-next-saas-starter": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-blazity-next-saas-starter.md",
+      "body_sha256": "8d95be657b27b839b0585245b72127ca389097a9abd654420883e90435352db8",
+      "file_sha256": "d32af7cf0fbca7f8034b720f82c4714a3d842abb02389b75b7bcf60f5f7ee893"
+    },
+    "gh-borjapazr-express-typescript-skeleton": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-borjapazr-express-typescript-skeleton.md",
+      "body_sha256": "fc915473ae7005ed6ce7863947715cabda3af7fb3f56c577092f7e15884f5e8e",
+      "file_sha256": "8cf6e5efa30e26ab7706453e2eaeb3420cd4ffc08d31178d88aed09ce60d0c3b"
+    },
+    "gh-botpress-botpress": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-botpress-botpress.md",
+      "body_sha256": "d6e809da5c231da82955e834deff101fed7d70705ca923596765de1d26480fb8",
+      "file_sha256": "831e788973bd7993d3715b5782f8eebfc22294f8f61c5792aea40306de9dd176"
+    },
+    "gh-boxyhq-saas-starter-kit": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-boxyhq-saas-starter-kit.md",
+      "body_sha256": "239c34c3c934e95f33479d22ef38d153ff08978351a29a83a74cb1423b527f01",
+      "file_sha256": "cb42a608fd6d7b349431d3f34bcfd93a07fffca1bb6b4cb7bb55f66c7bd21069"
+    },
+    "gh-budibase-budibase": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-budibase-budibase.md",
+      "body_sha256": "2655b7868e13e978545c21b9c1be1b66839df9b2066459f3bdba5f48c1055c77",
+      "file_sha256": "1caba6b398be062705a0c2049285e7107229849d6c6a97c8a98ed5e6907232e0"
+    },
+    "gh-bytebot-ai-bytebot": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-bytebot-ai-bytebot.md",
+      "body_sha256": "7ed0bd0b3147d59ebf60aed9f2035930e49b585f8de0378420d765ee2e8d6331",
+      "file_sha256": "55adee7e23640438c71eeb8da538dce976b53da17a147e517b29ba641c16299a"
+    },
+    "gh-bytedance-deer-flow": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-bytedance-deer-flow.md",
+      "body_sha256": "fb916c86bbb3871cf65d287cc7646293fc8b4e623ed1c38dd89c45b4bc0c6825",
+      "file_sha256": "f9d8f2690d0f0dad9f7679b9081e460e6c4f24f1efb4a41c42b3af1c2a695c97"
+    },
+    "gh-camel-ai-owl": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-camel-ai-owl.md",
+      "body_sha256": "d494469a1024f38ba94a42b622a36afc1f1801c7f4bfbbb9f806ecdd4c75b574",
+      "file_sha256": "0fe1f7cfd835769e20e3ee9848b48d575e213d769036737b8a9c635541ad4249"
+    },
+    "gh-can1357-oh-my-pi": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-can1357-oh-my-pi.md",
+      "body_sha256": "d3df02614a193c95a1a9389d59b43e8d761cedcd58f45b82e16c4818bf0f9ba1",
+      "file_sha256": "ece8bbcc5cb2c8b467b6ae01d63b3b4cb4d6f0d7e167ac212b4958d25787d103"
+    },
+    "gh-capsoftware-cap": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-capsoftware-cap.md",
+      "body_sha256": "ccae240a899eb79d22a4987dffa5b6811b657192a76a625a372e5e49d196ace2",
+      "file_sha256": "bbbb85321e3852e3ad34b75dfc143c1517732c3f8965a6aa10470bf9dddc150d"
+    },
+    "gh-cawa-93-vite-electron-builder": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-cawa-93-vite-electron-builder.md",
+      "body_sha256": "a9b6fe5599e22e488c5639adbbc73f1aa41a5fa1cd34894fcf2924b8384250ec",
+      "file_sha256": "ca81779f586d2a83cc3707275c091873c30bd973669a8e50e6dbb1ce7fa19e8c"
+    },
+    "gh-cellajs-cella": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-cellajs-cella.md",
+      "body_sha256": "3aafca533d9d9ab0b0c4a7f5543334ad57d50e09a2dc27710e841f75fad12b02",
+      "file_sha256": "23f28c18175df5472bb9a08268e28017015760461dadc382c1da822445e75672"
+    },
+    "gh-chakra-ui-zag": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-chakra-ui-zag.md",
+      "body_sha256": "2458dd0b163548b4ba6290fb9b162dfc59ac374d0e0f071b2725b1a4d889760b",
+      "file_sha256": "b3e6f361d247adac31886d5d14d0298d5609f0773d565007157d2cdb491b5ad2"
+    },
+    "gh-chart-kit-react-native-chart-kit": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-chart-kit-react-native-chart-kit.md",
+      "body_sha256": "aac0c9a4f8479a57744fd1806e947c78f3872fe860bee473f6fd75b8d6b11ba7",
+      "file_sha256": "c7017a4cdcf2667a331e1c5ad23330173da7d96b98d2bd01ec0da0f3c8f32f81"
+    },
+    "gh-chartbrew-chartbrew": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-chartbrew-chartbrew.md",
+      "body_sha256": "ee2eeea797cabb4449387040dd93dffb9f7b33a10db989b258136db14e249af5",
+      "file_sha256": "272c6d141b4228f6143fc83ea45764eaa47c83d00c58eed3937150bc8a4b8cd1"
+    },
+    "gh-chatchat-space-langchain-chatchat": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-chatchat-space-langchain-chatchat.md",
+      "body_sha256": "a4fc682cd3b69a58eb7fbfa8686c6a9ee9849324027e9520b73f60f1f33a9335",
+      "file_sha256": "f3c04a9b15a7d54d1e835db635b3aec8fbf24661433218174043d7b2547f1d7f"
+    },
+    "gh-cirosantilli-china-dictatorship": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-cirosantilli-china-dictatorship.md",
+      "body_sha256": "157ea06597d368138c93e3084ab57ecbfe9f86fea62ee2c25751213308346495",
+      "file_sha256": "c47352afc0e80539540e1e9b668b2c855daacc103c73d4ef123fb03c88ea1866"
+    },
+    "gh-claudio-silva-claude-artifact-runner": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-claudio-silva-claude-artifact-runner.md",
+      "body_sha256": "ab1f1345ca1564aa5b352875030a687ca370763a3a3bfbb929674e4b5c7fcefe",
+      "file_sha256": "2e9a352631e385194a1064c9a01d49f7fa490b4b94b102b4ea671ad5cefcd87b"
+    },
+    "gh-coactionjs-coaction": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-coactionjs-coaction.md",
+      "body_sha256": "ee1c5e90a4d2a52d7150e2a5d66309058423625347d10af90e6b5e7321b86813",
+      "file_sha256": "a88e6b03279c840d4a8694de154f783a3bc430c4ca03075cc91fe8324c4f833e"
+    },
+    "gh-codinit-dev-codinit-dev": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-codinit-dev-codinit-dev.md",
+      "body_sha256": "bd3f4ef0b91f3a6177cf62a93dca07ec01206af633c117a7c9618aa755133c79",
+      "file_sha256": "ecd969005ab050d42b66790e6c3c9420fe256d43237eef60fb4510583ae6e836"
+    },
+    "gh-cog-creators-red-discordbot": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-cog-creators-red-discordbot.md",
+      "body_sha256": "40ea7596a82f601aa8a34cd6181ff168e7066996dd41eb25849b75aab880401e",
+      "file_sha256": "1bae4e45dabcb9b19b1c76815dcdba1e465e49abc868784dff926351f6d5a899"
+    },
+    "gh-comet-ml-opik": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-comet-ml-opik.md",
+      "body_sha256": "21685c51d52cb7343402bc40099c3874f22910a38a218c9b446440acfc327a0b",
+      "file_sha256": "5f1e89f64f08d552f19ee61a17e1e4bab87ec2d33d7964851b50b11ee11d8d1f"
+    },
+    "gh-coreui-coreui-free-react-admin-template": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-coreui-coreui-free-react-admin-template.md",
+      "body_sha256": "d3c590a4b0d8603b12deb88cf63fbb6d71c03b38ecae25c7a047c195eb242290",
+      "file_sha256": "d8bf6202aefa3432e67a9756c78946ca0a444627beab30bbd49e77fb797316be"
+    },
+    "gh-creativetimofficial-material-tailwind": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-creativetimofficial-material-tailwind.md",
+      "body_sha256": "3c13cadf76b7b5608aa5458f014e41361811e48ae4fa4ead411626bb341eb66f",
+      "file_sha256": "b9ef3b2da95eeec6b7ce439589274006ac45560c3a7af69d8f5019b4e2cc912d"
+    },
+    "gh-creativetimofficial-material-tailwind-kit-react": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-creativetimofficial-material-tailwind-kit-react.md",
+      "body_sha256": "eaf7f02fff934e4b95a336cb518e204e28ad8acb1e22f69d7c308b701e55b762",
+      "file_sha256": "e2b132158cf85c1ae7decf2117d249018ef04166521c22105db915d5780c16d3"
+    },
+    "gh-creativetimofficial-notus-angular": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-creativetimofficial-notus-angular.md",
+      "body_sha256": "9793f9902b0ea592e85366ca9f6ba3edcaa1d374162553c83f89aa9b0865053f",
+      "file_sha256": "8d4f4a0e3cb133bfd1ab6fed993b013c013299fa442966716454a70e4153cd24"
+    },
+    "gh-creativetimofficial-notus-js": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-creativetimofficial-notus-js.md",
+      "body_sha256": "ab7be5d42b8b47b14c7f17507d8942b09351abb1b1df5b806110506af79192e8",
+      "file_sha256": "af31403a7a099c3e5fa8c193dcd362f926097a551174aa476b705debfd4506ca"
+    },
+    "gh-creativetimofficial-notus-nextjs": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-creativetimofficial-notus-nextjs.md",
+      "body_sha256": "66779738f272dca502828982ebdb68785b3fce600713532e9f21286fafe3621a",
+      "file_sha256": "8c0a51be5135f1e37d0a1c2596ca7ccce850c2f8ab8d53a530d4ff68bc0399bc"
+    },
+    "gh-creativetimofficial-notus-react": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-creativetimofficial-notus-react.md",
+      "body_sha256": "9c252cf7cbca77b987aed854f7d9049bea1eac6b32f33636bb48ddf4910e484e",
+      "file_sha256": "6637ecdaef115600c7794bb88c32a9f695ed90790b11ce5b37bebbe990feb176"
+    },
+    "gh-creativetimofficial-notus-svelte": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-creativetimofficial-notus-svelte.md",
+      "body_sha256": "02d0cd75249a6935160179db07c009035eee93b847aa094c9b596a19edfdc5d7",
+      "file_sha256": "946f0443d9d9dfbea4123804949cdb00f7d13fb09deb6bf76415304da21041eb"
+    },
+    "gh-creativetimofficial-vue-notus": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-creativetimofficial-vue-notus.md",
+      "body_sha256": "86e873df3068f5d747a48430b41c0983e513cdd46fcf52b70357198e9be4e41b",
+      "file_sha256": "b9a9936dfcf3c1ad0a60df4c0fa0d48ff372c26b52f2df293d2374c5f89692cd"
+    },
+    "gh-crisanlucid-primusread": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-crisanlucid-primusread.md",
+      "body_sha256": "a5ad2d680f8e8b89fa3cbc2a58fe4d360f25336a898a0e7c22183a747406d5b3",
+      "file_sha256": "11e6cd762c0129e0af337700ac514108b8bfd6e3f70860b8da0d573360b870bb"
+    },
+    "gh-d10s0vsky-oss-stack-lifecycle-deployment": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-d10s0vsky-oss-stack-lifecycle-deployment.md",
+      "body_sha256": "a8e7994218d8c223d4274ff961f166257d165102831b7cc458588c7d6bf17d02",
+      "file_sha256": "971877ad46b795736cacdfff3afae72a322930ab43937494398b87a3a70f3009"
+    },
+    "gh-d3-d3": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-d3-d3.md",
+      "body_sha256": "e8ada6cf7984cb1d6f9e2435fd8fa2953c7b7270e9bfcec045036461b1b64101",
+      "file_sha256": "9ba5e8c72916845515e6ba129a8e63cdd695e96a8a841437474cbc988bbc05c5"
+    },
+    "gh-daltonmenezes-electron-app": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-daltonmenezes-electron-app.md",
+      "body_sha256": "714136b4155ecbaa77598bc812a36851da727b6a54ce209885c8ff4d48cfeb77",
+      "file_sha256": "87d90d8c699acec4575bfd51a3b2a8ad19c5794fa257ec3e404a80b5072af503"
+    },
+    "gh-danielfsousa-express-rest-boilerplate": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-danielfsousa-express-rest-boilerplate.md",
+      "body_sha256": "2e5c199813d5aa7335789b4643ebc7c2bb9db3e8c735ed0dd8a8c761fcf113ac",
+      "file_sha256": "790423edecff0d49bea017607f193f1447cbb68898980449de00f91f8a016c1a"
+    },
+    "gh-danny-avila-librechat": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-danny-avila-librechat.md",
+      "body_sha256": "84b9b39f5801c201ab8937c4a2c78be4fcc13f7e342477b6ccbefcb54d2c89bb",
+      "file_sha256": "9a989ca14b1984cde513cbe0907292eff4d2d85c984c64cc3dd426e4efaf4862"
+    },
+    "gh-darrylyeo-blockhead": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-darrylyeo-blockhead.md",
+      "body_sha256": "b7e5e42a7ea05ce81421e91d315a46282dbf3617de833399d06d22d4502c293e",
+      "file_sha256": "311cf0be3d2eea1ac49704df468d22ba974d237ee8d8862917a04f15f11a07ea"
+    },
+    "gh-davellanedam-node-express-mongodb-jwt-rest-api-skeleton": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-davellanedam-node-express-mongodb-jwt-rest-api-skeleton.md",
+      "body_sha256": "7ccf1374b30ebed82cb9ba202f7aef7f74affc457cb0d7abd93179454e5a54da",
+      "file_sha256": "45c97de1dc4b539932946a56abdd5dfea133fe5104f518632d073178baa2962d"
+    },
+    "gh-davellanedam-vue-skeleton-mvp": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-davellanedam-vue-skeleton-mvp.md",
+      "body_sha256": "7190497ea5d1af425ad0deb1d7f9f990b5161ae604f602572b8c3a30048fd716",
+      "file_sha256": "800ec3f3a605fa7f277d6b3913622277bb45f80d52b98f2b7ee32dd48fbdffc2"
+    },
+    "gh-developmentseed-titiler": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-developmentseed-titiler.md",
+      "body_sha256": "0a5fd9fa5d9acb1e2e4ffa3c3faf91c10aa12dfd3f9a42c8716a3866fac1e998",
+      "file_sha256": "50397517491d63102641717089d71c3a7ac1b01f50fe0a502742330f51a867fe"
+    },
+    "gh-devias-io-material-kit-react": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-devias-io-material-kit-react.md",
+      "body_sha256": "1f204c946302ae35048cfbec9de4cb4ae1a4d7e7d71cee33aaea764c38dc3984",
+      "file_sha256": "7f073186fbd5804359c522137736312ae2d7fb6048c17f9ec1614dd88f4a900b"
+    },
+    "gh-devkiran-nextapi": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-devkiran-nextapi.md",
+      "body_sha256": "7cde59fd002bb6fe7f4c1135b18dd4b4a850a733f0d681a130b6cc6118ce0adf",
+      "file_sha256": "2de11199413811869348ddab50b20ff997a626c810e9c1907c898a841a44905c"
+    },
+    "gh-diegohaz-rest": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-diegohaz-rest.md",
+      "body_sha256": "2ca5c46df27109aed814f47da397224edf964ae79858db257beadc1ab225c8d8",
+      "file_sha256": "316ad379096331a2c4cb7c94259c8eb81a1d44561a9373adec3b2de879d18ba4"
+    },
+    "gh-digitalocean-sea-notes-saas-starter-kit": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-digitalocean-sea-notes-saas-starter-kit.md",
+      "body_sha256": "e52a9d2978824f17616550241b507a9985653c8c37634a862ceb4b8312da05d2",
+      "file_sha256": "f1cfed91e0c063d233e36336656f30c2c2d46009603c1cc8a6ca9d6e21f237af"
+    },
+    "gh-disnakedev-disnake": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-disnakedev-disnake.md",
+      "body_sha256": "55e77b0007fbc7cf9ae2f3c6794c38fb9560fedef9c8759b3d98ae1b53706929",
+      "file_sha256": "92ed69d82572efb92a9d0c7698eb5fc95fb6a43338739e2ebe865611d238684c"
+    },
+    "gh-dogokit-dogokit-beagle": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-dogokit-dogokit-beagle.md",
+      "body_sha256": "77e4c2a89b60e8dec799c3c5383b29d15e6c1348c3c4eddded5e2b5fa3755ee4",
+      "file_sha256": "b7524eb9f7f5c71a2346b5870fd0c8da154faefacf11c16c46478d2af0db7529"
+    },
+    "gh-donnemartin-gitsome": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-donnemartin-gitsome.md",
+      "body_sha256": "c922632574014c3f785155eef0de950f6d3509b0889dcc0d30cd56ba60a9c7f8",
+      "file_sha256": "aad87089487db9b6ef0e98843ef374619a26474688e3a539d8bd97ba86b12f2d"
+    },
+    "gh-ebhy-budgetml": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-ebhy-budgetml.md",
+      "body_sha256": "d6d7850701ee3106e4673800cb5018b4093a905da88177bd510f17e042ed47be",
+      "file_sha256": "b96895a99a2f065bfb204defe5d089738a00efccc5e65b3eb55de9145a913a39"
+    },
+    "gh-edp963-davinci": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-edp963-davinci.md",
+      "body_sha256": "df8601f380336075d5be67c3e5b8dbbc1c1b387ed9264d7d4c281382129cda55",
+      "file_sha256": "8ff663b7dbbaf1b57849f9cc32d775d5150beacace733cdcbaff03e915f4757f"
+    },
+    "gh-enescingoz-awesome-n8n-templates": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-enescingoz-awesome-n8n-templates.md",
+      "body_sha256": "abaca904bebb4cdcaab30fcbe5e548ed593e4f21e34885e148e17a5e0f033e72",
+      "file_sha256": "478e0ca685c7d8c0882ff98f0a8dbdcff4c35eea7eccd42aca97f17c026a3568"
+    },
+    "gh-erikgartner-dtree": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-erikgartner-dtree.md",
+      "body_sha256": "65125f59332e6265e8bbc5518cea97b57d5c326a062a6d2e2f6ce4c2e5e9ae97",
+      "file_sha256": "fc3d2ac54012ae2e47ebe7ebb271eb0500803f4af7cd016e3823944221f769e8"
+    },
+    "gh-evil0ctal-fast-powerful-whisper-ai-services-api": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-evil0ctal-fast-powerful-whisper-ai-services-api.md",
+      "body_sha256": "e2bb013614b0b03420cf46b5a1c88312cb3f760b9c6338ba8001668144dfe724",
+      "file_sha256": "17b58f5998b5762fcd86df339f21be6884843fc726ff2c4f8a714276a3faf69d"
+    },
+    "gh-feder-cr-jobs-applier-ai-agent-aihawk": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-feder-cr-jobs-applier-ai-agent-aihawk.md",
+      "body_sha256": "d99640beb35081e75c4c1b73fd84b8b65c5d2e6e206c281b96c7e0469e093a7a",
+      "file_sha256": "2f07820d0018ab4eb99c8abbd719d3933b33c0b2a8f9a7d5f9269627a599ab2e"
+    },
+    "gh-flowiseai-flowise": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-flowiseai-flowise.md",
+      "body_sha256": "110beca5908724fa32cc88a3e7517b303292feb3c7c592bf93a5b236400733b9",
+      "file_sha256": "c4f0a063968f8ce62b4a3c62bbfbe7583e9ea3bfb35f6c218eafcb2bb78ce9a9"
+    },
+    "gh-formidablelabs-victory": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-formidablelabs-victory.md",
+      "body_sha256": "d4b0f9ab1040bc49c1ac179b5848718b8065d14a9402904b268d779fd2159160",
+      "file_sha256": "9833edf1336746bfa771f80aa5c2c68e6ec96e702db3884a8393fa1c5cd87f3b"
+    },
+    "gh-freeciv-freeciv-web": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-freeciv-freeciv-web.md",
+      "body_sha256": "6c34194e2c35d72737a65b07aa971c1a37613d95898ae666793fbe05180d7f04",
+      "file_sha256": "0884beec3934a98e2416df40d170b9b0a5a805c04ce1e5bb3a87856235da0387"
+    },
+    "gh-gd4ark-star-battle": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-gd4ark-star-battle.md",
+      "body_sha256": "ca569e427eda8e231897f133f3a513d7e6f1e8e27fdafaa0ce1ca2910c2a37bf",
+      "file_sha256": "084f70a93fb67cece1891669022e72858534c36c1e58b02ae3f371c72f593fcc"
+    },
+    "gh-gethomepage-homepage": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-gethomepage-homepage.md",
+      "body_sha256": "368755fedaa23b4c79850fd4f3fba336428241c1beeed30effca825a7a1d26ae",
+      "file_sha256": "7d0e07bf75b3877600ad18d7a964c28adc6965d7235f391bff3a15732207d8a5"
+    },
+    "gh-google-map-react-google-map-react": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-google-map-react-google-map-react.md",
+      "body_sha256": "610c8007d771568bb4946cc04dcc398eb8c8a786abfc296a81082d7d1394c764",
+      "file_sha256": "12e60e077eeb79e9ce46f805508822dc1ff3b8466ec36a25b4744ec354107f39"
+    },
+    "gh-googlecloudplatform-generative-ai": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-googlecloudplatform-generative-ai.md",
+      "body_sha256": "dbec59f4b7b3094457baaa2a7513714304f13cea3480eac8eaaee95916aee7a3",
+      "file_sha256": "e2cc05ca994fc3b8fd5c1a28b7fd4d45f0f2fa588bd20153ec92bc3d83ec71f7"
+    },
+    "gh-googleworkspace-cli": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-googleworkspace-cli.md",
+      "body_sha256": "239ff25753ab2f39851e82ad4a41d9308ea83a6083a7ecb3bda7c02221777039",
+      "file_sha256": "e84079fa52e27f8b55c008384a148b445dd1e7ff28768f2adfe2eb1931f43415"
+    },
+    "gh-gregberge-loadable-components": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-gregberge-loadable-components.md",
+      "body_sha256": "04e06eec95b12edf546274ffb0d787e97334daed3569fed1c3abf25684911b30",
+      "file_sha256": "b9ad2512bcc41de672e8fdda52fc54db414cd1d1a5c9e24a948ef7ab649c03f1"
+    },
+    "gh-gridstack-gridstack-js": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-gridstack-gridstack-js.md",
+      "body_sha256": "170b7e08d82ba3474a9e54b5ba7def82ede7c3df99ff5e7504bdea957fb619a7",
+      "file_sha256": "b26dd7e135aa926e66aaea66967653302b52ab18865d837998888db245074201"
+    },
+    "gh-guokaigdg-animal-island-ui": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-guokaigdg-animal-island-ui.md",
+      "body_sha256": "3d34fba0d8c5f52da20a2ab1395b6164bd8b23e1739c5c8f27aa3f68cd73eb83",
+      "file_sha256": "ef9daa607a07330c1191a171148c00ad618219dd648251368012ce2e364c19eb"
+    },
+    "gh-headroomlabs-ai-headroom": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-headroomlabs-ai-headroom.md",
+      "body_sha256": "55052cdb48df000572f39d9c512dac9fa87b041fb0ddfc58b64cae7274cdba99",
+      "file_sha256": "5b9b027c6e6ed8bf654c69a9576b02803566bafcebe0fbbc912bc6a35f20efd6"
+    },
+    "gh-hikari-py-hikari": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-hikari-py-hikari.md",
+      "body_sha256": "a5fc7ac51683ed09665e2b6cfe5e5f44c4aedb0f6702497f5872c6f40ba0db60",
+      "file_sha256": "6b059038d154b477fe0e747deb4c29edf1676796ed31258f4cb254d1da57ae02"
+    },
+    "gh-huggingface-agents-course": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-huggingface-agents-course.md",
+      "body_sha256": "ed35ae50f8de8e489397a80267560eee27010f1b8ff8d3e8b719a086f0d59311",
+      "file_sha256": "c5b3890adae7c5e33745f1401cb02a265cba530703894400f6167f286a71cf8f"
+    },
+    "gh-hygraph-reference-marketing-website": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-hygraph-reference-marketing-website.md",
+      "body_sha256": "edef0afa29846e248ecf25ba45c71c267fa56a5398b4824ff888544b996cd4d8",
+      "file_sha256": "23d321ba94a4ad2e40257c865bdf291b7d54c3b16d74680de2a1da6f8b9e2f2c"
+    },
+    "gh-hynek-svcs": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-hynek-svcs.md",
+      "body_sha256": "f083ccbe06dc718e10a7bf83e0ae8999e5415840df01bf43d43714523047c4b0",
+      "file_sha256": "00fd5e2ed74b0905efea5bcf12c70d3e94c125540ab4b3f83b432139910dacae"
+    },
+    "gh-hyperdxio-hyperdx": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-hyperdxio-hyperdx.md",
+      "body_sha256": "04334479ee0d28ccc9d9e6aa572e7c6dba85668f9c4e79a8735a3953eea74e5a",
+      "file_sha256": "fae9efcc4ba8d3c6fd6b0e8de10d7bcd76c6a5ed8d2f192eb54c6649329b69b7"
+    },
+    "gh-iamkun-tower-game": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-iamkun-tower-game.md",
+      "body_sha256": "310c6cfdc06e56318d020f02905d396cfc54e86eabeac97dcfdeb4e3877ecb01",
+      "file_sha256": "7ab4b0def61bf6311d53c401fc93eef8cbb7b964a0d6d5ccfc3085733f7c4e77"
+    },
+    "gh-idun-group-idun-agent-platform": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-idun-group-idun-agent-platform.md",
+      "body_sha256": "d8b55053c172aa191c353aa6c2c2de409a055106ce3bd93c6c293297b2518cd8",
+      "file_sha256": "5736820b4e12b506e5d36958ce730a8c54cb71db3d2dc298e9be77a0329306ad"
+    },
+    "gh-illacloud-illa-builder": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-illacloud-illa-builder.md",
+      "body_sha256": "139d83b0197ce0b8f08916df7a4a59f55aa41e004d093394fbf937922320cd26",
+      "file_sha256": "091b9f2957b02739343fe6a792bab8bbd8bdd19278e05522da8f9d55ede9e6dc"
+    },
+    "gh-instill-ai-instill-core": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-instill-ai-instill-core.md",
+      "body_sha256": "d6ac4cf1f6d8f9c8cd8b09380e904bf0a9ca59ace8a4630c6fceff5487780a37",
+      "file_sha256": "1dda449be59f24cf269dcf323ad02511fd1cba28c399df2cfa8ab6d9d8800e80"
+    },
+    "gh-interactions-py-interactions-py": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-interactions-py-interactions-py.md",
+      "body_sha256": "c29e4a457e75f5e2d58bebb0b48dc13463ee0e019584aaa9cacd4558de5f5485",
+      "file_sha256": "167b5764091faf1bd07145bd65c6449f281eab07de8ebe76ec008c13989b3174"
+    },
+    "gh-jaebradley-basketball-reference-web-scraper": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-jaebradley-basketball-reference-web-scraper.md",
+      "body_sha256": "df1328bde0aace132770c905ab0d1d715c99c0faa1bbfcc277b29b5fa5948338",
+      "file_sha256": "358609688e52aee442e5be22ea7596551032565ce8186f638f0b47ce813a8386"
+    },
+    "gh-jannchie-anichart-js": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-jannchie-anichart-js.md",
+      "body_sha256": "418e9e2651f0792ab892df75d4efd94f3721cbae497d5fde63bda383a0fda3c0",
+      "file_sha256": "cbf4fb358903a7a87df80a3a4bd8715e35e2d9784524ce38dab320573d8bb2f3"
+    },
+    "gh-jannchie-historical-ranking-data-visualization-based-on-d3-js": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-jannchie-historical-ranking-data-visualization-based-on-d3-js.md",
+      "body_sha256": "869feb004179cfaf131847b5fd3dae47aa00841f15c19e1091929c2c12511754",
+      "file_sha256": "9ae01d1021a7c74eb9ca5cbd758ca523177e6759a62a106371713e219f3d4a8c"
+    },
+    "gh-jcodesmore-ai-website-cloner-template": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-jcodesmore-ai-website-cloner-template.md",
+      "body_sha256": "8880f3d038683708419fcbfd2c20672422b4e105c5c7dbdb2c36d82e16f38e35",
+      "file_sha256": "30b38ea5f4cd14405a6ef606bbe7b3d5c9641217ba58a8615f6d24e898f0a9f1"
+    },
+    "gh-jessedobbelaere-tailwindcss-sketch-kit": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-jessedobbelaere-tailwindcss-sketch-kit.md",
+      "body_sha256": "0968aaaba086950ea4d4164a92c77ea4cb787b6f47428ef930cc820cde9ac23e",
+      "file_sha256": "ed36cf43dd27c37848006780fc9d2f5d38bb5ffbe6f668a5f92ffc279bf27407"
+    },
+    "gh-jkytoela-next-startd": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-jkytoela-next-startd.md",
+      "body_sha256": "6b8eeed6561deebe8e07029654c67aec5fd6e8ab6611baaf260f1bffe14eb74c",
+      "file_sha256": "e5783fc41f7c11ccbfa8066fa8a4ffa95266b4fafbd39378876eb12495df6841"
+    },
+    "gh-joshuac215-agent-service-toolkit": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-joshuac215-agent-service-toolkit.md",
+      "body_sha256": "0c7b65fc4fa3ea81b7502ff6bb07c95932c8644742e474dafe90fd867e7c2bd9",
+      "file_sha256": "3a3a83ea7092d51bc4626c250a621607c7b2dea046dee316d94b4e80a6c44df0"
+    },
+    "gh-just-some-bots-musicbot": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-just-some-bots-musicbot.md",
+      "body_sha256": "ab743b15a0a37c6c2657402b521236ebbf4da6600c2c6cacf5b0e07bddd47d1e",
+      "file_sha256": "3bb488c0e477241bd1b3b20262c986aba7136aafebe1698583ed7fd86b6d7e1f"
+    },
+    "gh-khoj-ai-khoj": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-khoj-ai-khoj.md",
+      "body_sha256": "737bf0df9308d7cab1e49fa390495f6c52abddbe4f204c28949ff8c74f7423ac",
+      "file_sha256": "5951b480b30835c25aa891edd8ee236979a7a2aa5bf16583e04ed73f83eb143f"
+    },
+    "gh-kkrypt0nn-python-discord-bot-template": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-kkrypt0nn-python-discord-bot-template.md",
+      "body_sha256": "9f3502d1d9840fb7b779361c0eb2236a0e9c443e9814471c90fed835d2801f77",
+      "file_sha256": "dc52a6877001932f8940961def27537e3a8fd3c5d36d45571e3b1c3a0529a601"
+    },
+    "gh-kriasoft-react-starter-kit": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-kriasoft-react-starter-kit.md",
+      "body_sha256": "317dbeabbade1005c871197eca36e68253babb8bd2fa26f1ab7b3c18990cc548",
+      "file_sha256": "fdbab709103408f1bdd17e52782a9fe25a1d6acfc2edc9e06a3415dc82e217bf"
+    },
+    "gh-kunalkapadia-express-mongoose-es6-rest-api": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-kunalkapadia-express-mongoose-es6-rest-api.md",
+      "body_sha256": "8025b853bf852d1a4fc0f50f469704e1f01ba64f2709598c02a2248a1d0028bf",
+      "file_sha256": "08db352270ba2f8f09af5c0f29ae750295e2e2e56688a75fd105ffb9d6ec5eb0"
+    },
+    "gh-kwhitley-apicache": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-kwhitley-apicache.md",
+      "body_sha256": "96848a1e7da12071d4ebe5fad02faeeb3987b9d65958c307524613e3e20ae347",
+      "file_sha256": "d1b660db1dfc45090c9c7787741f041ae2c230a76e1cb46da1dea73954d2abb8"
+    },
+    "gh-langchain-ai-deepagents": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-langchain-ai-deepagents.md",
+      "body_sha256": "a375018b16e99f0be7846cf7c857c7c2ede48de518d24698efd4de8bf9feef9d",
+      "file_sha256": "861f0d17c97fd5f1eb25cf6bcefc33ec650e7ac5e5b3fed0cff2dd918db4a6a5"
+    },
+    "gh-langchain-ai-langchain": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-langchain-ai-langchain.md",
+      "body_sha256": "dd9326e252e461bd85f95b8e0fcbbf388dbc9826327b5c32a42bc103c01a428a",
+      "file_sha256": "3fa4460c29b477231fa907bfc2aec36f721c040b3c4de46586e8e0bfb658ba9f"
+    },
+    "gh-langchain-ai-langchainjs": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-langchain-ai-langchainjs.md",
+      "body_sha256": "6d4ed42e24650cd789efdbd3e86811e14f9b78e5c9940bb4ba096f1a974af3d0",
+      "file_sha256": "b6a3723156307fafaebde59b2fc1bdd64915736da7a6d0d1b3be2867cabe016f"
+    },
+    "gh-langchain-ai-langgraph": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-langchain-ai-langgraph.md",
+      "body_sha256": "162c2c3c33b9f9f1516dc8fc89f7cc9e1429f6a719f6fc49d8f6b1ffbafc535e",
+      "file_sha256": "e9afbae50fec42cd150d4a5a788055434cbda15603f7dd4b58e3d8f29e7927ab"
+    },
+    "gh-langgenius-dify": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-langgenius-dify.md",
+      "body_sha256": "c6b61bba37dc578eb95baac606f60968d7618b6eb6b7515ae48d4a76713be964",
+      "file_sha256": "66f390fbe3dfc6dc6335c8e279092c7f3bd8a6d52434d6999f84279c776a460d"
+    },
+    "gh-launch-ui-launch-ui": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-launch-ui-launch-ui.md",
+      "body_sha256": "e6974da5018bf762d1d6ef2c9654f8e218bf8e8375aabe4ccc6ab4077cea972b",
+      "file_sha256": "9baa576876b9e7e32350898a224cd392cb797cb4c817ba200f733087af639a0e"
+    },
+    "gh-liyupi-ai-guide": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-liyupi-ai-guide.md",
+      "body_sha256": "382f7b0aef2bb45a5c398293d4c74041b9c93aa57f3d33778abaa55a68c060b3",
+      "file_sha256": "508bfdfdd64e7f37d96e8c35a91af5293bdc0101f51cc38587be529300cd182f"
+    },
+    "gh-ljvmiranda921-sprites-as-a-service": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-ljvmiranda921-sprites-as-a-service.md",
+      "body_sha256": "ed2981e807c190dd5e181b928d92522006aa3c3ede605145236fdc84cadb3af6",
+      "file_sha256": "9f8857dc3a5f6a62bea451815ba362dde37c180b788d2e18d63f7e68464b68b2"
+    },
+    "gh-lsdefine-genericagent": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-lsdefine-genericagent.md",
+      "body_sha256": "fbb72660666e30a5a96fb3cb98ebdd7208be7d16a9a58d44d3879f0e9b6a614e",
+      "file_sha256": "69765640066ceee9f14069f98e470229e13606e2196da2b97fe0325a511ab8bb"
+    },
+    "gh-lukasmasuch-best-of-python": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-lukasmasuch-best-of-python.md",
+      "body_sha256": "4a8c50184a0c76bf5eda02b1716c6f4847159005546fc711e048f53e1c408210",
+      "file_sha256": "3b725d03bb5d7f2f40e116856f777f6b4d74458b883307a226ed140ecece5ec0"
+    },
+    "gh-magicuidesign-magicui": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-magicuidesign-magicui.md",
+      "body_sha256": "cef954eff8d86b3f0b2e06166c8d200b379ef30d877927530efeae0a528dc2d9",
+      "file_sha256": "fc8f9b92cfcb4f821799758e9572686e4f5693afa082b7a686c78f61f4329864"
+    },
+    "gh-maitraysuthar-rest-api-nodejs-mongodb": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-maitraysuthar-rest-api-nodejs-mongodb.md",
+      "body_sha256": "e2ae4da20ecc538460dab8ab8568149fb05bc0514cd307a4c3150b3b6942deab",
+      "file_sha256": "3cdb63f5cd3ef4c421404c53aa96dc762660bc8a2a520b077b4e265ba5325f25"
+    },
+    "gh-mantinedev-mantine": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-mantinedev-mantine.md",
+      "body_sha256": "2a3bf5299f49771025bd15a44de7135ca1c1e951e0968ac70bfa12d51f54ee54",
+      "file_sha256": "3f36a012c75d537912439c5488bc21c4d41c9da5477e14f9de290f2890f91def"
+    },
+    "gh-mattsurabian-duckhunt-js": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-mattsurabian-duckhunt-js.md",
+      "body_sha256": "eaf871cdb60269c7f74788d7b04c50e933a2e3fbf1455e6237651cc3879a59cb",
+      "file_sha256": "541ebb8319c168276d8104f4c8ea5e6a6a26ee553ca3ef2bbfff6d402c66a838"
+    },
+    "gh-mauricenino-dashdot": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-mauricenino-dashdot.md",
+      "body_sha256": "6b873bc312342e7068dea6d3e4cecd254057363887af39d20d2d3efd94d880c4",
+      "file_sha256": "655dc7c8b3f43dabf0e476aaeba27ab9e23596b21d8d09e5966efc58f6eaeaa0"
+    },
+    "gh-mickasmt-next-saas-stripe-starter": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-mickasmt-next-saas-stripe-starter.md",
+      "body_sha256": "8fed18dc8aa82761b6249544e58efc3a073f5297cb38a11f33491e463dca455f",
+      "file_sha256": "1c2d70d017860d5b526537ca29e3ac615291a7d1ecb1a33b37a958ae4a7c7046"
+    },
+    "gh-microsoft-rd-agent": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-microsoft-rd-agent.md",
+      "body_sha256": "806a76656fee0e64ecce74eaa8bc9495853f06a5d839ef7dd848bed295ce0670",
+      "file_sha256": "1a8c5020f3199c19ed5bb02c730fba56540146600f304c5ba535ab35b4c2f676"
+    },
+    "gh-microsoft-static-web-apps-examples": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-microsoft-static-web-apps-examples.md",
+      "body_sha256": "a6fb14ffac8405a5362a1e9dc998f8bac237d8b3910fdf2b31968f628972b18a",
+      "file_sha256": "4fa1f52c725c6827c71627ca800a9ab54743cce6d9e04f406916714809d4fa0e"
+    },
+    "gh-microwawe-mamba-ui": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-microwawe-mamba-ui.md",
+      "body_sha256": "d4f66005eb74a2ca435d24cd20c2acc50d9c90095ba27dbbb74e97a0f79ce4e6",
+      "file_sha256": "356eea4ebb0501135f576e7edf890edc7737872c41082f1af4ceee47b878b9dc"
+    },
+    "gh-mishushakov-signin-with-matrix": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-mishushakov-signin-with-matrix.md",
+      "body_sha256": "4ec5f1c13b35da89ca430a2b6d0a4da67c315899786bc62bbb490e960737fee3",
+      "file_sha256": "819f1d021688aedd9a826ba5ddaab206af073e5bc03ba59e2ffac4342038716d"
+    },
+    "gh-mixcore-mix-core": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-mixcore-mix-core.md",
+      "body_sha256": "a0b3e681b648328566f94f629e0b2e607393c15c7062b77e86e6dcd3200b7ba3",
+      "file_sha256": "3467dc4ad01f73549d547772ebb6a11c1b526beb4d7d26e15a25dbd5e86f55fe"
+    },
+    "gh-mlflow-mlflow": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-mlflow-mlflow.md",
+      "body_sha256": "291c6b322b40106e927754bfa2f2b3b991f6bd19cd0a29da53b3157c009c45a4",
+      "file_sha256": "902805c09f4b277ad0944e74b5ec1f1fb48c74c5a5807547ff909c6498a77479"
+    },
+    "gh-modmail-dev-modmail": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-modmail-dev-modmail.md",
+      "body_sha256": "95be988e6a661e5aee8afb2f8da60d15eb1487a39daf1788377ae484f90809e8",
+      "file_sha256": "6389559fccefe9bdb92643185123c2c2a77b35ae2291bddae3ce0d446469cc8a"
+    },
+    "gh-modsetter-surfsense": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-modsetter-surfsense.md",
+      "body_sha256": "a95ac15d0d2327d94daaaadc3cd9f421c2c119111105994b65a980c44caa7f39",
+      "file_sha256": "9ab8f086aa153873f08f03b150ee0cb1680a349157ff1925bd891a178d3063b3"
+    },
+    "gh-mpld3-mpld3": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-mpld3-mpld3.md",
+      "body_sha256": "f6e507b912433f4b55508a4e336055584a7896815c08d0de399a641386aea549",
+      "file_sha256": "036989692eca03ad7a8152f7cc0425fc6740c333fa282d45af18c43e74f63e0d"
+    },
+    "gh-mui-material-ui": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-mui-material-ui.md",
+      "body_sha256": "b9e9ad9aec9c3e5ad9f6e5a2eacb80ccb0f80c632d58c86aa64b008fa2eff0b5",
+      "file_sha256": "d39b415523cb3909ba42e02066e4a4db799d8e6fc5b8c8be671ee54fd6b2a42a"
+    },
+    "gh-nanobrowser-nanobrowser": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-nanobrowser-nanobrowser.md",
+      "body_sha256": "5e334e5a8c9ca6cc957dbf3cd1accf1475db6844b9737c3bdc5d430572aa8d69",
+      "file_sha256": "d18be35e3d85a63e3b00247a551b613abee098a1315c68436c7298163d372720"
+    },
+    "gh-nextacular-nextacular": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-nextacular-nextacular.md",
+      "body_sha256": "5da227817978f804c8c405e6d4cd8517269d9a744f63bb8122386656eb2c99ef",
+      "file_sha256": "9d7fe0e78fba3a23086d392e01b02fb2b4d0507a8c1a979193accfb85a5af857"
+    },
+    "gh-nextjstemplates-openai-nextjs-starter": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-nextjstemplates-openai-nextjs-starter.md",
+      "body_sha256": "9a3f5a102813012ac79682c8936c432ad12f891b7564a785cc8d9c74aee11482",
+      "file_sha256": "dc44b0eba594b8f0ab5a500854c75241ba5fccb13fac3f591fd40593015c7374"
+    },
+    "gh-nextjstemplates-play-nextjs": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-nextjstemplates-play-nextjs.md",
+      "body_sha256": "82f1440f534d6815370fb25b2c0cc01ab84f3a2dd6c1bd2c54cb65bf4979d70a",
+      "file_sha256": "bb7343d077a2a3b87c6adc9b1dd6aecb1c3e5d8b272bce512be2872b0881e7bd"
+    },
+    "gh-nickqizhu-d3-cookbook": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-nickqizhu-d3-cookbook.md",
+      "body_sha256": "3560206117a7506265d85968d131582d56677c994d13d5366ba28ec300da3cc2",
+      "file_sha256": "91f2c70d697d19d460a7d7e902992f7324bc12d76accd4539ef9043767f8fb48"
+    },
+    "gh-nirdiamant-genai-agents": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-nirdiamant-genai-agents.md",
+      "body_sha256": "ba8765503dc826d293e2b1d45ad755a40a7a0f838f0b644187a2492b9d55a7c7",
+      "file_sha256": "d5b96aa174942490bfd5bf1528cd3aebf1fbccfeb712324a14da7b95c760abc1"
+    },
+    "gh-nteract-semiotic": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-nteract-semiotic.md",
+      "body_sha256": "517f47ec344e92194d8fcfa65e062eff242ac4dc128c32c34e29c66b56852a63",
+      "file_sha256": "54a42c31e28c4211cc1c5c013a44f42f42ad0e8781f292cad3ee1dec9606999f"
+    },
+    "gh-occult-pagode": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-occult-pagode.md",
+      "body_sha256": "da8c677a810848750d0986368d74943cb158c0366292f36d92316288776b98ea",
+      "file_sha256": "a0d9fe19de58cba38302b76499a2e8f5527dbd435382b26af562708c01c02353"
+    },
+    "gh-ohmyzsh-ohmyzsh": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-ohmyzsh-ohmyzsh.md",
+      "body_sha256": "91475cb754f6d3f3e5a87ff5176c44036f84377952e785fc06ebd409b0dd42e8",
+      "file_sha256": "b5eb1d2d54a26b95fc51c3458cb84e16605685418e9a68637ce40517ecc72fa2"
+    },
+    "gh-openai-gpt-discord-bot": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-openai-gpt-discord-bot.md",
+      "body_sha256": "dc2629107e2e2dbf734f59ad84a85bf2905ab72d2d51f34d6ea91bd88674fe7e",
+      "file_sha256": "124ce95559f670fa04119cdb8814e3323c9afb44fc1c66865592a48b5f2d755f"
+    },
+    "gh-opuscapita-filemanager": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-opuscapita-filemanager.md",
+      "body_sha256": "44fa40ae5757bc04957351599c17c64d94171f7083c816645bd46851d968400a",
+      "file_sha256": "b35987b071e04117948e042080753cf54c66a594910e625cb075d7caebeeb803"
+    },
+    "gh-oxylabs-oxylabs-ai-studio-py": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-oxylabs-oxylabs-ai-studio-py.md",
+      "body_sha256": "ab2a5ba8d219a42484ba3a55cfaeb71300901df29c3e3effbddb50c49c977217",
+      "file_sha256": "3af98cb2849d588d88bad7f55dc67b5a26194661358a3225d2b657a9035a5347"
+    },
+    "gh-oxylabs-quick-start-guide": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-oxylabs-quick-start-guide.md",
+      "body_sha256": "0c83ea577d5491781f6460e8dacd3ff677d574f826ef32f8ba45919167639d5f",
+      "file_sha256": "d88551362cc70f2596f436f728513d5cf7f1f00494d00fdc2a03148a6065a31e"
+    },
+    "gh-panniantong-agent-reach": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-panniantong-agent-reach.md",
+      "body_sha256": "940db51b23efe39210fea80404f8b81cdef21202de39ed9cc87739f5685cb213",
+      "file_sha256": "99c952452c63a2f6a133efd8bcd0b1322c565c649bdb0b3c67b078e7314647d3"
+    },
+    "gh-pavelzbornik-whisperx-fastapi": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-pavelzbornik-whisperx-fastapi.md",
+      "body_sha256": "f344f6ed3bcce3aa24900e4745a5190096edcc7e70608aa6bb305cdf2e5f9452",
+      "file_sha256": "50e197b446950cae63855dab66c03ab7f61c6b4bb65e5fde455acb0e10b9df02"
+    },
+    "gh-pdsuwwz-nextjs-nextra-starter": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-pdsuwwz-nextjs-nextra-starter.md",
+      "body_sha256": "2ad6cac1c2533da4d6ff20e7df37e635d1fb82ae4d7b3b432261965e5c699e0b",
+      "file_sha256": "8055b064835f76d86d7a9b488bc4e31258e0e055fc803e4bd7401f9508d1f545"
+    },
+    "gh-pemistahl-grex": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-pemistahl-grex.md",
+      "body_sha256": "a07cc0d8674c8a8cbe3e82e60d62bf1957a56124bef322a54683c2ae5ca27351",
+      "file_sha256": "2f9083bc439afdf191b9e5fef4a7dc9c4eefb6dfd28d5dd6d6d532bc7ed688ef"
+    },
+    "gh-phaserjs-phaser": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-phaserjs-phaser.md",
+      "body_sha256": "252ce666fc047497e1462e3abf9f3359feb0a1db035823ec5a59d60c2d619742",
+      "file_sha256": "729ee41150aeac72f0f14eb2a268d260710f232cd7ea5851b189aa745b8813dd"
+    },
+    "gh-pixijs-pixijs": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-pixijs-pixijs.md",
+      "body_sha256": "21d648c50478c1562a41c64b827fcf96717fa591943098c2b19ffcfbd08b178a",
+      "file_sha256": "fe1e7b8fc951a23ec07ea715343fa7929e7b5f00e5dd3d84145798df90320c22"
+    },
+    "gh-plotly-dash": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-plotly-dash.md",
+      "body_sha256": "6e9870bb68084c466bea09f451798255ad789c2bff4596b9c89153677e21edf2",
+      "file_sha256": "71f612d79b9fd6ecd313812cdfda0ff0eea0e63c3670544b02e1090af9f22994"
+    },
+    "gh-plouc-nivo": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-plouc-nivo.md",
+      "body_sha256": "7ad5aaae2780186cd378a156a1110566fc1581a067013feb349e695a96e2a666",
+      "file_sha256": "021c770562a2c610f0f7132d71a66984db1accea3c50564a63b370f7cc037486"
+    },
+    "gh-pmav-game-of-life": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-pmav-game-of-life.md",
+      "body_sha256": "2ccfb0f91114226237118dd7cb8e1906bd1ff993841bbd325cdf68871cf78d50",
+      "file_sha256": "c8205c1c854fe4379c09a817622ba36c93a9bd84b20b7415399b1f4070bcaef8"
+    },
+    "gh-prazzon-flexbox-labs": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-prazzon-flexbox-labs.md",
+      "body_sha256": "286943ea0337b658ed618b6749ab69568b0c1329ceae52f595ae79fb4bc72dc8",
+      "file_sha256": "56455e007d64614fb8d93fc756a7c021247b09713b6ae5ad9bc0f4ad16e4ec63"
+    },
+    "gh-primefaces-primereact": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-primefaces-primereact.md",
+      "body_sha256": "e0bd70e98b591aafe35f3a31000eaafccf2674cf5c94379729362456dca7d25b",
+      "file_sha256": "a28f8e3442ecd231c60039f646cca620c958a3387f0fb1a9e35d398e50466637"
+    },
+    "gh-pydoit-doit": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-pydoit-doit.md",
+      "body_sha256": "d33afd0823e4771e311dab4173816553d2db25f14c05f39481285f2610b04a25",
+      "file_sha256": "48ca06b32d1e9a806c9edaf27c9e45efe4210b852c86a4bb2a9019382e502a49"
+    },
+    "gh-radix-ui-themes": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-radix-ui-themes.md",
+      "body_sha256": "2a9f00da977596b1770a2e640cac7fb7f81ad804607e74a0f5af9c45f172bf13",
+      "file_sha256": "9050cc9d602fafe7838b2a462e0703bd822c98449b4d37d5825553070a79a61a"
+    },
+    "gh-rapptz-discord-py": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-rapptz-discord-py.md",
+      "body_sha256": "d9bbca90098b192fde6217097d32ca21ac57899663ab9cfdcb94d281e8e32bd1",
+      "file_sha256": "e7e5b3a183a5937d5c51356c5eee2fc767a080a7ae277cab2bcf1a2871552a28"
+    },
+    "gh-rclement-mailer": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-rclement-mailer.md",
+      "body_sha256": "2110a38a847217780b04057b3725972dfda212b225df975aa1acccd3909f78f2",
+      "file_sha256": "b732c72fd315c64dd853184b01266775671e993430746c0454a77ada8b910e68"
+    },
+    "gh-rcourtman-pulse": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-rcourtman-pulse.md",
+      "body_sha256": "d0d6c9e7337fef9ff70e1cbd6c28d54efea260d64f8063b34fe7f49c4f6888a8",
+      "file_sha256": "5046e662fbe7e3890eb39664d97d036b835edf920ad8c896f4c9ebeff00844f2"
+    },
+    "gh-react95-io-react95": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-react95-io-react95.md",
+      "body_sha256": "cf3904e0fdc6037bf4bfc46e1a32b8be58efe44c8f1a9cee9f5e5c8ac3e54e7b",
+      "file_sha256": "44cac2991a29385f3730bd037297c2e12e6701f95d2d7e43bdfce75776d600e5"
+    },
+    "gh-react95-react95": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-react95-react95.md",
+      "body_sha256": "95ad52955062d2e1359b0dac3a095192b1c4ce99a98f7dac7041c4855b444831",
+      "file_sha256": "cc09acff798a252f1db1eec25cc51c33bd2c173022f4f1c47e994072d621c885"
+    },
+    "gh-readbeyond-aeneas": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-readbeyond-aeneas.md",
+      "body_sha256": "7f3997f49d51b1083364d75a8a63b0cbe733b0df957625c9d2808ddd3158e638",
+      "file_sha256": "9df4fbba6cec0d1cf7b7fc9f6cbb17fc6afa434c5b1bc6f8aec42054a604ea09"
+    },
+    "gh-reaviz-reaviz": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-reaviz-reaviz.md",
+      "body_sha256": "422230e3cbb45fe403fecbe021acad82c296154f3a2a2dfa0f6e00e6a681d434",
+      "file_sha256": "55ec18121219113af58f1d281beae46f5758792e9db666e86d47d8d94f5d35bb"
+    },
+    "gh-refinedev-refine": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-refinedev-refine.md",
+      "body_sha256": "d8a3a99dd0651fffa24826d32eaa739342bba8d17d2d63fa69ac5505f9735ff0",
+      "file_sha256": "6449d8153d04fe56818329091cb0244c078e1e48e2ebf33d726fc79a2a30955e"
+    },
+    "gh-reworkd-agentgpt": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-reworkd-agentgpt.md",
+      "body_sha256": "c89428ee5eaa71642ee1cb0924ad435438084a5da810b3d12d611efd809dc60d",
+      "file_sha256": "ab9c4c66fad70655d0b635d79f8adb70761000a6fd630a30d07db7180f8be69d"
+    },
+    "gh-robswc-tradingview-webhooks-bot": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-robswc-tradingview-webhooks-bot.md",
+      "body_sha256": "353ab39d8a38bed6606a467583f08094903131a534e1454fd7f241472b8988d3",
+      "file_sha256": "91a88d7f964562410620ff3b7bff520cd309ab5a4471d9b8c69f65870e0c2b91"
+    },
+    "gh-rodrigogs-whats-reader": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-rodrigogs-whats-reader.md",
+      "body_sha256": "74947c732aa1b5071d090936a579fd3fd6ed3c4643a64e875ba8d490b6186b9f",
+      "file_sha256": "66b512df2c162493777bd4dab28b5dde97cedc7218627aa824eb0c7860b3a66b"
+    },
+    "gh-ryfinez-codex-session-patcher": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-ryfinez-codex-session-patcher.md",
+      "body_sha256": "bcfbc003c42008ce6fde71633ca924106e7907e23423d40eab87d4e4687a798a",
+      "file_sha256": "2952aae3c3c31cc582ef942c9e907882014f12b823c320246eae9dfb05d0a085"
+    },
+    "gh-s3tools-s3cmd": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-s3tools-s3cmd.md",
+      "body_sha256": "a6efe8dcade50ff0c2de75007f628c4f2d1ce943ab68f288d38a9aba5b972c78",
+      "file_sha256": "eaa1c1b8e38f6083e579a5fed4613f18d37bec3995e48f7494a279fe75d26b5a"
+    },
+    "gh-simstudioai-sim": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-simstudioai-sim.md",
+      "body_sha256": "bae711899b1f5c012c66ae07e3c0501ad1eb53f7d529a2136e6b6a6e9e2eff47",
+      "file_sha256": "3f59fda534d0dd67937772c1b7c1e4256a6386e7bb2e3e19f71e414d6a7619da"
+    },
+    "gh-sunhailin-leo-fastapi-profiler": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-sunhailin-leo-fastapi-profiler.md",
+      "body_sha256": "3e7ddd4301722bb46db7bbb3b417d2b31ee78284f0c17298ec6141ad4d8773da",
+      "file_sha256": "ca98579f3b8ab2dad008d7793269258fa46130ee17ba36a6f772b19b19c72542"
+    },
+    "gh-tach-org-tach": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-tach-org-tach.md",
+      "body_sha256": "9faa3f6b5e1f096a0bb27b85a582dc2fb63c4c2d70db4ed45cf509dde89ef603",
+      "file_sha256": "12e017fde19f6da7bb1a7789bf127a4a2c5afac8c6ff22a924a47fc2e1979b0f"
+    },
+    "gh-tamagui-tamagui": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-tamagui-tamagui.md",
+      "body_sha256": "3752583a1e1b1b0b737505f48c1f0eb7e26f35d3f14d351db6cd96379ff1024f",
+      "file_sha256": "a2351b1323c4241b00f7b13ab6906c69c3d180bcb465dcb9fd7c3d97819dfc53"
+    },
+    "gh-thatonecalculator-among-us-dumpy-gif-maker": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-thatonecalculator-among-us-dumpy-gif-maker.md",
+      "body_sha256": "961b30f6bb6143178c0ef4583bb418fbe3f665465a8e57a7ae316671cc991021",
+      "file_sha256": "ff1ce8d63aad71d43c30306c63fd34bf73a27109696ac11e0b0cec5354876fc3"
+    },
+    "gh-tirth8205-code-review-graph": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-tirth8205-code-review-graph.md",
+      "body_sha256": "97d3985c85a683a9383cd8875380b8623cd668bf582a33aac6ba8ade67def662",
+      "file_sha256": "030eac05a0c789fe1fa3b1c5973aea29c531062653d32759e6f2f8e20566b861"
+    },
+    "gh-tox-dev-tox": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-tox-dev-tox.md",
+      "body_sha256": "f68545538f05182c4b51cb078954ff280f9106701b504b59cccd22981e9d4b9e",
+      "file_sha256": "ffda56717bc1ea7deeed8bebe1e2f32d732085c98a68b74b6707be4516af3a1a"
+    },
+    "gh-tremorlabs-tremor": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-tremorlabs-tremor.md",
+      "body_sha256": "266b2a13665a7c55794614e83cf68af73e1f666251c2cb2240f9f3740df80a0e",
+      "file_sha256": "ecbddf09bbd5b2890e48647789ab7145dff1e3d4d9580b3bb8b7237bde289d49"
+    },
+    "gh-tremorlabs-tremor-npm": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-tremorlabs-tremor-npm.md",
+      "body_sha256": "51c1d0a12f3783eb83f04b59258cbd923cbbf28ca52e05af4200b25211ea28b5",
+      "file_sha256": "59b4fe5663cf08d5342336b4b1e2b530708dec7a40663f6e55f0042f2cc562f0"
+    },
+    "gh-triggerdotdev-trigger-dev": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-triggerdotdev-trigger-dev.md",
+      "body_sha256": "e983921ae10d1da63900386d974c9f46987da07fb148f3c73e2de09372fb58bd",
+      "file_sha256": "f3da9df80adb5cb2a2bb9e875738d04e6dcba8bb11fa75f94fe40867e93a4f73"
+    },
+    "gh-wanshuiyin-auto-claude-code-research-in-sleep": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-wanshuiyin-auto-claude-code-research-in-sleep.md",
+      "body_sha256": "674e2d92044e75262ae9ab7f5a6e72cb1052038fdb0d38c9353b5dcd2f5a5c1c",
+      "file_sha256": "28328b5059fdbd1b711e5af2b04578fc8ec490903521ced7598f4e9325b53e4e"
+    },
+    "gh-waooai-waoowaoo": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-waooai-waoowaoo.md",
+      "body_sha256": "d7d9989a8065118e3461c5898afb2a94a485b252e5d7ddb77987e91bd7e88aee",
+      "file_sha256": "03816e57ade78f5bda2b1dbf8e60c1cfa817fd3160f045e6174dc9fe4e577312"
+    },
+    "gh-watscho-express-mongodb-rest-api-boilerplate": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-watscho-express-mongodb-rest-api-boilerplate.md",
+      "body_sha256": "d91281ffa377c9137ffa87d5a2ca3bebcae5c32ef62df0d5225e80c2aef8018e",
+      "file_sha256": "c33b9a95fdafe6e100b46006e48e479bbc0eddbbaaa96040a1644e83d3f9e23b"
+    },
+    "gh-weijunext-nextjs-starter": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-weijunext-nextjs-starter.md",
+      "body_sha256": "75a3e7b934c3495df7f11e5ed6c93080067c53fd67ea3f852e89d2b7c4110d25",
+      "file_sha256": "aa1340405e04ce61d9f5fa3f2e928cb8479d8d1b5123ef8ea4db41990f5f079c"
+    },
+    "gh-wix-react-native-ui-lib": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-wix-react-native-ui-lib.md",
+      "body_sha256": "45b28e36de82ca9d4fca61bb0888c7de23309e1ff15177f825038e562903d766",
+      "file_sha256": "f78889fff493dd5ecbebbbc1fc5632c96ab1656a21bb747714b30edc3b14bcc0"
+    },
+    "gh-ycd-universities": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-ycd-universities.md",
+      "body_sha256": "c766e1386eca93175a2c4f473e95659d791ff19590eb77f122cacd34b3524c4d",
+      "file_sha256": "a0e7ec103f0090901c83de7507cc91e5395ef4b04a0eb28e54ddd38e91747d13"
+    },
+    "gh-yeachan-heo-oh-my-claudecode": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-yeachan-heo-oh-my-claudecode.md",
+      "body_sha256": "e04c70673eeb42ab02187704c6f436303de71d9f027571208848a0431c5ff425",
+      "file_sha256": "f1b14f2d5468746250ee4bd946d8c0356a2e74ce0b9828542b9d85b41a6c39ee"
+    },
+    "gh-yooooomi-your-spotify": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-yooooomi-your-spotify.md",
+      "body_sha256": "13d99172ba4aebb8be5fbe406ff04a8569c006ccce3832902126b7d1a7d2cc39",
+      "file_sha256": "78d9a8f1a3864e9b80139880f1b3f79534f5ca663bf81969c6512a5c72765f35"
+    },
+    "gh-zach-hopkins-create-t3svelte-app": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/gh-zach-hopkins-create-t3svelte-app.md",
+      "body_sha256": "816681e5cbbc9ad60e948b3674aab94b2cfac72e109b86184c74366a56fdaf5d",
+      "file_sha256": "3c749e8767c025606ebe93f458419181e7c035aa6adf944c972ac706b6208af4"
+    },
+    "pattern-cli-5975fdb63151f9f9": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/pattern-cli-5975fdb63151f9f9.md",
+      "body_sha256": "9df33a5e2b25899b5a15b0be4092e396330fe9915d1352514667bcbd65e5f1a2",
+      "file_sha256": "603fbf35916cec1bba1547161fbf6c4e09e496ee02332f3e87d742e75978e34b"
+    },
+    "pattern-phaser-37e2d6d6660de538": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/pattern-phaser-37e2d6d6660de538.md",
+      "body_sha256": "fd47d9e1118ddc0f35e96c1dca66c107a496c6f2d0edf5f65aadf9a8298a1ef1",
+      "file_sha256": "ff931b8fd1e74f4895280b02b3ff964804d86e13028955406e2493f492e589fd"
+    },
+    "pattern-python-c4d91704f91ae7cb": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/pattern-python-c4d91704f91ae7cb.md",
+      "body_sha256": "12f50d5128ddad903bc24ceaef53202ccc22d0689c0f34246c2a23749afe3c03",
+      "file_sha256": "2cd5793e43cabf103ad579a0289fb26fa9eab2b3be2a4421045800b4a2dffc42"
+    },
+    "pattern-static-58dfd224694fd941": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/pattern-static-58dfd224694fd941.md",
+      "body_sha256": "36c5ce2d64b20be78fbefe25fa87408e388db73ac7e02f338ca0cea560e7ef2c",
+      "file_sha256": "e79c8511f3103084b17adea0e4ad0cbcffbb82ce8245a4d9a3c2fc12df758b6d"
+    },
+    "pattern-tauri-39e05bdd825fcd90": {
+      "disposition": "retired",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/retired/pattern-tauri-39e05bdd825fcd90.md",
+      "body_sha256": "896a1b4adb059e94d012a06672033b042a6a5f790e2992b19904aa4208c09095",
+      "file_sha256": "dabef1f5fa5e3b50a684d4ee84aa5583c3f9b075b5ee7c3e7776330d82d0d23b"
+    },
+    "refinement-criteria": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/refinement-criteria.md",
+      "body_sha256": "a49decdaf5f79bc43419c19fb378c7a559a2e7ec7532bf0793ab72c09d6fcc63",
+      "file_sha256": "2657f1f0b9998ad3ef786678bd7e2f6c72df75e5bc2af5ac6e2b4dec873919dc"
+    },
+    "frameworks": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/frameworks.md",
+      "body_sha256": "ca2a34687a490f2e05fc405e9f7661414baeb9bd7fe8077f717e08eadbc9649d",
+      "file_sha256": "3a872fa71c1a14bea89ee04a24958852629a223885fef6fb4aa859e2040d22bf"
+    },
+    "gh-mayooear-ai-pdf-chatbot-langchain": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-mayooear-ai-pdf-chatbot-langchain.md",
+      "body_sha256": "6d3ae1c7a4754b8e039efe0b003b87a3ff59cdb293563bf4d798c30197d4ec28",
+      "file_sha256": "2c63b459ab9984c2d6626729b951766f0fbfaf272976ee6970aa9758639513f9"
+    },
+    "gh-meteor-svelte-meteor-svelte": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-meteor-svelte-meteor-svelte.md",
+      "body_sha256": "ea0ce532888dc23a77a4d18b57157db48e7af3cd866fec9c4e001e5056f83677",
+      "file_sha256": "ddef722a48dc9f607b4caae0ec3e40273a24497085612b5e577cfb6693825802"
+    },
+    "gh-michaelshimeles-nextjs-starter-kit": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-michaelshimeles-nextjs-starter-kit.md",
+      "body_sha256": "bd9ca61bed1e896ef15be8bdfc4fb914c06e2404ffaacd7fb9894d1a797b47ec",
+      "file_sha256": "6e444185ebfc3e2373429adf5732232f2046e12c7c746639afea617f59c79853"
+    },
+    "gh-moathshraim-nodejs-rest-api-project-structure-express": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-moathshraim-nodejs-rest-api-project-structure-express.md",
+      "body_sha256": "d5c871724ee510878dbd1dc49e9ff6db296ed354eb98bb34d306eddf3fd738c0",
+      "file_sha256": "59c27cc0c03f7a09928e5eed1ad33c93a9941dfff227e69a70a6ebdffefbe066"
+    },
+    "gh-nazdridoy-kokoro-tts": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-nazdridoy-kokoro-tts.md",
+      "body_sha256": "3355c70591a2b105080ed777b18d93c5fff06ba1c8b91682b8862f1d75294b33",
+      "file_sha256": "02fac4dc09280a71ec85c47a4a1cd6f47e04b98a4c16baf7c6d9d817409c00f8"
+    },
+    "gh-nextjs-saas-starter": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-nextjs-saas-starter.md",
+      "body_sha256": "f750727196f5767e447ee0ff7f1b78540f952099289a0d41baefa40dfc92da2a",
+      "file_sha256": "a264a3970ca64b0526e6203a59362197937f5508cd24f41bbefd3ea63a68a392"
+    },
+    "gh-observablehq-framework": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-observablehq-framework.md",
+      "body_sha256": "7730eda9a4db5180fb6797374c60afea0744f56df34e2937bd2c7626afdcbf50",
+      "file_sha256": "6d321aa1a7daf8828634f2cfe09da9d9e4245426a143ccf43f746127e093b21b"
+    },
+    "gh-opensas-mdn-svelte-tutorial": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-opensas-mdn-svelte-tutorial.md",
+      "body_sha256": "6c13dc1c3716d8e83bc7246fb93d3281e289286fe052e776c8c950c34fb417e2",
+      "file_sha256": "fd421e1ce8aea25b224a072e3a3f9ce9a41369e7052a7fd9d1644d11803c6e6c"
+    },
+    "gh-paddlehq-paddle-nextjs-starter-kit": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-paddlehq-paddle-nextjs-starter-kit.md",
+      "body_sha256": "9a4e10989b182c638d1e4676494a6a9c220418ed2a607b7de1a63eb50cb5da76",
+      "file_sha256": "8e947969764da7443d80933b35341003d0d4bec59a765d75c98b5522c52a1207"
+    },
+    "gh-palewire-first-web-scraper": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-palewire-first-web-scraper.md",
+      "body_sha256": "0ba220f291830340cd4ee4ec85fa3a76cde7ded61ad20f39b249a4b7ab926dd8",
+      "file_sha256": "ef41e407b6e7f7703234e1542e321775fe9e04cd191c9341893b3ef421aaf1bf"
+    },
+    "gh-pjborowiecki-saasyland-com": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-pjborowiecki-saasyland-com.md",
+      "body_sha256": "98d229039b4903046b83c6112408c81a431ba0f8cf677ea0e7fd4ac2b0b6be4a",
+      "file_sha256": "5327ef4f49ebfa964aedecbd5f157daeb9999576a85b34e959c1c22b64218511"
+    },
+    "gh-pystorm-streamparse": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-pystorm-streamparse.md",
+      "body_sha256": "8c8e86aae3cfceedc0a252a4eea18070ff0fa59b332429e33a557379419be9a1",
+      "file_sha256": "445ee520cb376a51ea212d0c9d62e2051fee9ee09a8ae5ebb0f636ab8dd3c598"
+    },
+    "gh-radix-ui-primitives": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-radix-ui-primitives.md",
+      "body_sha256": "d8f4e1afe7d1e247ea4c7b17183e4257b371a5f84d49ff5dd4c5f8b897dc7178",
+      "file_sha256": "69e45c9594799a6d132bf6b58b7f01369e9267f13fcce9d03253a3114739d44b"
+    },
+    "gh-rbbydotdev-someday": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-rbbydotdev-someday.md",
+      "body_sha256": "c3424803d1a9a4167749128666c5352ef1e279c644705d345edf66df04cbb8a0",
+      "file_sha256": "7d77eb6f9157242ffe65d906dc0678205ad8003bd9ee8abe8599720cef1efbd9"
+    },
+    "gh-reduxjs-redux-templates": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-reduxjs-redux-templates.md",
+      "body_sha256": "645c987e0dbc0ddd20919c7d7532e84dad02ceeb0b8d2204f2036ad26fa32f0d",
+      "file_sha256": "9e25fae58cbff660b2e7e92892ad78cb5fa1bab057e6869a8d3f6bc1a6957bb1"
+    },
+    "gh-reliverse-relivator": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-reliverse-relivator.md",
+      "body_sha256": "1a43223b5b3ab7fc25f70fa6a0668018e7f9a8c3da0cab42147161e1d024a14c",
+      "file_sha256": "0088764fe2c73dc31a5a24b7522ff64dd0277f13fd3272ff76f0b60fd63cb5ff"
+    },
+    "gh-samwarden-user-service": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-samwarden-user-service.md",
+      "body_sha256": "2beafe889389708ca195dddbc420c1ffe2caf0bbe48b56212ced8d4cdcb0f38a",
+      "file_sha256": "fba216207f7d5351e2e9590ea12634d08a2adbad98d5c3deb1dbfd84be51a1e1"
+    },
+    "gh-sangaline-advanced-web-scraping-tutorial": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-sangaline-advanced-web-scraping-tutorial.md",
+      "body_sha256": "841907c1ca442a0d39b0334179b8549cd970cd9032740a7923e22a39d0eb0255",
+      "file_sha256": "ec6d245dc98e08a7562ecb7b786b1be724170671203b62d0d03603107a6dc1d1"
+    },
+    "gh-sayakpaul-ml-deployment-k8s-fastapi": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-sayakpaul-ml-deployment-k8s-fastapi.md",
+      "body_sha256": "93ec8525e4d6450e13d575e3a4e3369cbfada054d167d02b34f419a31a64d928",
+      "file_sha256": "ad7060f1631e8ef24cba8305bce397bc6489324198f0df370e269193a29bb888"
+    },
+    "gh-scrapfly-scrapfly-scrapers": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-scrapfly-scrapfly-scrapers.md",
+      "body_sha256": "d825711d5531740afc62b1198e2021642a5bb08ddf59a4ce4f0132a3bc12807a",
+      "file_sha256": "47b55cf11a447d2e2d85fd290663c857cba9189733e19f040b2269c8f2afd93c"
+    },
+    "gh-sghall-resonance": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-sghall-resonance.md",
+      "body_sha256": "33fcb2e6ca5e9be51b5284c9181fe4fe3506dffdd31113682957e4b03d08d29d",
+      "file_sha256": "cc8fd86b3887083e04f34637467c5bb4898adda78bb70f408e6b29dd0f5c17e5"
+    },
+    "gh-stoatchat-for-legacy-web": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-stoatchat-for-legacy-web.md",
+      "body_sha256": "dc2b71a69f8f35b0ae066533c39a6762da38b55522fb2a0c96d9910ae4d8ca3e",
+      "file_sha256": "f5fac39a95ad9ec45f96157ad5b514a9a3cb6826faa7e0a385d16d1e5605f036"
+    },
+    "gh-suchipi-hex-engine": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-suchipi-hex-engine.md",
+      "body_sha256": "d63e11da6f46c0ab5a6a9bb6c56fd5cf1bae8db13e070ef7719c8fdc712bf7e0",
+      "file_sha256": "c253a5e587a3b79ea960afb791a2bcc74571159c6b8feb13a547ce081490cbfa"
+    },
+    "gh-telegram-mini-apps-reactjs-template": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-telegram-mini-apps-reactjs-template.md",
+      "body_sha256": "65f814f85fd85cb564fdf898d51ad281d534a925ce0437d340084b562162ca40",
+      "file_sha256": "9ffe8e9d9df4ce122b13db1ec5820644b812751e0b8a9a5bfb60b9466ac091cc"
+    },
+    "gh-transitive-bullshit-create-react-library": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-transitive-bullshit-create-react-library.md",
+      "body_sha256": "ef88280d7cd59764c5ef4e4897ffcea0b6555086133cdc6e8acb6dd860635dd8",
+      "file_sha256": "a4f165ae321efc01ae9f8b80ce7c3a563fb8ae4ebe89905860d906ab0fb8ea4c"
+    },
+    "gh-vercel-labs-agent-browser": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-vercel-labs-agent-browser.md",
+      "body_sha256": "77e1aff3b7fa78c64ab510465fa3d181ea2a1885336638414be29f0b83f6e58c",
+      "file_sha256": "8d44de578748f6cfb8ae254d57cf2af78c6d33fa451219fd08ba29677edb3a8d"
+    },
+    "gh-wassim249-fastapi-langgraph-agent-production-ready-template": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-wassim249-fastapi-langgraph-agent-production-ready-template.md",
+      "body_sha256": "82bb9a4cc1a9f759d04fafbde74a0a263f8275063ef6c49e16172868e76fdfbd",
+      "file_sha256": "3256aca0e313d0539bc05bc724502c2f499e4002c2b10716e0648d24f0aa60ed"
+    },
+    "gh-webeetle-windy": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-webeetle-windy.md",
+      "body_sha256": "5189e67543f36624ae8294637d185ac5c44122b0769b7fa476ab477f89d872f8",
+      "file_sha256": "f5f9f019bd3ebd5e7141c7779f99310f32c278f516aada5315a0b4cb69852a72"
+    },
+    "gh-whxaxes-canvas-test": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-whxaxes-canvas-test.md",
+      "body_sha256": "226697e4a6c710f07828d59a04fea8d7c58691b3ce76dac6b975fc162a117746",
+      "file_sha256": "4d556eb352dc967c584bf79728269600cabdc8ed98b6fc5c4e95c16057f7410e"
+    },
+    "gh-xmlking-spectacular": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-xmlking-spectacular.md",
+      "body_sha256": "679c865596c39ea81378cd87002ce57e2b85ddf7a30eb1098801ca0ca3a60c5e",
+      "file_sha256": "52a98f099fca66e713c7175953e24d582266a5585e560c659523ef07e7a5b8a9"
+    },
+    "gh-yogijowo-laravel12-react-starterkit": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-yogijowo-laravel12-react-starterkit.md",
+      "body_sha256": "6a713b15e827ab928c0b08be51c59bf83519d86897602549627028d4e1d2be1e",
+      "file_sha256": "0e956b22aee7f123833cb45909d9451f1af7fd64d6da4db369ee309c6404e747"
+    },
+    "gh-zuiidea-antd-admin": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-zuiidea-antd-admin.md",
+      "body_sha256": "f41b35f81ab01bf70cc157bc412b8e02518d0d3390c11908a523c801c52d3973",
+      "file_sha256": "e40d38f3d5ec60e87279285e406ac2a4aec18bf201f6f846ac5e1257eb4035ef"
+    },
+    "interview-me": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/interview-me.md",
+      "body_sha256": "d10a63320ad533097678cda11b74ee60c39c7d8c2c8d0519b796f9f42db4ab5a",
+      "file_sha256": "6ff4671ed5abc0270b13813f89b7196c8056e8eccb3159c8c0ec6bafa76dfa8d"
+    },
+    "delivered-empty": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/delivered-empty.md",
+      "body_sha256": "c5111ed6030a18b9158116c51dfe40b2da03916e365d853637eb53f4b6f19f88",
+      "file_sha256": "e89178dc8bb9eb6c705603677ad1c7af96d28350a9cd71ed6ab327e28bc78fcd"
+    },
+    "examples": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/examples.md",
+      "body_sha256": "eda87b182d5fd116fefe5959cd9c317aa1590f2de4e658d7c3caeaa1ee04733f",
+      "file_sha256": "8a8bde5d54eb10bcc3556556ac973ab9c9617f6c99a9e99c7c9dd2903443f767"
+    },
+    "gh-inkonchain-ink-kit": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-inkonchain-ink-kit.md",
+      "body_sha256": "d5079a49c1a7393ecb53e836204554f537aea6e59565fc9e0f7d9a9bcc2bb512",
+      "file_sha256": "2497c957104cc567be49b009ed5f78bce3ee9f9b12d85c20b40d4faa0df43000"
+    },
+    "gh-larusajs-nextjs-saas-starter": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-larusajs-nextjs-saas-starter.md",
+      "body_sha256": "deb4d580ea8bc52012941221e81e9953b5c792dcf63c4e5be72fb08eafc5c5c9",
+      "file_sha256": "8de0f04dd62c8f65a8759e688cc0a995b11778fefb2d4eb9b200de17b79cf288"
+    },
+    "gh-makerkit-nextjs-saas-starter-kit-lite": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-makerkit-nextjs-saas-starter-kit-lite.md",
+      "body_sha256": "3d5941c868176801ba978671fb2129d1548bf094388ffbd34613e9c342b3807f",
+      "file_sha256": "39455029935c25b72c6180ab0c0bef8696f5db16832930f831d9f73a07b87d4d"
+    },
+    "gh-markmarkoh-datamaps": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-markmarkoh-datamaps.md",
+      "body_sha256": "56d1353aacff5b62bc063143f429b2976a3b9569e99292a6ec1c084ce1a93f2b",
+      "file_sha256": "ed0123cfaf2efc080709ddcc4f588ad774e3c7ca4e4c0bcf583e7d5482da05c8"
+    },
+    "gh-mehrdadrafiee-recursive-dnd-kanban-board": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-mehrdadrafiee-recursive-dnd-kanban-board.md",
+      "body_sha256": "e169f1ca57b4a3e675731f379833ecd929726110c7dbf3241f743d7ba57326f8",
+      "file_sha256": "c4a03cfd00fe65901c65cb47a464bd2621545062093bbbba1a8af73c410dcc45"
+    },
+    "gh-metroxe-one-html-page-challenge": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-metroxe-one-html-page-challenge.md",
+      "body_sha256": "ef6cca0ed7f1b1fb0b0b114690cf60cc69de2ad819981936b79912ac459087f8",
+      "file_sha256": "43380341864d98f2dcfbd6346414687f7352a2ad18c1e49f9205f11f2b891340"
+    },
+    "gh-microsoftdocs-mslearn-staticwebapp": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-microsoftdocs-mslearn-staticwebapp.md",
+      "body_sha256": "3edbd1ecbb88864f469d0cc4d9af515efa34b29802c54a65de3cda699de9216e",
+      "file_sha256": "562c733d376d166194d5bdf0e67cb8396531f5eb0b2a4af20ca659ea9b8cfe0b"
+    },
+    "gh-mitallast-diablo-js": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-mitallast-diablo-js.md",
+      "body_sha256": "a59fcda2ec49b42b364fa49fe788611b612a5a00846163bf9909e9ea15c6dfd1",
+      "file_sha256": "65ff8ed074bc7ad375b8b0aba6321aef7785b94af48273bf39ccbdee16d7a604"
+    },
+    "gh-mongodb-developer-mern-stack-example": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-mongodb-developer-mern-stack-example.md",
+      "body_sha256": "e3724849a285f37a02e26fbe3271f5fb1ba1499bce0610c5cca8d4cc0a1f96d4",
+      "file_sha256": "029913ee1651d1a61ad24f0237993d5fd455a0712e65c79c7cd39f06451b57a3"
+    },
+    "gh-moollaza-repo-remover": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-moollaza-repo-remover.md",
+      "body_sha256": "92c4694ef9edb447f6b031779849722538937bd115f4504d76206e8740645542",
+      "file_sha256": "bb5e4d7a8eb97a8c9381dc02e7eeb693482cee61750f0e6de571dfb4fda5ded8"
+    },
+    "gh-msaaddev-new-tailwind-app": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-msaaddev-new-tailwind-app.md",
+      "body_sha256": "5a77649b512eaeb2ce29a56058f32e128d19f3c4e473eded10cdc3ebc8a7b95e",
+      "file_sha256": "b913ec3c35e7ae6c40cd746210ed91391497bd0d759daba71a6cde5860530907"
+    },
+    "gh-niekes-d3-3d": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-niekes-d3-3d.md",
+      "body_sha256": "5685b8d13def5940884d33ab69b4e559f0885803385328c7906e10c576701666",
+      "file_sha256": "1046770716644a06e200e14f202cc44fd48b6fed2bc0b1082f68ec54d53deab0"
+    },
+    "gh-noahlh-celestite": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-noahlh-celestite.md",
+      "body_sha256": "b6b90aed1d681e149502a43ef6571a780d7448803772a34f4c570aec8c539d01",
+      "file_sha256": "8c98c7d8f36a80904f0cd6951ee69cd080864ef2561b0aea78933df6d01fe4a9"
+    },
+    "gh-nraiden-cofounder": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-nraiden-cofounder.md",
+      "body_sha256": "67fcad793346569fbed4642249369c67cca2a4c58552c8c57c43ae9a6dbcb556",
+      "file_sha256": "4d7f17dbcc7a65b85aa011ab8f6fdf38869eb80f0fca7b546aa118ac193f3490"
+    },
+    "gh-observablehq-plot": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-observablehq-plot.md",
+      "body_sha256": "ae91f30c0a4f675cfec159109f4dae13b61494bbd63fa5aaf656090f8860428b",
+      "file_sha256": "fa6ee8b7589bb1fa50f0d7ae6183ed6288d8daa8030a32b2b61be4f915fbb397"
+    },
+    "gh-openblocks-dev-openblocks": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-openblocks-dev-openblocks.md",
+      "body_sha256": "26cfd7a55ba7958dd065bebbb083a36d5194cf7d3c5b06007878eb67eb70c62b",
+      "file_sha256": "0133ce0663becac3fb4aa2a94b3829c001d7c8d51b5fe12c917af9b907eabd24"
+    },
+    "gh-pablolec-recoverpy": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-pablolec-recoverpy.md",
+      "body_sha256": "fd30debb63caf693e2bd92ebebb8edb9925ff23ebae13cd04a1024d0811be83a",
+      "file_sha256": "f7fa407deeb7b8edc8969ed40a36143d9397b1a2c2c7d5809fd1976479e609c0"
+    },
+    "gh-patmartin-dex": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-patmartin-dex.md",
+      "body_sha256": "d7f815005d5b821d4d5a1541577ba75957710bde6af714c5b10c0398c50d0b2a",
+      "file_sha256": "1046c5eab004467b232b4fd0c43bc5a092b65d617cbc95cc2ce31c439c9463ab"
+    },
+    "gh-phaserjs-phaser-ce": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-phaserjs-phaser-ce.md",
+      "body_sha256": "1fb4180f9d8951fccc50a5e6c7738118ba4e5822bad0d27a26be6f38058e82ee",
+      "file_sha256": "71a5b7a300e48e29eb74db3f81e5e0b2ac99bf56d813b207d1599864d8be9bb7"
+    },
+    "gh-phaserjs-phaser-ce-examples": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-phaserjs-phaser-ce-examples.md",
+      "body_sha256": "396648843b95ea7bac2dc4b988283a44288c71d0abb5e5ab3f7e5c09c3fa909c",
+      "file_sha256": "c66dd1e9edc6d8c931a77995aaa66c6e99a2630366bee8f75d6010cced4c9690"
+    },
+    "gh-plouc-mozaik": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-plouc-mozaik.md",
+      "body_sha256": "2de545d4ff4ee2643b813231f6789590df3ffa462ba1f16df95e2630093bfb5c",
+      "file_sha256": "ab4c81f996891fc23524041717023c5f6a8a78b1a83867dbc4c66491b97d7c92"
+    },
+    "gh-pndurette-gtts": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-pndurette-gtts.md",
+      "body_sha256": "b1eb3f33cd1752c8b375560e28775d9ed8bd598ce13e02ac13de4bc7fcbbdcb3",
+      "file_sha256": "c1be76e9be8ce7634573479f959c70eb66a56b91ea986bc5b0356f04a7e64228"
+    },
+    "gh-python-discord-bot": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-python-discord-bot.md",
+      "body_sha256": "fbf701533be04d2a46b4756993cadce4237a784f70dd91241d61d14b00556383",
+      "file_sha256": "ce3522fd005e347311f227f6e08d7894224892296f2271c1076a0de7fcf96566"
+    },
+    "gh-r74ncom-sandboxels": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-r74ncom-sandboxels.md",
+      "body_sha256": "2b463c8750a357fa7b0e1ff99f55d2d2539bf85dafdc25554b7e5eafd81bf371",
+      "file_sha256": "db8dd8f19df5fdda5c386dcd5e963b8b1f439b44cdfde664e0f60c0f5cf3a848"
+    },
+    "gh-reactchartjs-react-chartjs-2": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-reactchartjs-react-chartjs-2.md",
+      "body_sha256": "32122acfb66ecfd01bac6d4a35f805258e014826db4d4a5521b644ecec97f38c",
+      "file_sha256": "5832ec230daa45dea617c980a0a1c9ccf0d4963b48246e8108718f5b9d13a26a"
+    },
+    "gh-reactjs-react-docgen": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-reactjs-react-docgen.md",
+      "body_sha256": "01b8280f371dfbd31a47544a67615a526ff0b67a0f1152858643079672a2fe72",
+      "file_sha256": "2f8ccb024a22dc5d456d3b404326b34aa5f2a0f39cb938c9626dbcbb5e39bc9d"
+    },
+    "gh-reecelikesramen-open-webui-desktop": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-reecelikesramen-open-webui-desktop.md",
+      "body_sha256": "1aaa73be84b26d630e0e823d9664121f36a2d5bfe3f7f6ac49a28b11dab729f0",
+      "file_sha256": "25b63bcffc0252f3cdd880735f1271693421423a5e996b437ef6548e90fd85a8"
+    },
+    "gh-running-elephant-datart": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-running-elephant-datart.md",
+      "body_sha256": "1d511c5163e00a70bdfcfef9c6218bbbfe1eb819b06e1d0fd793d87109f52c7c",
+      "file_sha256": "2d7a632ed086be847fd04194a1a740624e3ab422e6e88071c1c46752d367eb31"
+    },
+    "gh-saasbold-saasbold-lite": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-saasbold-saasbold-lite.md",
+      "body_sha256": "b325c52e2348937e7d58e2bb9e8452fa0709bc73dacd9682e57a8cade9062134",
+      "file_sha256": "39344e2f24a0a4dde1b4a0b5b740e8feb3ee3b03b7221f2bad47009f19f83eb4"
+    },
+    "gh-salvia-kit-salvia-kit": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-salvia-kit-salvia-kit.md",
+      "body_sha256": "f0b5c8b23e2a99405d5bd08b969fd2456c26fece20f9c12b189227a177ad64e9",
+      "file_sha256": "78a9bb0abfac309029cc998b861e70194b7bc7f6f6612e671d76d0d2343b902d"
+    },
+    "gh-sbiermanlytle-iioengine": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-sbiermanlytle-iioengine.md",
+      "body_sha256": "8597b82c9bf265ebede6a0e9a63a7f423a0967b9e3351a0e4de5387d40cd8b95",
+      "file_sha256": "6b4f2a586bd30473182b0dcebd52b772c65c3173ed3376229d1cf12b6d7bdb57"
+    },
+    "gh-scotthmurray-d3-book": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-scotthmurray-d3-book.md",
+      "body_sha256": "cda7f60297f3253608ab26cf8619967bfa987240beb4a5211a4be9f6c53c5b84",
+      "file_sha256": "d5fc20f5ba319cab5995dd6ed963b317c677d4c2d2ac13a32cdf8acfcded1548"
+    },
+    "gh-scrapegraphai-scrapecraft": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-scrapegraphai-scrapecraft.md",
+      "body_sha256": "6384d2c2a9985964306f6e1128f55bab36396514080ed121cfe9827ed1921fe1",
+      "file_sha256": "493c201acb365db21f244d15c7108b6f5013f099deaeaf7f3b3ba4a097d5b984"
+    },
+    "gh-seek-oss-playroom": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-seek-oss-playroom.md",
+      "body_sha256": "c2a53229fcc66473c81eae8e6c4d1a706aa9e2faca6e39c865a0ea2841bb5084",
+      "file_sha256": "3f25f49cfb901b219a12fb300a6657871afcdce0aa0870dcd1553a4ef90228fc"
+    },
+    "gh-sinan-aydogan-tailadmin-laravel": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-sinan-aydogan-tailadmin-laravel.md",
+      "body_sha256": "8602ef4b6db758cec3c623824d48bfe09fd7c74bf49ce6ff5f68dee1b47dc25b",
+      "file_sha256": "689fb6afda10e5c8d1bc84cf512b93ad2de1943cc439a834d4e862fe50e1e82a"
+    },
+    "gh-sthphoenix-insightface-rest": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-sthphoenix-insightface-rest.md",
+      "body_sha256": "111033df103842354e44f7dc94bd2644c84e8c54ef87a9275cd954deff671f4f",
+      "file_sha256": "2477d302179c4c24b209b9846477052157aa38b75c529153144b75bded7a980c"
+    },
+    "gh-themesberg-tailwind-figma-ui-kit": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-themesberg-tailwind-figma-ui-kit.md",
+      "body_sha256": "e0e30acea12091f9fb7c7079306820e9ffa827ef5788d44d7d18ff6c62026d2b",
+      "file_sha256": "4d264a8e7116401b2aa7181ae38d121b70248ad8234ec52d0c3bd0a1d0f355b4"
+    },
+    "gh-ther1d-shell-gpt": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-ther1d-shell-gpt.md",
+      "body_sha256": "8c5d1b82c90f3fd3cbff6b7995a8f18f038324d30c08cf6f9d05f7fb482d71ce",
+      "file_sha256": "6a16337386878cdef20d84bd61a17b434935cafa0615a5a715276f73e070019c"
+    },
+    "gh-tokusumi-fastapi-cloudauth": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-tokusumi-fastapi-cloudauth.md",
+      "body_sha256": "6bf92d59894faaeb1da950bef849ea7a52d6232506a8db78e6b9bec36701cca7",
+      "file_sha256": "e6c84d1b6737fc4a9d58a369562c7dce2cf37f6cb16d6dbad3bc3fe323d20cc2"
+    },
+    "gh-tutu-zzz-zhilv-yuntu": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-tutu-zzz-zhilv-yuntu.md",
+      "body_sha256": "9a049374200cae85af0e71c8304ba50d128f06a60fe1644fa5ad66d74124991e",
+      "file_sha256": "483fb064d1185e8e17b7a14975fa94a4872b7325784a91336d96312edb8498df"
+    },
+    "gh-uber-baseweb": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-uber-baseweb.md",
+      "body_sha256": "bbd0fcf459ecace804204d1acee713ae7fe7c38bbe01a85fbbd517e4a811b997",
+      "file_sha256": "e465946ebd8bd3c626f5a19cb1bd7eb3b65fd10c7e3d8bb899c7deffc98e97b1"
+    },
+    "gh-undercode99-jakarta-lte": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-undercode99-jakarta-lte.md",
+      "body_sha256": "edd46213c5eec7900640b267bf21fd25ee8172358beecb5817bcf4a4b1f86d39",
+      "file_sha256": "6a968246a29e22740e163cb01a58086db05eaa88e24c24e8f996396737d575b3"
+    },
+    "gh-vitejs-vite-plugin-react-pages": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-vitejs-vite-plugin-react-pages.md",
+      "body_sha256": "5a2efd2c8f1cb7513581c870fc5d6b5a1abbc0e504998131d0b3570de3ad5f4b",
+      "file_sha256": "e519d193fc56573838a6c4a50d9278fc9b82af83bcb43ca69bfc3369ec52cf04"
+    },
+    "gh-vsamarth-sveltestack": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-vsamarth-sveltestack.md",
+      "body_sha256": "efa50e6b199e12971bd3844eb87b8e6aad82d7b6bfe748a71830f99f67e7ec11",
+      "file_sha256": "72a14fa80b3b854e3357182589864f639834f97f3423a1f93503b1b3cfa1ff65"
+    },
+    "gh-wshobson-agents": {
+      "disposition": "reference-only",
+      "archive_path": "data/skill-maintenance/2026-09-08-reviewed-cleanup/reference-only/gh-wshobson-agents.md",
+      "body_sha256": "8a6a35d340c9dc0543a12f45e466ea59096b54ce1495946c6309b736bf0c5a18",
+      "file_sha256": "5a676fea496309ac81d17bd38883d872c32ea0c1f2ea42a89f41adce5de5e3c3"
+    }
+  }
+}

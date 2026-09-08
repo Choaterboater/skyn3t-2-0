@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "slug": "code-review-and-quality",
+  "reviewed_at": "2026-09-08T19:14:25.433723+00:00",
+  "advisory_sha256": "0e873d438f1cd2d89edf481aaa159e4ffb95d1570eee9f4abf35757dd509a89b",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/code-review-and-quality/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "c78e08083f39dc81fd2d0f52fbd970de7a59a9e749dbd2ec141f57af9e06057d",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/code-review-and-quality/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/code-review-and-quality/SKILL.md",
+      "checked_at": "2026-09-08T17:51:21.496603+00:00",
+      "sha256": "8f3cabca581bbf7cb5f0add3f7454e7a4523f9d4353a6a4a217e6fa515309612",
+      "bytes": 20555,
+      "evidence_path": "evidence/reviewed/8f3cabca581bbf7cb5f0add3f7454e7a4523f9d4353a6a4a217e6fa515309612.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    },
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/constraint-driven-development/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "91a4fc2e0c38720cbb9c3f4c80b725176cb56dd51be4c6e5e304de9d8fc2f114",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/constraint-driven-development/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/constraint-driven-development/SKILL.md",
+      "checked_at": "2026-09-08T17:51:20.869222+00:00",
+      "sha256": "06479d4305f286d23cfb99f5dc85695896785269664e1f6a8d800e3b71e70c10",
+      "bytes": 21008,
+      "evidence_path": "evidence/reviewed/06479d4305f286d23cfb99f5dc85695896785269664e1f6a8d800e3b71e70c10.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    },
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/constraint-driven-development/references/floor-guard.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "5fc9f3152bf3f2f62e21c9ca442e8e1b7ac4b9997ba4a6bb8dc6e2d49d7668f6",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/constraint-driven-development/references/floor-guard.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/constraint-driven-development/references/floor-guard.md",
+      "checked_at": "2026-09-08T17:51:21.122394+00:00",
+      "sha256": "dba15dad8f5a5cbae464ec8457e6dd014a7bcb3ad13a360a6908d54991a5415e",
+      "bytes": 5851,
+      "evidence_path": "evidence/reviewed/dba15dad8f5a5cbae464ec8457e6dd014a7bcb3ad13a360a6908d54991a5415e.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

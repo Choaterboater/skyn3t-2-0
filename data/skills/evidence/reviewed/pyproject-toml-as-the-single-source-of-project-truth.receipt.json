@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "pyproject-toml-as-the-single-source-of-project-truth",
+  "reviewed_at": "2026-09-08T19:14:25.548302+00:00",
+  "advisory_sha256": "2753a6e87c8337f3a04e286cea6a0898fd46e1bb435cdd8c658727ef01e0cec5",
+  "sources": [
+    {
+      "url": "https://packaging.python.org/en/latest/guides/writing-pyproject-toml/",
+      "checked_url": "https://packaging.python.org/en/latest/guides/writing-pyproject-toml/",
+      "revision": null,
+      "path": "web-document",
+      "checked_at": "2026-09-08T16:59:17.855363+00:00",
+      "sha256": "f31c9fedc5c8bb80ad19f6c96ea219723567d6303addf9d1130856074053e57a",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "evidence_path": "evidence/reviewed/f31c9fedc5c8bb80ad19f6c96ea219723567d6303addf9d1130856074053e57a.source"
+    }
+  ]
+}

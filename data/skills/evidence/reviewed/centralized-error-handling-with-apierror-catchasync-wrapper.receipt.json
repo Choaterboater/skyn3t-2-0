@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "slug": "centralized-error-handling-with-apierror-catchasync-wrapper",
+  "reviewed_at": "2026-09-08T19:14:25.504936+00:00",
+  "advisory_sha256": "9084b64693b9f103b4e7501c06e8b7dcb8e5797d3cacf91a96d0601a9f9b3fc9",
+  "sources": [
+    {
+      "url": "https://github.com/goldbergyoni/nodebestpractices/blob/dc3d60c29d5483d9ea99cf261bbd6203516a2ba7/README.md",
+      "repository": "https://github.com/goldbergyoni/nodebestpractices",
+      "revision": "dc3d60c29d5483d9ea99cf261bbd6203516a2ba7",
+      "path": "README.md",
+      "license": "CC-BY-SA-4.0",
+      "rationale": "Directly supports the single-centralized-error-middleware and operational-vs-catastrophic-error framing; the specific ApiError/catchAsync code itself lives in an unfetched linked sub-file, so only the top-level principle is cited to this pinned commit.",
+      "id": "b3a3d7cc58f6855d3fa90dc133b4d790df386d870c2663310ca441bbb5385e4b",
+      "checked_url": "https://raw.githubusercontent.com/goldbergyoni/nodebestpractices/dc3d60c29d5483d9ea99cf261bbd6203516a2ba7/README.md",
+      "resolved_url": "https://raw.githubusercontent.com/goldbergyoni/nodebestpractices/dc3d60c29d5483d9ea99cf261bbd6203516a2ba7/README.md",
+      "checked_at": "2026-09-08T18:34:02.527414+00:00",
+      "sha256": "f2b5a031467677d4f1d06d06cf3cca45ff84704b58ad4f3a0cc700dd94f1f016",
+      "bytes": 201064,
+      "evidence_path": "evidence/reviewed/f2b5a031467677d4f1d06d06cf3cca45ff84704b58ad4f3a0cc700dd94f1f016.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "sha256": "890d26781b3fc50a702492ff6cb92955c7f8b89c83c5a47f82ebcf5eff233960",
+        "evidence_path": "evidence/reviewed/890d26781b3fc50a702492ff6cb92955c7f8b89c83c5a47f82ebcf5eff233960.license"
+      }
+    },
+    {
+      "url": "https://expressjs.com/en/guide/error-handling.html",
+      "rationale": "Current official Express guide (v5.x tree); fetched 2026-09-08 and confirms verbatim: async/promise-returning handlers call next(value) automatically on reject/throw, while callback-based APIs (e.g. node:fs) are never part of a promise and must be forwarded to next(err) manually.",
+      "id": "0e834b653b41e44c1a67a657f53307a443deece2ab01afa8c1b9f1c6104b2130",
+      "checked_url": "https://expressjs.com/en/guide/error-handling.html",
+      "resolved_url": "https://expressjs.com/en/guide/error-handling/",
+      "checked_at": "2026-09-08T18:34:03.841518+00:00",
+      "sha256": "c502b453f4cfd6b3d803a6afa0db38f7beeaca700dabe7c1be2aa0a1cc268bbf",
+      "bytes": 194745,
+      "evidence_path": "evidence/reviewed/c502b453f4cfd6b3d803a6afa0db38f7beeaca700dabe7c1be2aa0a1cc268bbf.source"
+    },
+    {
+      "url": "https://expressjs.com/en/guide/migrating-5.html",
+      "rationale": "Express's own migration guide lists 'Rejected promises handled from middleware and handlers' as a v5 behavior change, confirming the automatic forwarding did not exist in Express 4 and is not merely an undocumented implementation detail.",
+      "id": "4ef3fe88bd5ae87e43aa4dd99db855a74bfb774aec8ec8aa1c9d64ab71496335",
+      "checked_url": "https://expressjs.com/en/guide/migrating-5.html",
+      "resolved_url": "https://expressjs.com/en/guide/migrating-5/",
+      "checked_at": "2026-09-08T18:34:04.061863+00:00",
+      "sha256": "1e9e7ec3e9163751cc24ed9143ee42279621cfd6fd2354a5be7e13fae74a2cab",
+      "bytes": 211147,
+      "evidence_path": "evidence/reviewed/1e9e7ec3e9163751cc24ed9143ee42279621cfd6fd2354a5be7e13fae74a2cab.source"
+    }
+  ]
+}

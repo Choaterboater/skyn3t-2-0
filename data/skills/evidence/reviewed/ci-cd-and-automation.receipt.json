@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "ci-cd-and-automation",
+  "reviewed_at": "2026-09-08T19:14:25.432171+00:00",
+  "advisory_sha256": "e22ffc5292e1efe6d4aa44efa0e36fca3f6cc20bcd754ec2d3f7fcef8d7d6da4",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/ci-cd-and-automation/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "1fe91782dcb03a63837fcbf75c0bc2cfd5abfae61594eaeee8dc7a78d63e620c",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/ci-cd-and-automation/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/ci-cd-and-automation/SKILL.md",
+      "checked_at": "2026-09-08T17:51:21.393265+00:00",
+      "sha256": "a6ed8ed56456b01ff8314c44eefc69897d9905ae4e06bb2b7036286efb79b5f0",
+      "bytes": 11332,
+      "evidence_path": "evidence/reviewed/a6ed8ed56456b01ff8314c44eefc69897d9905ae4e06bb2b7036286efb79b5f0.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

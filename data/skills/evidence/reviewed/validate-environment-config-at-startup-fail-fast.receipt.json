@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "validate-environment-config-at-startup-fail-fast",
+  "reviewed_at": "2026-09-08T19:14:25.552471+00:00",
+  "advisory_sha256": "d3f54576adb38f753073413b226bbe52b985e050ae449e30e6640991733a2573",
+  "sources": [
+    {
+      "url": "https://github.com/af/envalid",
+      "checked_url": "https://raw.githubusercontent.com/af/envalid/3f19fbeaac023282374d26fcce102bce5ee99033/README.md",
+      "revision": "3f19fbeaac023282374d26fcce102bce5ee99033",
+      "path": "README.md",
+      "checked_at": "2026-09-08T16:59:19.341565+00:00",
+      "sha256": "c8eba6ccfca0de0ecc8f932e8fa79bccac4d4602b3af13827770fc76b564cde4",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "repository": "https://github.com/af/envalid",
+      "evidence_path": "evidence/reviewed/c8eba6ccfca0de0ecc8f932e8fa79bccac4d4602b3af13827770fc76b564cde4.source"
+    }
+  ]
+}

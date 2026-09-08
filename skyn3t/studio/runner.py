@@ -1002,9 +1002,14 @@ class StudioRunner:
                 if applies is not None and not applies(sk, stack, tags=tags):
                     continue
                 slugs.append(sl)
-                title = getattr(sk, "title", sl)
-                body = getattr(sk, "body", "") or ""
-                advice = f"{advice}\n\n## {title}\n{body[:400]}".strip()
+                renderer = getattr(skills, "render_selected", None)
+                if callable(renderer):
+                    block = renderer([sk])
+                else:
+                    title = getattr(sk, "title", sl)
+                    body = getattr(sk, "body", "") or ""
+                    block = f"## {title}\n{body[:400]}"
+                advice = f"{advice}\n\n{block}".strip()
         except Exception as exc:  # noqa: BLE001 - additive recall is best-effort
             log.warning("semantic_skills.failed", error=str(exc))
         return advice, slugs

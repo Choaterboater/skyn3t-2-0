@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "store-all-config-in-environment-variables-12-factor",
+  "reviewed_at": "2026-09-08T19:14:25.550187+00:00",
+  "advisory_sha256": "5385dcb1e93cdaaa0f53e9ccaaf34e63fd9b857477cd1bfdb7ceb904caf8d392",
+  "sources": [
+    {
+      "url": "https://12factor.net/config",
+      "checked_url": "https://12factor.net/config",
+      "revision": null,
+      "path": "web-document",
+      "checked_at": "2026-09-08T16:59:18.669586+00:00",
+      "sha256": "d9630f27e8943621882fd31e5481c60f07d1b834e990de93214a8c5e78fe8850",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "evidence_path": "evidence/reviewed/d9630f27e8943621882fd31e5481c60f07d1b834e990de93214a8c5e78fe8850.source"
+    }
+  ]
+}

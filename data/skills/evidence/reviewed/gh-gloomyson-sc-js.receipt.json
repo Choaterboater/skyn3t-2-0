@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-gloomyson-sc-js",
+  "reviewed_at": "2026-09-08T19:14:25.462115+00:00",
+  "advisory_sha256": "7718b0f12d50a09543ec787cf23fef48ec6c4191aa1d946638a306550d0b1c8a",
+  "sources": [
+    {
+      "repository": "https://github.com/gloomyson/sc_js",
+      "revision": "4981ce27b29c4970390159b59d414a5e19326fbf",
+      "path": "README.md",
+      "sha256": "c9d9adcc4cbff26409f633d36304f6ff50c2792bf78a1a899e7e4efb684181d2",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/c9d9adcc4cbff26409f633d36304f6ff50c2792bf78a1a899e7e4efb684181d2.source",
+      "license_receipt": {
+        "path": "LICENSE.md",
+        "spdx_id": "MIT",
+        "sha256": "30dc4cd3dcd10ff668b080f896eab33158b8ff31716f21b6dd08698c8860789b",
+        "evidence_path": "evidence/reviewed/30dc4cd3dcd10ff668b080f896eab33158b8ff31716f21b6dd08698c8860789b.license"
+      }
+    }
+  ]
+}

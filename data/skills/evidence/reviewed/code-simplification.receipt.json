@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "code-simplification",
+  "reviewed_at": "2026-09-08T19:14:25.434895+00:00",
+  "advisory_sha256": "bb8f064050f4d185a0222694427efc9034dd57b1910fd2e9d56179fc0174f4d4",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/code-simplification/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "b053610ac01d0b3cfa07816a35bad3f26330159ca3baef675e7a4589c83afb58",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/code-simplification/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/code-simplification/SKILL.md",
+      "checked_at": "2026-09-08T17:51:21.648060+00:00",
+      "sha256": "f0c5ed754057eb0c1e027e2587f59de816651feb5e837242296c43ea21cf621d",
+      "bytes": 13545,
+      "evidence_path": "evidence/reviewed/f0c5ed754057eb0c1e027e2587f59de816651feb5e837242296c43ea21cf621d.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

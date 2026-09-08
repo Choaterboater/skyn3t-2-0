@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "slug": "dockerize-fastapi-with-layer-cached-deps-and-one-process-per-container",
+  "reviewed_at": "2026-09-08T19:14:25.537959+00:00",
+  "advisory_sha256": "f7b95b19e955a45fd28e423c5a08c81a9f2060288d49b4b55e916af73866297d",
+  "sources": [
+    {
+      "url": "https://fastapi.tiangolo.com/deployment/docker/",
+      "checked_url": "https://fastapi.tiangolo.com/deployment/docker/",
+      "revision": null,
+      "path": "web-document",
+      "checked_at": "2026-09-08T16:59:12.274613+00:00",
+      "sha256": "c9523abf21763222968091c07a74b95d69c087c6db701c8fd82213ca0cb8cb2e",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "evidence_path": "evidence/reviewed/c9523abf21763222968091c07a74b95d69c087c6db701c8fd82213ca0cb8cb2e.source"
+    }
+  ]
+}

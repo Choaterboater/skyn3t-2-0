@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "slug": "frontend-ui-engineering",
+  "reviewed_at": "2026-09-08T19:14:25.439892+00:00",
+  "advisory_sha256": "cc3989ee10350ebefac1aede56879dd61f25adb06076cc9cb67a598143e39ee6",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/frontend-ui-engineering/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "a23ff85ea88fc41b3e1794a63f3f015f97d03e258a6b783f56032ec898c48355",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/frontend-ui-engineering/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/frontend-ui-engineering/SKILL.md",
+      "checked_at": "2026-09-08T17:51:22.030216+00:00",
+      "sha256": "2b74ac4862be3902ec918dceac9366a6fe83b9e003601c0deaf6be09c1766aca",
+      "bytes": 10711,
+      "evidence_path": "evidence/reviewed/2b74ac4862be3902ec918dceac9366a6fe83b9e003601c0deaf6be09c1766aca.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    },
+    {
+      "repository": "https://github.com/vercel-labs/web-interface-guidelines",
+      "revision": "e3d624baaf29dc1fc645aff3e38f03e564d2d6b1",
+      "path": "command.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "f387c674b6841c00b43a6b5483c28939f8103e792688504e9f3775bfac41129d",
+      "checked_url": "https://raw.githubusercontent.com/vercel-labs/web-interface-guidelines/e3d624baaf29dc1fc645aff3e38f03e564d2d6b1/command.md",
+      "resolved_url": "https://raw.githubusercontent.com/vercel-labs/web-interface-guidelines/e3d624baaf29dc1fc645aff3e38f03e564d2d6b1/command.md",
+      "checked_at": "2026-09-08T17:51:20.680362+00:00",
+      "sha256": "5a775e6411f790f518dbc9c1fa7c50a89e6873502d9a3530a6eb223a590bcfe8",
+      "bytes": 7760,
+      "evidence_path": "evidence/reviewed/5a775e6411f790f518dbc9c1fa7c50a89e6873502d9a3530a6eb223a590bcfe8.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/vercel-labs/web-interface-guidelines/e3d624baaf29dc1fc645aff3e38f03e564d2d6b1/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6cd1609c9c12233507cdd2ce0d32e9a721e3c27494951be06b90090deeeb7af2",
+        "evidence_path": "evidence/reviewed/6cd1609c9c12233507cdd2ce0d32e9a721e3c27494951be06b90090deeeb7af2.license"
+      }
+    }
+  ]
+}

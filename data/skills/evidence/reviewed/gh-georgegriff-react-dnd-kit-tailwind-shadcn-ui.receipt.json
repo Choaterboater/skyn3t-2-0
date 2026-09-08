@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-georgegriff-react-dnd-kit-tailwind-shadcn-ui",
+  "reviewed_at": "2026-09-08T19:14:25.493532+00:00",
+  "advisory_sha256": "d26d14a74211dfec82403f49660741aec0ddd7985b8562d522bf517a4a00223e",
+  "sources": [
+    {
+      "repository": "https://github.com/georgegriff/react-dnd-kit-tailwind-shadcn-ui",
+      "revision": "3e1dbb0b872125191d5f9c3686060f64d304b99e",
+      "path": "README.md",
+      "sha256": "bbc8d19430f6078d23c0ccb751fe8e0837657aeac91a6cc9cc834332fa3b74d6",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/bbc8d19430f6078d23c0ccb751fe8e0837657aeac91a6cc9cc834332fa3b74d6.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "16cbbc63c3a06343e99e537907b71ddfb4c2cbbe0df13df26f3f6d22b4f28857",
+        "evidence_path": "evidence/reviewed/16cbbc63c3a06343e99e537907b71ddfb4c2cbbe0df13df26f3f6d22b4f28857.license"
+      }
+    }
+  ]
+}

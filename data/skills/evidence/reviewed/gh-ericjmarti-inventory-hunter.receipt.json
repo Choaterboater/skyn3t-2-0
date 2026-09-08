@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-ericjmarti-inventory-hunter",
+  "reviewed_at": "2026-09-08T19:14:25.486327+00:00",
+  "advisory_sha256": "d8f152cfb64575bd64f58c3a75d5c61803a9e6c72031da01e7498edb93ccb454",
+  "sources": [
+    {
+      "repository": "https://github.com/ericjmarti/inventory-hunter",
+      "revision": "0b803b74e7450fbb1d5717d09e42575712da935d",
+      "path": "README.md",
+      "sha256": "076604aaf16ac8b834008736e20a7d52a14eef8f6d2255f8d548f5786e7093a9",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/076604aaf16ac8b834008736e20a7d52a14eef8f6d2255f8d548f5786e7093a9.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "8d17111371634dc6ca1f0a241999d9a410156d1c79b42ff901bfda7c586ad178",
+        "evidence_path": "evidence/reviewed/8d17111371634dc6ca1f0a241999d9a410156d1c79b42ff901bfda7c586ad178.license"
+      }
+    }
+  ]
+}

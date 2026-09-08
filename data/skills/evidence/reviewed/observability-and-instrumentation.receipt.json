@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "observability-and-instrumentation",
+  "reviewed_at": "2026-09-08T19:14:25.443930+00:00",
+  "advisory_sha256": "d43818dd77d532a252d7e615f713d86102612e1907e2fcb47636e5c0bee0235c",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/observability-and-instrumentation/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "d98b6bc4e9482d92652c969e6825b521dd31b175c5e262887c75f50940fa9c2b",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/observability-and-instrumentation/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/observability-and-instrumentation/SKILL.md",
+      "checked_at": "2026-09-08T17:51:22.309054+00:00",
+      "sha256": "e7fcb0820306d46268de9594d676ad98e35040858926c412b7000faa52a61f87",
+      "bytes": 13948,
+      "evidence_path": "evidence/reviewed/e7fcb0820306d46268de9594d676ad98e35040858926c412b7000faa52a61f87.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

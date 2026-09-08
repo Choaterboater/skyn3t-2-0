@@ -20,7 +20,10 @@ data/serve_launch_history.json
 data/token_rollups.json
 data/reference_images/
 data/asset_packs/
+# Reviewed snapshot files are explicitly tracked; new ingests and private
+# runtime sidecars stay ignored. See data/skills/.distribution.json.
 data/skills/
+data/skill-maintenance/
 data/cortex/
 data/proposals/
 data/checkpoints/

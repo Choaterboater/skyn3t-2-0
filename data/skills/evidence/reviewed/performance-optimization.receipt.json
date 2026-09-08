@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "slug": "performance-optimization",
+  "reviewed_at": "2026-09-08T19:14:25.445512+00:00",
+  "advisory_sha256": "a67eb0621c5286c03ea8b1e9c5a12c5c4b4471af7b55a73d8891dc61dc45ce13",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/performance-optimization/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "06111e17d9ecf1a920f0e935b11aca9d50eb243c2c2c37c2421fa8f7865e7624",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/performance-optimization/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/performance-optimization/SKILL.md",
+      "checked_at": "2026-09-08T17:51:22.441502+00:00",
+      "sha256": "00694d0c69bbde674d0e39de24052d90afea32d9fef9553eaee21a50a7e9b8cf",
+      "bytes": 21717,
+      "evidence_path": "evidence/reviewed/00694d0c69bbde674d0e39de24052d90afea32d9fef9553eaee21a50a7e9b8cf.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    },
+    {
+      "repository": "https://github.com/cloudflare/skills",
+      "revision": "b052c32bab7dd493513260228a36c88294f343f1",
+      "path": "skills/web-perf/SKILL.md",
+      "license": "Apache-2.0",
+      "license_path": "LICENSE",
+      "id": "5cd979af5802f87588000bb168d96b92157495748e81cc153b30de968d290f76",
+      "checked_url": "https://raw.githubusercontent.com/cloudflare/skills/b052c32bab7dd493513260228a36c88294f343f1/skills/web-perf/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/cloudflare/skills/b052c32bab7dd493513260228a36c88294f343f1/skills/web-perf/SKILL.md",
+      "checked_at": "2026-09-08T17:51:20.443673+00:00",
+      "sha256": "79c531e95ca4d96a7de920c28c127c2c09ec55cd452a92222267d2954580be23",
+      "bytes": 8259,
+      "evidence_path": "evidence/reviewed/79c531e95ca4d96a7de920c28c127c2c09ec55cd452a92222267d2954580be23.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/cloudflare/skills/b052c32bab7dd493513260228a36c88294f343f1/LICENSE",
+        "path": "LICENSE",
+        "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
+        "evidence_path": "evidence/reviewed/58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd.license"
+      }
+    }
+  ]
+}

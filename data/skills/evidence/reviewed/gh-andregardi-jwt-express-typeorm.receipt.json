@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "slug": "gh-andregardi-jwt-express-typeorm",
+  "reviewed_at": "2026-09-08T19:14:25.470349+00:00",
+  "advisory_sha256": "108821b88ee15765e15a084c9b4bf03af30fff9a96ee1cc29ae5083982424088",
+  "sources": [
+    {
+      "repository": "https://github.com/andregardi/jwt-express-typeorm",
+      "revision": "9b4db2334a9988cce86ba0e45e03545f2a09b7e7",
+      "path": "readme.md",
+      "sha256": "51b854a2278ed0ca111b25e634dc6994289815d0fbb4a074b2d23aa62e059709",
+      "license": null,
+      "archived": false,
+      "evidence_path": "evidence/reviewed/51b854a2278ed0ca111b25e634dc6994289815d0fbb4a074b2d23aa62e059709.source"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "slug": "root-cause-first-a-four-phase-debugging-discipline",
+  "reviewed_at": "2026-09-08T19:14:25.548816+00:00",
+  "advisory_sha256": "b5f9de604f894653b6c1a732df05b1f8f5715415527e86ef12edd0608c119b72",
+  "sources": [
+    {
+      "url": "https://github.com/obra/superpowers/blob/main/skills/systematic-debugging/SKILL.md",
+      "checked_url": "https://raw.githubusercontent.com/obra/superpowers/b36e0829c6d0140e93cfef2ca599b1b07d4a7797/skills/systematic-debugging/SKILL.md",
+      "revision": "b36e0829c6d0140e93cfef2ca599b1b07d4a7797",
+      "path": "skills/systematic-debugging/SKILL.md",
+      "checked_at": "2026-09-08T16:59:17.862792+00:00",
+      "sha256": "808fc5717aa88ad65efff312b11c186294d3e6ee301afb584e2f86599b137787",
+      "evidence_scope": "Retained cited-source observation; original skill revision was not recorded.",
+      "repository": "https://github.com/obra/superpowers",
+      "evidence_path": "evidence/reviewed/808fc5717aa88ad65efff312b11c186294d3e6ee301afb584e2f86599b137787.source"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "doubt-driven-development",
+  "reviewed_at": "2026-09-08T19:14:25.438593+00:00",
+  "advisory_sha256": "93c77d06c5e224c811907c5e904bfbb66485b21574d38a42c44e8c97ef485364",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/doubt-driven-development/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "e93c4785c01baa2304b76d1b7ae9ed5d82a311f2cc755c085f7e1fb7f3e0c7ed",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/doubt-driven-development/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/doubt-driven-development/SKILL.md",
+      "checked_at": "2026-09-08T17:51:23.576729+00:00",
+      "sha256": "6fa1fcd8420c28daf7e53c5b08b0f20b907911efd2a6d9bce0b9740da20a4008",
+      "bytes": 16647,
+      "evidence_path": "evidence/reviewed/6fa1fcd8420c28daf7e53c5b08b0f20b907911efd2a6d9bce0b9740da20a4008.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

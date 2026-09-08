@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-developit-express-es6-rest-api",
+  "reviewed_at": "2026-09-08T19:14:25.481639+00:00",
+  "advisory_sha256": "34bd92f6f91db21fbd3327cb3012fce78e0199cd4fe0bee7ba2e5e54df4db5b6",
+  "sources": [
+    {
+      "repository": "https://github.com/developit/express-es6-rest-api",
+      "revision": "9b8c005a38a0de820eac7e319e81b4318c320630",
+      "path": "README.md",
+      "sha256": "33c6adffb94202de0fd15e325edec656e98e7a2f7e73cb3b11cfd2f392e6a844",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/33c6adffb94202de0fd15e325edec656e98e7a2f7e73cb3b11cfd2f392e6a844.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "d06ab473ef2ec146979e967b0edd8db2b26cf43ee8a22c2a31d1fa3ce56001d7",
+        "evidence_path": "evidence/reviewed/d06ab473ef2ec146979e967b0edd8db2b26cf43ee8a22c2a31d1fa3ce56001d7.license"
+      }
+    }
+  ]
+}

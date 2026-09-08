@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "slug": "incremental-implementation",
+  "reviewed_at": "2026-09-08T19:14:25.442265+00:00",
+  "advisory_sha256": "b31c464b5f5048797b1f0512df88279d7140750ee0683b54b962ef97618573a4",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/incremental-implementation/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "cba92191bd9dd0409f8efecc749ff749d7459b50ad5975b7847d87c66eec8b7c",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/incremental-implementation/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/incremental-implementation/SKILL.md",
+      "checked_at": "2026-09-08T17:51:22.216706+00:00",
+      "sha256": "df66536610071727feae1ca95f3c391c248ad828041750ccd3699cce763aa00b",
+      "bytes": 9629,
+      "evidence_path": "evidence/reviewed/df66536610071727feae1ca95f3c391c248ad828041750ccd3699cce763aa00b.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    }
+  ]
+}

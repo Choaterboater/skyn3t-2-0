@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "slug": "api-and-interface-design",
+  "reviewed_at": "2026-09-08T19:32:03.752872+00:00",
+  "advisory_sha256": "6a07bc58abe9612733d09956261a09fe2f3e2877e28cb3b3a0a96f6249bc6bad",
+  "sources": [
+    {
+      "repository": "https://github.com/addyosmani/agent-skills",
+      "revision": "6ca0cd7db39b41b1c37e26d335c507ee92382c6d",
+      "path": "skills/api-and-interface-design/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "7db23895b252e58814928d5194fb248fd6d3711b4e74bd42a82354f3dc9ef26a",
+      "checked_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/api-and-interface-design/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/skills/api-and-interface-design/SKILL.md",
+      "checked_at": "2026-09-08T17:51:21.217861+00:00",
+      "sha256": "5dafd0c44a3aabf11cae5bcb34f6fcc24dfa5c01ba6e0d3176bce997f4d68bc8",
+      "bytes": 14884,
+      "evidence_path": "evidence/reviewed/5dafd0c44a3aabf11cae5bcb34f6fcc24dfa5c01ba6e0d3176bce997f4d68bc8.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/addyosmani/agent-skills/6ca0cd7db39b41b1c37e26d335c507ee92382c6d/LICENSE",
+        "path": "LICENSE",
+        "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
+        "evidence_path": "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license"
+      }
+    },
+    {
+      "repository": "https://github.com/nousresearch/hermes-agent",
+      "revision": "2237be355906fbe6065ce1815711eee52b2d646e",
+      "path": "optional-skills/software-development/rest-graphql-debug/SKILL.md",
+      "license": "MIT",
+      "license_path": "LICENSE",
+      "id": "c654813c6d4123aa4d57ff23c88564fc9ef3628a6906a4ec109e2d8ecca421f1",
+      "checked_url": "https://raw.githubusercontent.com/nousresearch/hermes-agent/2237be355906fbe6065ce1815711eee52b2d646e/optional-skills/software-development/rest-graphql-debug/SKILL.md",
+      "resolved_url": "https://raw.githubusercontent.com/nousresearch/hermes-agent/2237be355906fbe6065ce1815711eee52b2d646e/optional-skills/software-development/rest-graphql-debug/SKILL.md",
+      "checked_at": "2026-09-08T19:30:37.254700+00:00",
+      "sha256": "18228139612c555dbb4a53b74039dadb53cb1163507dd9325a4fcfa3326e475d",
+      "bytes": 15636,
+      "evidence_path": "evidence/reviewed/18228139612c555dbb4a53b74039dadb53cb1163507dd9325a4fcfa3326e475d.source",
+      "license_receipt": {
+        "url": "https://raw.githubusercontent.com/nousresearch/hermes-agent/2237be355906fbe6065ce1815711eee52b2d646e/LICENSE",
+        "path": "LICENSE",
+        "sha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
+        "evidence_path": "evidence/reviewed/821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6.license"
+      }
+    }
+  ]
+}

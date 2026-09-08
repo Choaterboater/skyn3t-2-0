@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-ekafyi-johnnydecimal-index-generator",
+  "reviewed_at": "2026-09-08T19:14:25.484418+00:00",
+  "advisory_sha256": "4f033d72289b0a2d0a83baf527ea97cd6f70c1b96084330d8f3667ef818a5a78",
+  "sources": [
+    {
+      "repository": "https://github.com/ekafyi/johnnydecimal-index-generator",
+      "revision": "33d3e76a4d119572657c20dfb75e1a9803b01fd1",
+      "path": "README.md",
+      "sha256": "7a82a91ab412c6bc572f1b10218a1de5e43a3f8bdb69b5fea302b3bdbbb77d74",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/7a82a91ab412c6bc572f1b10218a1de5e43a3f8bdb69b5fea302b3bdbbb77d74.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "d39cdbba709a4fd2078d7abb45398fdb5042d5589d3196f9cdbcf322a953e9df",
+        "evidence_path": "evidence/reviewed/d39cdbba709a4fd2078d7abb45398fdb5042d5589d3196f9cdbcf322a953e9df.license"
+      }
+    }
+  ]
+}

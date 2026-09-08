@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "slug": "gh-alfinauzikri-ui",
+  "reviewed_at": "2026-09-08T19:14:25.468015+00:00",
+  "advisory_sha256": "1a3891a237df539579589a8165458730d8501ad6085cdf7af5256d2143e43d6d",
+  "sources": [
+    {
+      "repository": "https://github.com/alfinauzikri/ui",
+      "revision": "eb3ada5f35aac678b9ef46f17c83f0ff7d3fa1e4",
+      "path": "README.md",
+      "sha256": "f7a610f948210d12eec77094eb618999dad336074e2535a8cb8d661a2243ddbc",
+      "license": "MIT",
+      "archived": false,
+      "evidence_path": "evidence/reviewed/f7a610f948210d12eec77094eb618999dad336074e2535a8cb8d661a2243ddbc.source",
+      "license_receipt": {
+        "path": "LICENSE",
+        "spdx_id": "MIT",
+        "sha256": "630c98e47fc12aa26d6612985dd7e5bc98add3c738f14a8b3eb1994cf33d072b",
+        "evidence_path": "evidence/reviewed/630c98e47fc12aa26d6612985dd7e5bc98add3c738f14a8b3eb1994cf33d072b.license"
+      }
+    }
+  ]
+}

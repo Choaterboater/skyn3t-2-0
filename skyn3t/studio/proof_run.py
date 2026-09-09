@@ -1151,6 +1151,7 @@ class _ProofCommandContext:
     used_backend: str = ""
     docker_available: bool = False
     warnings: list[str] = field(default_factory=list)
+    existing_project: bool = False
 
 
 _NODE_SANDBOX_STACKS = {
@@ -1230,14 +1231,26 @@ def _run_proof_command(
     if runner is not None:
         import asyncio
 
+        runtime_options = {"stack": ctx.stack if ctx is not None else None}
+        sandbox_command = command
+        if (
+            ctx is not None and ctx.existing_project
+            and _use_container_command_names(ctx)
+            and command and command[0] in {"node", "npm", "pnpm", "yarn", "corepack"}
+        ):
+            # An unknown framework is not a Python runtime for Node commands.
+            runtime_options.update(stack="node", image="node:22-slim")
+            if command[0] in {"pnpm", "yarn"}:
+                sandbox_command = ["corepack", *command]
+
         async def _run_sandbox() -> Any:
             return await runner.run(
-                command,
+                sandbox_command,
                 cwd=cwd,
                 timeout=timeout,
-                stack=ctx.stack if ctx is not None else None,
                 env=safe_env,
                 network=network,
+                **runtime_options,
             )
 
         try:
@@ -4106,6 +4119,7 @@ def proof_run(
     python_deps_timeout: int | None = None,
     brief: str = "",
     posture: str | None = None,
+    existing_project: bool = False,
 ) -> ProofResult:
     """Run an objective proof of the build. Always returns a ProofResult.
 
@@ -4136,6 +4150,7 @@ def proof_run(
 
     mode = "local"
     cmd_ctx = _proof_command_context(execution_backend, stack)
+    cmd_ctx.existing_project = existing_project
     sandbox_available = _sandbox_available(cmd_ctx, execution_backend)
     cmd_ctx.docker_available = sandbox_available
 
@@ -4170,6 +4185,8 @@ def proof_run(
         "entrypoints": [],
         "sandbox_available": sandbox_available,
     }
+    if existing_project:
+        detail["existing_project"] = True
 
     install_py_deps = (
         _proof_install_python_deps_default()
@@ -4230,7 +4247,10 @@ def proof_run(
     # "generic entrypoint present". Never raises; never tightens a generic pass
     # into a fail when no stack-specific check exists (checked=False).
     if passed and total > 0:
-        sa_checked, sa_passed, sa_note = _stack_artifact_check(pdir, stack)
+        sa_checked, sa_passed, sa_note = (
+            (False, True, "Existing project: use declared entrypoints and build/test commands, not factory scaffold filenames")
+            if existing_project else _stack_artifact_check(pdir, stack)
+        )
         if sa_checked:
             detail["stack_check"] = "pass" if sa_passed else "fail"
             detail["stack_check_note"] = sa_note
@@ -4892,6 +4912,18 @@ def _entrypoint_check(
     except Exception:  # noqa: BLE001 - keep proof self-contained if import fails
         return ([], "")
     entrypoints = vc.find_entrypoints(pdir)
+    if cmd_ctx is not None and cmd_ctx.existing_project and not entrypoints:
+        # Libraries and custom entrypoint names need not resemble a factory scaffold.
+        if _is_python_package(pdir):
+            entrypoints = vc.find_manifests(pdir)
+        elif (pdir / "package.json").is_file():
+            package = json.loads((pdir / "package.json").read_text(encoding="utf-8"))
+            scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+            if isinstance(scripts, dict) and any(
+                isinstance(scripts.get(name), str) and scripts[name].strip()
+                for name in ("build", "start", "dev", "test", "check", "typecheck")
+            ):
+                entrypoints = ["package.json"]
     if not entrypoints:
         return ([], "")
 
@@ -5237,31 +5269,36 @@ def _run_node_tests(
     'could not assess' and remains a soft skip. Runs under CI=1 so vitest/jest
     execute once instead of entering watch mode. Never raises."""
     import json as _json
-    import os
-    import shutil
 
-    npm = shutil.which("npm")
     pkg_path = pdir / "package.json"
     use_container_names = _use_container_command_names(cmd_ctx)
-    if npm is None and not use_container_names:
-        return (False, False, "")
     if not pkg_path.exists():
         return (False, False, "")
+    manager, npm = _node_package_manager(pdir, cmd_ctx)
+    if npm is None:
+        return (
+            False, False,
+            f"{manager} could not be launched" if cmd_ctx is not None and cmd_ctx.existing_project else "",
+        )
     try:
         pkg = _json.loads(pkg_path.read_text(encoding="utf-8")) or {}
     except (OSError, ValueError):
         return (False, False, "")
     if not isinstance(pkg, dict) or "test" not in (pkg.get("scripts") or {}):
         return (False, False, "no test script")
-    if not package_declares_node_tests(pkg):
+    existing_project = cmd_ctx is not None and cmd_ctx.existing_project
+    if not existing_project and not package_declares_node_tests(pkg):
         return (False, False, "no recognized test runner")
-    if not (pdir / "node_modules").is_dir() and not _native_node_test_script(pkg):
+    if not (
+        (pdir / "node_modules").is_dir() or (pdir / ".pnp.cjs").is_file()
+    ) and not _native_node_test_script(pkg):
         return (False, False, "test dependencies are not installed")
-    env = {**os.environ, "CI": "1", "npm_config_audit": "false",
+    env = {**_node_command_env(container=use_container_names), "CI": "1", "npm_config_audit": "false",
            "npm_config_fund": "false", **(extra_env or {})}
-    npm_cmd = "npm" if use_container_names else str(npm)
+    npm_cmd = manager if use_container_names else str(npm)
     res = _run_proof_command(
-        cmd_ctx, [npm_cmd, "test", "--silent"], cwd=pdir, timeout=timeout, env=env)
+        cmd_ctx, [npm_cmd, "run", "test"] if existing_project else [npm_cmd, "test", "--silent"],
+        cwd=pdir, timeout=timeout, env=env)
     if res.timed_out:
         return (True, False, "node tests timed out")
     if res.returncode == 127:
@@ -5368,11 +5405,12 @@ _CONTAINER_HOME = "/work/node_modules/.skyn3t-home"
 _CONTAINER_CACHE_HOME = "/work/node_modules/.skyn3t-cache"
 _CONTAINER_NPM_CACHE = "/work/node_modules/.skyn3t-npm-cache"
 _CONTAINER_NPM_TMP = "/work/node_modules/.skyn3t-tmp"
+_CONTAINER_COREPACK_HOME = "/work/node_modules/.skyn3t-corepack"
+_CONTAINER_COREPACK_BIN = "/work/node_modules/.skyn3t-corepack-bin"
 
 
-def _node_build_env(*, container: bool = False) -> dict:
-    """Build-time env for npm: CI flags + placeholder provider keys so a top-level
-    SDK client init doesn't crash the build on a missing key (real key set at serve)."""
+def _node_command_env(*, container: bool = False) -> dict:
+    """Share writable paths and package-manager caches across Node proof steps."""
     env = npm_env()
     if container:
         # Host paths such as /Users/... do not exist inside linux containers.
@@ -5382,6 +5420,20 @@ def _node_build_env(*, container: bool = False) -> dict:
         env["XDG_CACHE_HOME"] = _CONTAINER_CACHE_HOME
         env["npm_config_cache"] = _CONTAINER_NPM_CACHE
         env["npm_config_tmp"] = _CONTAINER_NPM_TMP
+        env["TMPDIR"] = env["TMP"] = env["TEMP"] = "/tmp"
+        env["COREPACK_HOME"] = _CONTAINER_COREPACK_HOME
+        env["COREPACK_ENABLE_AUTO_PIN"] = "0"
+        env["COREPACK_ENABLE_DOWNLOAD_PROMPT"] = "0"
+        env["PATH"] = (
+            f"{_CONTAINER_COREPACK_BIN}:"
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        )
+    return env
+
+
+def _node_build_env(*, container: bool = False) -> dict:
+    """Allow build-time SDK initialization without supplying real provider keys."""
+    env = _node_command_env(container=container)
     for k in _BUILD_PLACEHOLDER_KEYS:
         env.setdefault(k, "sk-build-placeholder")
     return env
@@ -5450,6 +5502,52 @@ def _discard_node_modules(pdir: Path) -> None:
         pass
 
 
+def _node_package_manager(
+    pdir: Path, cmd_ctx: _ProofCommandContext | None,
+) -> tuple[str, str | None]:
+    manager = "npm"
+    if cmd_ctx is not None and cmd_ctx.existing_project:
+        package = json.loads((pdir / "package.json").read_text(encoding="utf-8"))
+        declared = package.get("packageManager", "") if isinstance(package, dict) else ""
+        if not isinstance(declared, str):
+            raise ValueError("packageManager must be a string")
+        if declared:
+            manager = declared.split("@", 1)[0]
+        else:
+            locked = [
+                name for name, files in (
+                    ("npm", ("package-lock.json", "npm-shrinkwrap.json")),
+                    ("pnpm", ("pnpm-lock.yaml",)),
+                    ("yarn", ("yarn.lock",)),
+                ) if any((pdir / file).is_file() for file in files)
+            ]
+            if len(locked) > 1:
+                raise ValueError("Conflicting lockfiles: declare packageManager before improving this project")
+            manager = locked[0] if locked else "npm"
+        if manager not in {"npm", "pnpm", "yarn"}:
+            raise ValueError(f"Automatic proof does not support package manager {manager!r}")
+    return manager, manager if _use_container_command_names(cmd_ctx) else shutil.which(manager)
+
+
+def _existing_node_install_args(pdir: Path, manager: str, command: str) -> list[str]:
+    if manager == "npm":
+        locked = any((pdir / name).is_file() for name in ("package-lock.json", "npm-shrinkwrap.json"))
+        return [
+            command, "ci" if locked else "install",
+            "--ignore-scripts", "--no-audit", "--no-fund",
+            *([] if locked else ["--package-lock=false"]),
+        ]
+    if manager == "pnpm":
+        return [command, "install", "--frozen-lockfile", "--ignore-scripts"]
+    package = json.loads((pdir / "package.json").read_text(encoding="utf-8"))
+    declared = str(package.get("packageManager", ""))
+    modern = bool(re.match(r"yarn@(?:[2-9]|\d{2,})\.", declared)) or (pdir / ".yarnrc.yml").is_file()
+    return (
+        [command, "install", "--immutable"] if modern
+        else [command, "install", "--frozen-lockfile", "--ignore-scripts"]
+    )
+
+
 def _prepare_node_dependencies(
     pdir: Path,
     *,
@@ -5457,19 +5555,33 @@ def _prepare_node_dependencies(
     cmd_ctx: _ProofCommandContext | None = None,
 ) -> tuple[bool, bool, str]:
     """Install declared Node dependencies and stabilize the lockfile once."""
-    npm = shutil.which("npm")
+    manager, npm = _node_package_manager(pdir, cmd_ctx)
     use_container_names = _use_container_command_names(cmd_ctx)
     if npm is None and not use_container_names:
-        return (False, False, "npm could not be launched")
-    npm_cmd = "npm" if use_container_names else str(npm)
+        return (False, False, f"{manager} could not be launched")
+    npm_cmd = manager if use_container_names else str(npm)
     env = _node_build_env(container=use_container_names)
+    existing_project = cmd_ctx is not None and cmd_ctx.existing_project
+    if existing_project:
+        env["YARN_ENABLE_SCRIPTS"] = "false"
+    if existing_project and use_container_names and manager in {"pnpm", "yarn"}:
+        # Package scripts can invoke the manager again (e.g. pnpm -r run build).
+        (pdir / "node_modules" / ".skyn3t-corepack-bin").mkdir(parents=True, exist_ok=True)
+        enabled = _run_proof_command(
+            cmd_ctx, ["corepack", "enable", "--install-directory", _CONTAINER_COREPACK_BIN, manager],
+            cwd=pdir, timeout=min(30, max(1, int(timeout))), env=env,
+        )
+        if enabled.timed_out or enabled.returncode != 0:
+            reason = "timed out" if enabled.timed_out else (enabled.stderr or enabled.stdout).strip()
+            return (True, False, f"Corepack {manager} launcher preparation failed: {reason[-700:]}")
     foreign_deps = "" if use_container_names else discard_foreign_node_modules(pdir)
     if _node_install_current(pdir, container=use_container_names):
-        return (True, True, "npm install skipped (dependencies current)")
+        return (True, True, f"{manager} install skipped (dependencies current)")
 
     inst = _run_proof_command(
         cmd_ctx,
-        _node_npm_install_args(npm_cmd, "install", container=use_container_names),
+        _existing_node_install_args(pdir, manager, npm_cmd) if existing_project
+        else _node_npm_install_args(npm_cmd, "install", container=use_container_names),
         cwd=pdir,
         timeout=max(1, int(timeout)),
         env=env,
@@ -5477,17 +5589,19 @@ def _prepare_node_dependencies(
     )
     if inst.timed_out:
         _discard_node_modules(pdir)
-        return (True, False, f"npm install timed out after {timeout}s")
+        return (True, False, f"{manager} install timed out after {timeout}s")
     if inst.returncode == 127:
-        return (False, False, "npm install could not be launched")
+        out = ((inst.stderr or "") + (inst.stdout or "")).strip()
+        detail = f": {out[-700:]}" if out else ""
+        return (False, False, f"{manager} install could not be launched{detail}")
     if inst.returncode != 0:
         out = ((inst.stdout or "") + (inst.stderr or "")).strip()
         _discard_node_modules(pdir)
         if _npm_install_is_offline(out):
-            return (False, False, "npm install failed (offline registry)")
+            return (False, False, f"{manager} install failed (offline registry)")
         return (True, False, out[-700:])
     _mark_node_install_current(pdir, container=use_container_names)
-    summary = "npm install ok"
+    summary = f"{manager} install ok"
     if foreign_deps:
         summary = f"{summary} after replacing {foreign_deps} node_modules"
     return (True, True, summary)
@@ -5501,6 +5615,7 @@ def stabilize_node_dependencies(
     timeout: int = 300,
     run_tests: bool = True,
     run_build: bool = True,
+    existing_project: bool = False,
 ) -> tuple[bool, bool, str]:
     """Install dependencies before a caller binds a source-tree digest.
 
@@ -5511,7 +5626,7 @@ def stabilize_node_dependencies(
     pdir = Path(project_dir)
     package_path = pdir / "package.json"
     if not package_path.is_file() or not (run_tests or run_build):
-        return (False, False, "no Node dependency phase required")
+        return (False, existing_project, "no Node dependency phase required")
     try:
         package = json.loads(package_path.read_text(encoding="utf-8")) or {}
     except (OSError, ValueError):
@@ -5524,11 +5639,14 @@ def stabilize_node_dependencies(
     scripts = package.get("scripts")
     scripts = scripts if isinstance(scripts, dict) else {}
     needs_build = run_build and any(name in scripts for name in ("build", "typecheck", "check"))
-    needs_tests = run_tests and package_declares_node_tests(package)
+    needs_tests = run_tests and (
+        bool(scripts.get("test")) if existing_project else package_declares_node_tests(package)
+    )
     if not (needs_build or needs_tests):
-        return (False, False, "no declared Node build or test command")
+        return (False, existing_project, "no declared Node build or test command")
 
     cmd_ctx = _proof_command_context(execution_backend, stack)
+    cmd_ctx.existing_project = existing_project
     cmd_ctx.docker_available = _sandbox_available(cmd_ctx, execution_backend)
     install_budget = max(120, int(timeout * 0.6))
     return _prepare_node_dependencies(
@@ -5567,7 +5685,7 @@ def _run_node_build(
     low = (stack or "").lower()
     if low not in _NODE_STACKS and not pkg_path.exists():
         return (False, False, "")
-    npm = shutil.which("npm")
+    manager, npm = _node_package_manager(pdir, cmd_ctx) if pkg_path.exists() else ("npm", shutil.which("npm"))
     use_container_names = _use_container_command_names(cmd_ctx)
     if npm is None and not use_container_names:
         return (False, False, "npm or package.json missing — build skipped")
@@ -5584,11 +5702,13 @@ def _run_node_build(
         return (True, False, "invalid npm package names: " + ", ".join(invalid_names[:8]))
     scripts = pkg.get("scripts") or {}
     build_cmd = "build" if "build" in scripts else ("typecheck" if "typecheck" in scripts else None)
+    if build_cmd is None and cmd_ctx is not None and cmd_ctx.existing_project and "check" in scripts:
+        build_cmd = "check"
     if build_cmd is None:
         return (False, False, "no build/typecheck script — skipped")
 
     env = _node_build_env(container=use_container_names)
-    npm_cmd = "npm" if use_container_names else str(npm)
+    npm_cmd = manager if use_container_names else str(npm)
     # Install (bounded). A non-zero install is a REAL, build-breaking failure
     # (ERESOLVE / E404 / ETARGET / bad name) and must fail the proof so the
     # fix-loop sees the error. ONLY a genuine connectivity failure (offline
@@ -5628,7 +5748,9 @@ def _run_node_build(
             # Only ever attempted for a recognised two-part script whose output
             # carries type diagnostics, so a genuine compile error still fails.
             compile_only = compile_only_segment(str(scripts.get(build_cmd) or ""))
-            if compile_only and _TYPE_DIAGNOSTIC_RE.search(out):
+            if compile_only and _TYPE_DIAGNOSTIC_RE.search(out) and not (
+                cmd_ctx is not None and cmd_ctx.existing_project
+            ):
                 retry = _run_proof_command(
                     cmd_ctx,
                     [npm_cmd, "exec", "--", *compile_only.split()],
@@ -5938,7 +6060,8 @@ def _run_swift_ios_build(
         return (False, False, "no .xcodeproj — native iOS build skipped")
     result = _run_proof_command(
         cmd_ctx,
-        [str(xcodebuild), "-project", project.name, "-scheme", "App", "-sdk",
+        [str(xcodebuild), "-project", project.name, "-scheme",
+         project.stem if cmd_ctx is not None and cmd_ctx.existing_project else "App", "-sdk",
          "iphonesimulator", "-destination", "generic/platform=iOS Simulator", "build"],
         cwd=pdir, timeout=timeout, env=dict(os.environ), network=False,
     )
@@ -5969,7 +6092,9 @@ def _run_swift_ios_tests(
         return (False, False, "set SKYN3T_IOS_TEST_DESTINATION to run XCTest on an installed simulator")
     result = _run_proof_command(
         cmd_ctx,
-        [str(xcodebuild), "-project", project.name, "-scheme", "App", "-destination", destination, "test"],
+        [str(xcodebuild), "-project", project.name, "-scheme",
+         project.stem if cmd_ctx is not None and cmd_ctx.existing_project else "App",
+         "-destination", destination, "test"],
         cwd=pdir, timeout=timeout, env=dict(os.environ), network=False,
     )
     if result.timed_out:

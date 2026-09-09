@@ -25,6 +25,8 @@ import {
   describeLocalReverify,
 } from "../projectReverify.js";
 import StreamStaleBanner from "../components/StreamStaleBanner.jsx";
+import ImportProjectPanel from "../components/ImportProjectPanel.jsx";
+import { canImproveProject } from "../projectImport.js";
 
 function fmtMB(bytes) {
   if (bytes == null) return "—";
@@ -336,7 +338,7 @@ function ImproveInline({ slug, stream }) {
           value={goal}
           aria-label={"Improvement goal for " + slug}
           onChange={(e) => setGoal(e.target.value)}
-          placeholder="Describe what to add or change, in plain English…"
+          placeholder="Describe a fix, refactor, feature, or redesign..."
           rows={2}
           className="flex-1 resize-none rounded border border-hairline bg-ink/60 px-3 py-2 font-mono text-xs text-bone placeholder:text-ash/50 focus:border-ember focus:outline-none"
         />
@@ -957,6 +959,7 @@ export default function Projects({ stream }) {
   const [promptsSlug, setPromptsSlug] = useState(null);
   const [deploySlug, setDeploySlug] = useState(null);
   const [feedbackSlug, setFeedbackSlug] = useState(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [busy, setBusy] = useState({}); // slug -> "serving" | "stopping"
   const [serveErr, setServeErr] = useState({}); // slug -> message
   const [reverifyState, setReverifyState] = useState({});
@@ -966,6 +969,12 @@ export default function Projects({ stream }) {
     queryKey: ["projects"],
     queryFn: queryFn("/projects"),
   });
+
+  useEffect(() => {
+    if (["improve.completed", "improve.failed"].includes(stream?.last?.type)) {
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    }
+  }, [qc, stream?.last]);
 
   const serveQuery = useQuery({
     queryKey: ["serve-status"],
@@ -1100,9 +1109,17 @@ export default function Projects({ stream }) {
       <PageHeader
         eyebrow="Foundry · Project Vault"
         title="Projects"
-        sub="Run, refine, preview, and clean up everything the foundry has built."
+        sub="Import existing projects, or run and refine what the foundry has built."
         actions={
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              className="btn-ember"
+              aria-expanded={importOpen}
+              onClick={() => setImportOpen((open) => !open)}
+            >
+              Import existing project
+            </button>
             {liveCount > 0 ? (
               <span className="badge border-plasma/40 text-plasma">
                 {liveCount} live
@@ -1116,6 +1133,13 @@ export default function Projects({ stream }) {
           </div>
         }
       />
+
+      {importOpen ? (
+        <ImportProjectPanel
+          onClose={() => setImportOpen(false)}
+          onImported={(result) => setImproveSlug(result.slug)}
+        />
+      ) : null}
 
       {error ? (
         <Panel className="mb-6 border-ember/40 p-4 text-sm text-ember">
@@ -1144,7 +1168,7 @@ export default function Projects({ stream }) {
         {isLoading ? (
           <Empty icon="≋">Loading projects…</Empty>
         ) : projects.length === 0 ? (
-          <Empty icon="▤">No projects yet. Forge a brief in Studio to get started.</Empty>
+          <Empty icon="▤">No projects yet. Import an existing project or forge a brief in Studio.</Empty>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left">
@@ -1179,6 +1203,11 @@ export default function Projects({ stream }) {
                       <tr>
                         <td className="px-4 py-2 font-mono text-xs text-bone">
                           {p.slug}
+                          {p.source?.kind === "local_import" ? (
+                            <div className="mt-1 text-[10px] text-ash/70" title={p.source.original_path}>
+                              imported copy
+                            </div>
+                          ) : null}
                         </td>
                         <td className="px-4 py-2 font-mono text-xs text-ash">
                           {p.stack || "—"}
@@ -1360,7 +1389,7 @@ export default function Projects({ stream }) {
                                   Prompts
                                 </button>
                               ) : null}
-                              {p.is_complete !== false ? (
+                              {canImproveProject(p) ? (
                                 <button
                                   onClick={() =>
                                     setImproveSlug(isImproving ? null : p.slug)

@@ -68,6 +68,7 @@ class EventType(StrEnum):
     # error, an unsatisfiable gate. Feeds the operator log + the learning
     # loop's vent-tagged lessons; never ships in code.
     CODEGEN_VENT = "codegen.vent"
+    CODEGEN_ACTIVITY = "codegen.activity"
 
     # Operator mode: improve an already-built project
     IMPROVE_STARTED = "improve.started"

@@ -234,6 +234,88 @@ The **Foundry** dashboard streams every build live: the Verify Ladder, the real
 stage plan with the agent, score, cost, and gaps per stage, a files-so-far view,
 and a live preview.
 
+### Work on a project SkyN3t did not create
+
+Import a local project, then give **Improve** a specific repair, refactor,
+feature, or redesign goal. No SkyN3t manifest or Git repository is required:
+
+```bash
+skyn3t project import "/path/to/existing-app" --name existing-app-copy
+skyn3t studio improve existing-app-copy --goal "Fix the broken search and keep the existing UI"
+skyn3t studio improve existing-app-copy --goal "Redesign the navigation while preserving the existing features"
+```
+
+In the dashboard, use **Projects → Import existing project**, enter the path
+on the machine running SkyN3t, then use **Improve** on the imported row.
+
+Import creates a separate managed copy in `Projects/<name>/`; it never edits
+the original, installs dependencies, or executes project code. Existing names
+are rejected rather than overwritten. Known credential/configuration filenames
+(including `.env*`), Git metadata, dependencies, caches, generated build output,
+and symlinks are excluded, with the exclusions recorded in the copy's manifest.
+This is filename hygiene, **not a secret-content scan**: review the copy before
+selecting a hosted AI provider, and supply required configuration separately.
+
+The imported project is explicitly **unverified**, not a successful build.
+Improve works in an isolated candidate and only delivers back to the managed
+copy after its proof passes. Factory scaffold repairs and automatic config
+generation are disabled for external projects so their existing conventions
+are preserved. Declared npm, pnpm, and Yarn workflows retain their package
+manager and existing lockfiles; native-provider SDKs and HTML template
+fragments are not forced into factory conventions. Preview/deploy stay blocked until delivery; import never sends
+changes back to the original repository or pushes them anywhere.
+
+Docker-backed Node proof currently uses Node 22, with Corepack selecting the
+declared pnpm or Yarn version. Its writable package-manager caches are reused
+between dependency installation, build, and test steps. Projects requiring a
+different Node runtime need a compatible execution environment.
+
+Stack detection reads the existing root manifests, not the improvement goal.
+Use `--stack react`, `--stack python`, `--stack nextjs`, etc. to override it.
+For monorepos, import the application subdirectory. Unrecognized stacks remain
+`unknown`, with a warning: editing support does not imply every toolchain can
+be automatically built or proven. Imports are limited to 20,000 files,
+40,000 scanned entries, and 256 MiB after exclusions. A real configured model
+backend is needed for goal-directed changes.
+
+The existing `skyn3t studio improve /absolute/project/path --goal "..."` command
+also works without a manifest, but delivers **in place**. Import is the safer
+choice when you want to keep the original untouched.
+
+### Watch SkyN3t inside Copilot CLI
+
+The project extension in `.github/extensions/skyn3t-activity/` shows a live
+activity feed in Copilot's own timeline; no Foundry browser is required.
+After adding or updating it, ask Copilot to reload its extensions.
+
+Before a long run, Copilot calls `skyn3t_activity_watch`. It returns a private,
+unique `activity_file` path. Pass that path to the normal command:
+
+```bash
+skyn3t studio improve existing-app-copy --goal "Fix search" --activity-file "$ACTIVITY_FILE"
+skyn3t studio build "A small notes app" --activity-file "$ACTIVITY_FILE"
+```
+
+Use a **new path for each run**; existing files are never overwritten. The
+feed shows actual stages, selected codegen models, supported provider tool
+and relative-file activity, elapsed time, retries, and the final outcome.
+It does not expose prompts, private reasoning, source bodies, shell command
+arguments, tool results, or exception bodies. Detail is bounded; stage and
+outcome updates continue if the detailed-activity limit is reached.
+
+`skyn3t_activity_status` reads the latest observation. `skyn3t_activity_stop`
+stops **only the feed**, not the underlying job. Bash and Copilot's normal
+task controls still own the process and its completion notification. A quiet
+feed is not proof that a job has hung, and an abruptly killed process may not
+leave a terminal record; inspect the command outcome rather than inferring
+success from silence.
+
+The flag enables Copilot's JSONL streaming mode when using a Copilot codegen
+backend (a CLI supporting `--output-format json --stream on` is required).
+Its existing wall-clock budget is preserved. Runs without the flag keep their
+previous execution behavior, and no permissions or proof/delivery gates are
+relaxed.
+
 ---
 
 ## CLI reference
@@ -242,7 +324,8 @@ and a live preview.
 | --- | --- |
 | `skyn3t start [--web] [--host H] [--port P]` | Boot the orchestrator, register agents, optionally serve the Foundry UI. |
 | `skyn3t doctor` | Readiness table: python, deps, db, llm backend, sandbox, projects-dir. |
-| `skyn3t studio build "<brief>" [--best-of N] [--no-critic] [--slug S]` | Run a build end to end; print result + artifact path. |
+| `skyn3t studio build "<brief>" [--best-of N] [--no-critic] [--slug S] [--activity-file PATH]` | Run a build end to end; optionally stream safe activity metadata. |
+| `skyn3t studio improve <slug-or-path> --goal "..." [--activity-file PATH]` | Improve, verify and deliver an existing project; optionally stream safe activity metadata. |
 | `skyn3t studio serve <slug-or-path> [--port P]` | Run a delivered project as a live loopback preview (Docker-isolated when available; hardened local fallback otherwise). |
 | `skyn3t studio share <slug-or-path> [--port P] [--no-tunnel] [--force]` | Serve locally AND expose a public URL via `cloudflared` (or localhost.run over `ssh`) — no account needed. |
 | `skyn3t deploy <slug-or-path> [--target H] [--write] [--now]` | Show the deploy plan; optionally stage artifacts or confirm a live, health-gated deploy. |

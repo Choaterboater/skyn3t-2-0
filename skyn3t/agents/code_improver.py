@@ -35,6 +35,7 @@ from skyn3t.agents.code_agent import (
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier, parse_task_model_slot
+from skyn3t.security.project_files import is_private_project_path
 from skyn3t.studio.layout_profiles import (
     LayoutProfile,
     is_valid_profile_payload,
@@ -237,7 +238,11 @@ class CodeImproverAgent(BaseAgent):
                               output={"files_improved": 0, "files": []},
                               error="no project_dir in payload")
         worktree = Path(root)
-        stack = detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
+        existing_project = p.get("existing_project") is True
+        stack = (
+            str(p.get("stack") or "unknown") if existing_project
+            else detect_stack(brief=brief, plan=p.get("plan"), explicit=p.get("stack", ""))
+        )
         knowledge = knowledge_block(p)
         payload_profile = p.get("layout_profile")
         is_stored = p.get("layout_profile_is_stored") is True
@@ -433,7 +438,7 @@ class CodeImproverAgent(BaseAgent):
                 original = target.read_text(encoding="utf-8")
                 new_content, skip_reason = await self._improve_one(
                     rel, original, brief, gaps, stack, knowledge, profile=layout_profile,
-                    repair_slot=repair_slot)
+                    repair_slot=repair_slot, existing_project=existing_project)
             elif target.exists():
                 continue  # a dir sits where a file was expected — nothing sensible to do
             else:
@@ -445,10 +450,13 @@ class CodeImproverAgent(BaseAgent):
                 new_content = await self._create_one(
                     rel, brief, gaps, stack, worktree, knowledge, profile=layout_profile,
                     repair_slot=repair_slot,
+                    existing_project=existing_project,
                 )
             if new_content and new_content.strip() and new_content != original:
                 from skyn3t.agents.validate import validate_source
-                ok, _ = validate_source(rel, new_content)
+                ok, _ = validate_source(
+                    rel, new_content, existing_project=existing_project, original=original,
+                )
                 if ok and self._preserves_html_entrypoints(rel, original, new_content):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(new_content, encoding="utf-8")
@@ -540,10 +548,23 @@ class CodeImproverAgent(BaseAgent):
         cls,
         worktree: Path,
         before: dict[str, str],
+        *,
+        existing_project: bool = False,
+        existing_paths: set[str] | None = None,
     ) -> list[str]:
         """Remove new direct-CLI writes outside the safe repair file roots."""
         removed: list[str] = []
         root = worktree.resolve()
+        original_paths = existing_paths if existing_paths is not None else set(before)
+        existing_roots = {
+            Path(rel).parts[0] for rel in original_paths
+            if len(Path(rel).parts) > 1 and not rel.startswith(".")
+        } if existing_project else set()
+        source_suffixes = {
+            ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".go", ".rs",
+            ".java", ".kt", ".cs", ".rb", ".php", ".c", ".cpp", ".h", ".swift",
+        }
+        existing_suffixes = {Path(rel).suffix for rel in original_paths} & source_suffixes
         for path in sorted(root.rglob("*"), key=lambda value: len(value.parts), reverse=True):
             try:
                 rel_path = path.relative_to(root)
@@ -552,7 +573,18 @@ class CodeImproverAgent(BaseAgent):
             if cls._SNAPSHOT_PRUNE & set(rel_path.parts):
                 continue
             rel = rel_path.as_posix()
-            if path.is_file() and rel not in before and not cls._agentic_new_path_allowed(rel):
+            in_existing_root = (
+                canonical_project_relpath(rel) == rel
+                and (
+                    rel_path.parts[0] in existing_roots
+                    or (existing_project and rel_path.suffix in existing_suffixes)
+                )
+                and not is_private_project_path(rel_path)
+            )
+            if (
+                path.is_file() and rel not in original_paths
+                and not cls._agentic_new_path_allowed(rel) and not in_existing_root
+            ):
                 try:
                     path.unlink()
                     removed.append(rel)
@@ -645,6 +677,12 @@ class CodeImproverAgent(BaseAgent):
         from skyn3t.agents.validate import validate_source
 
         before = self._snapshot(worktree)
+        # The bounded text snapshot cannot identify pre-existing binary/large assets.
+        existing_paths = {
+            path.relative_to(worktree).as_posix()
+            for path in worktree.rglob("*")
+            if not self._SNAPSHOT_PRUNE & set(path.relative_to(worktree).parts)
+        }
         prompt = self._agentic_improve_prompt(
             brief,
             gaps,
@@ -669,7 +707,10 @@ class CodeImproverAgent(BaseAgent):
             self._restore_snapshot(worktree, before)
             error = str((res or {}).get("error") or "agentic improve was not completed")
             return [], {}, False, error
-        untrusted_paths = self._prune_untrusted_agentic_new_paths(worktree, before)
+        untrusted_paths = self._prune_untrusted_agentic_new_paths(
+            worktree, before, existing_project=payload.get("existing_project") is True,
+            existing_paths=existing_paths,
+        )
         after = self._snapshot(worktree)
         improved: list[str] = []
         skipped: dict[str, str] = {
@@ -681,7 +722,10 @@ class CodeImproverAgent(BaseAgent):
             original = before.get(rel)
             if original is not None and content == original:
                 continue
-            ok, _ = validate_source(rel, content)
+            ok, _ = validate_source(
+                rel, content, existing_project=payload.get("existing_project") is True,
+                original=original or "",
+            )
             # validate_source does NOT reject chat prose, so codegen runs a
             # separate guard (CodeAgent._clean_agentic_files) and improve never
             # did. Observed shipping as a real homepage:
@@ -740,7 +784,8 @@ class CodeImproverAgent(BaseAgent):
                            gaps: list[Any], stack: str,
                            knowledge: str = "",
                            profile: LayoutProfile | None = None,
-                           repair_slot: ModelSlot | None = None) -> tuple[str, str]:
+                           repair_slot: ModelSlot | None = None,
+                           existing_project: bool = False) -> tuple[str, str]:
         """Rewrite one file toward the gaps/goal. Returns (content, skip_reason):
         content == original with a reason means the file was deliberately left
         alone (e.g. "already_satisfied") — the caller records the reason instead
@@ -765,7 +810,8 @@ class CodeImproverAgent(BaseAgent):
             # index.html must not get the web design bar.
             design_prompt = (
                 f"\n{_DESIGN_DIRECTIVE}\n"
-                if tier is Tier.UI and (stack or "").lower() != "phaser" else ""
+                if tier is Tier.UI and (stack or "").lower() != "phaser"
+                and not existing_project else ""
             )
             prompt = (
                 f"{preamble}Brief: {brief}\nFile: {rel}\nIssues to fix: {gaps}\n\n"
@@ -798,7 +844,9 @@ class CodeImproverAgent(BaseAgent):
                     return original, "already_satisfied"
                 fixed = extract_code(result.text)
                 if fixed and fixed.strip():
-                    ok, _ = validate_source(rel, fixed)
+                    ok, _ = validate_source(
+                        rel, fixed, existing_project=existing_project, original=original,
+                    )
                     if ok:
                         return fixed, ""
                 got_real_response = True
@@ -806,12 +854,15 @@ class CodeImproverAgent(BaseAgent):
                 # The model answered but never produced a valid full file even
                 # after a clean retry -- report it rather than silently no-op.
                 return original, "invalid_rewrite"
+        if existing_project:
+            return original, "backend_unavailable"
         return self._deterministic_fix(rel, original, stack), ""
 
     async def _create_one(self, rel: str, brief: str, gaps: list[Any], stack: str,
                           worktree: Path, knowledge: str = "",
                           profile: LayoutProfile | None = None,
-                          repair_slot: ModelSlot | None = None) -> str:
+                          repair_slot: ModelSlot | None = None,
+                          existing_project: bool = False) -> str:
         """Write a BRAND NEW file at `rel` that some existing file imports but that
         codegen never created. Unlike `_improve_one`, there is no deterministic
         offline fallback here — synthesizing a plausible NEW file (not just a
@@ -847,7 +898,8 @@ class CodeImproverAgent(BaseAgent):
         # A brand-new UI file must land on the same design bar as a rewritten one.
         design_prompt = (
             f"\n{_DESIGN_DIRECTIVE}\n"
-            if tier is Tier.UI and (stack or "").lower() != "phaser" else ""
+            if tier is Tier.UI and (stack or "").lower() != "phaser"
+            and not existing_project else ""
         )
         prompt = (
             f"{preamble}Brief: {brief}\nStack: {stack}\nMissing file to CREATE: {rel}\n"

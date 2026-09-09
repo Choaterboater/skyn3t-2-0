@@ -12,6 +12,7 @@ import os
 import shutil
 import stat
 import uuid
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import UTC
@@ -26,7 +27,6 @@ except ImportError:  # pragma: no cover - Windows uses the in-process lock
 
 import structlog
 
-from skyn3t.agents.stack_detector import StackDetector
 from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
@@ -44,7 +44,12 @@ from skyn3t.studio.product_spec import (
     ProductSpecV1,
     product_contract_prompt_block,
 )
-from skyn3t.studio.proof_run import apply_deterministic_repairs, proof_run
+from skyn3t.studio.project_import import detect_project_stack, is_imported_project
+from skyn3t.studio.proof_run import (
+    apply_deterministic_repairs,
+    proof_run,
+    stabilize_node_dependencies,
+)
 from skyn3t.worktree import (
     cleanup_worktree,
     create_worktree,
@@ -153,11 +158,14 @@ async def _acquire_interprocess_lock(
 
 async def _proof_run_without_blocking(
     project_dir: str,
+    *,
+    _operation: Callable[..., Any] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Run synchronous proof off-loop and never clean its tree underneath it."""
+    operation: Callable[..., Any] = _operation if _operation is not None else proof_run
     worker = asyncio.create_task(
-        asyncio.to_thread(proof_run, project_dir, **kwargs)
+        asyncio.to_thread(operation, project_dir, **kwargs)
     )
     try:
         return await asyncio.shield(worker)
@@ -717,6 +725,8 @@ class ImproveEngine:
         correlation_id: str | None,
         routing_snapshot: dict[str, Any],
     ) -> ImproveOutcome:
+        if not goal.strip():
+            raise ValueError("goal is required")
         project_dir = self._resolve_project(project)
         cid = correlation_id or uuid.uuid4().hex
         routing_summary = self._routing_summary(routing_snapshot)
@@ -732,7 +742,7 @@ class ImproveEngine:
         manifest = BuildManifest.load(project_dir)
         slug = manifest.slug if manifest else project_dir.name
         stack = (manifest.stack if manifest and manifest.stack
-                 else StackDetector.detect(project_dir))
+                 else detect_project_stack(project_dir))
         stored_layout_profile = (
             manifest.extra.get("layout_profile") if manifest is not None else None
         )
@@ -793,7 +803,12 @@ class ImproveEngine:
             stack = (
                 manifest.stack
                 if manifest and manifest.stack
-                else StackDetector.detect(project_dir)
+                else detect_project_stack(project_dir)
+            )
+            existing_project = (
+                manifest is None
+                or is_imported_project(manifest)
+                or manifest.extra.get("existing_project") is True
             )
             stored_layout_profile = (
                 manifest.extra.get("layout_profile") if manifest is not None else None
@@ -845,10 +860,19 @@ class ImproveEngine:
             )
             product_spec = ProductSpecV1.load(project_dir)
             improvement_prompt = goal
+            if existing_project:
+                improvement_prompt = (
+                    "EXISTING EXTERNAL PROJECT: inspect its current implementation before editing. "
+                    "Preserve its language, framework, package manager, public interfaces, tests "
+                    "and working behavior unless the requested change explicitly requires otherwise. "
+                    "Do not replace it with a SkyN3t scaffold, fabricate missing functionality, "
+                    "or add unrelated configuration/design files. Fix, refactor, or redesign "
+                    "only within the scope of this request:\n\n" + goal
+                )
             if product_spec is not None:
                 improvement_prompt = (
                     "IMPROVEMENT REQUEST (apply within the current product contract):\n"
-                    f"{goal}\n\n"
+                    f"{improvement_prompt}\n\n"
                     f"{product_contract_prompt_block(product_spec)}"
                 )
             if has_stored_layout_profile:
@@ -856,7 +880,10 @@ class ImproveEngine:
                     improvement_prompt,
                     layout_contract_block(profile),
                 ))
-            wt = create_worktree(str(self.settings.projects_dir), f"improve-{slug}")
+            wt = create_worktree(
+                str(self.settings.projects_dir), f"improve-{slug}",
+                use_git=not existing_project,
+            )
             # Seed the worktree with the existing project files.
             merge_back(str(project_dir), wt.dir, overwrite=True, clean=False)
             context_pack = await asyncio.to_thread(
@@ -917,8 +944,9 @@ class ImproveEngine:
                 cid,
                 layout_profile,
                 has_stored_layout_profile,
+                existing_project,
             )
-            if routing_provider and not improver_ok:
+            if (routing_provider or existing_project) and not improver_ok:
                 # An explicit codegen CLI is a provider lock. Do not run
                 # deterministic/config rewrites or deliver the unchanged
                 # worktree after its agentic invocation failed; report a clean
@@ -933,14 +961,28 @@ class ImproveEngine:
                         "delivered": 0,
                         "improver_success": False,
                         "improver_error": improver_err,
-                        "delivery_blocked": "routing_lock",
-                        "routing_locked": True,
+                        "delivery_blocked": "routing_lock" if routing_provider else "improver_failed",
+                        "routing_locked": bool(routing_provider),
                         "routing_lock_provider": routing_provider,
                         "project_preserved": True,
                         "repo_context_pack": context_pack_summary,
                         "routing_snapshot": routing_summary,
                         "layout_profile": layout_profile,
                         **({"skipped": skipped} if skipped else {}),
+                    },
+                )
+                await _emit_failed_outcome(outcome)
+                return outcome
+
+            if existing_project and not files_changed:
+                outcome = ImproveOutcome(
+                    project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,
+                    status="failed",
+                    detail={
+                        "error": "No source changes were produced. Check the model backend or refine the goal.",
+                        "delivery_blocked": "no_files_changed",
+                        "project_preserved": True,
+                        "skipped": skipped,
                     },
                 )
                 await _emit_failed_outcome(outcome)
@@ -957,7 +999,10 @@ class ImproveEngine:
             # Best-effort; never blocks a delivery.
             repairs: dict[str, Any] = {}
             try:
-                repairs = apply_deterministic_repairs(wt.dir, stack=stack)
+                # Factory repairs can scaffold imports or rewrite package scripts.
+                # External projects keep their own conventions and build configuration.
+                if not existing_project:
+                    repairs = apply_deterministic_repairs(wt.dir, stack=stack)
                 changed = {k: v for k, v in repairs.items() if v}
                 if changed:
                     await self._emit(EventType.IMPROVE_STAGE,
@@ -971,9 +1016,32 @@ class ImproveEngine:
             # it was already verified.
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "finalizing"}, cid)
-            config_summary = await self._surface_config(
-                Path(wt.dir), goal, stack, slug, cid
+            config_summary = (
+                {} if existing_project else await self._surface_config(
+                    Path(wt.dir), goal, stack, slug, cid
+                )
             )
+            if existing_project:
+                _, dependencies_ready, dependency_summary = await _proof_run_without_blocking(
+                    wt.dir, _operation=stabilize_node_dependencies,
+                    stack=stack, existing_project=True,
+                    execution_backend=getattr(self.settings, "execution_backend", "auto"),
+                    run_tests=bool(getattr(self.settings, "run_generated_tests", False)),
+                    run_build=bool(getattr(self.settings, "run_generated_build", False)),
+                    timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+                )
+                if not dependencies_ready:
+                    outcome = ImproveOutcome(
+                        project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,
+                        status="failed",
+                        detail={
+                            "error": dependency_summary,
+                            "delivery_blocked": "dependency_preparation_failed",
+                            "project_preserved": True,
+                        },
+                    )
+                    await _emit_failed_outcome(outcome)
+                    return outcome
 
             if _file_identity(
                 Path(wt.dir) / PRODUCT_SPEC_RELATIVE_PATH
@@ -1029,6 +1097,8 @@ class ImproveEngine:
                 test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
                 run_build=bool(getattr(self.settings, "run_generated_build", False)),
                 build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),
+                posture="release" if existing_project else None,
+                existing_project=existing_project,
             )
             proof_payload = proof.to_dict()
             if not proof.passed:
@@ -1694,6 +1764,7 @@ class ImproveEngine:
         cid: str,
         layout_profile: dict[str, str | int | bool],
         layout_profile_is_stored: bool,
+        existing_project: bool = False,
     ) -> tuple[list[str], bool, str, dict[str, str]]:
         task = TaskRequest(
             type="code_improver",
@@ -1703,6 +1774,7 @@ class ImproveEngine:
                      "routing_snapshot": deepcopy(routing_summary),
                      "layout_profile": dict(layout_profile),
                      "layout_profile_is_stored": layout_profile_is_stored,
+                     "existing_project": existing_project,
                      # Free-text goals get the whole-project agentic session
                      # (multi-file, can create pages); the per-file path stays
                      # the automatic fallback inside the improver.
@@ -1752,6 +1824,8 @@ class ImproveEngine:
         from datetime import datetime
 
         man = manifest or BuildManifest(slug=slug, brief="", stack=stack, status="completed")
+        if manifest is None:
+            man.extra["existing_project"] = True
         hist = man.extra.setdefault("improve_history", [])
         # `files` is the TOTAL delivered to the project dir (kept for compat);
         # `files_changed` is the honest signal — it stayed at "files: 261" while
@@ -1769,5 +1843,7 @@ class ImproveEngine:
             man.verdict = "go"
             man.files = list(delivered)
             man.extra["proof"] = proof.to_dict()
+            if is_imported_project(man) or man.extra.get("existing_project") is True:
+                man.score = float(proof.score)
         man.touch()
         man.save(project_dir)

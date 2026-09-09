@@ -199,6 +199,10 @@ def _capture_agentic_output_text(evt: dict, parts: list[str], budget: list[int])
     elif evt_type == "result":
         raw = evt.get("result")
         text = raw if isinstance(raw, str) else ""
+    elif evt_type == "assistant.message":
+        data = evt.get("data")
+        raw = data.get("content") if isinstance(data, dict) else None
+        text = raw if isinstance(raw, str) else ""
     if text:
         parts.append(_mask_agentic_text(text)[: budget[0]])
         budget[0] -= len(parts[-1])
@@ -3387,7 +3391,11 @@ class LLMClient:
         are confined to ``workdir``. Returns {ok, backend, error}. Never raises."""
         import json as _json
         import time as _t
+
+        from skyn3t.observability.activity import report_codegen_model, report_tool_activity
+
         root = Path(workdir).resolve()
+        await report_codegen_model("openrouter", model)
 
         def _safe(path: str) -> Path | None:
             return confined_path(root, str(path))
@@ -3830,6 +3838,7 @@ class LLMClient:
                                 args = _json.loads(fn.get("arguments") or "{}")
                             except ValueError:
                                 args = {}
+                            await report_tool_activity(name, args, root=root)
                             if name == "finish":
                                 finished, result = True, "OK"
                             else:
@@ -3840,6 +3849,7 @@ class LLMClient:
                                     write_tool_calls += 1
                                     batch_write_calls += 1
                                 result, changed_files = _run_tool(name, args)
+                                await report_tool_activity(name, root=root, finished=True)
                                 # Output-side secret masking: a read_file /
                                 # list_files observation can echo a credential
                                 # that reached the worktree; scrub it before the
@@ -4362,13 +4372,20 @@ class LLMClient:
             if cortex_safe and provider == "codex"
             else []
         )
+        from skyn3t.observability.activity import (
+            activity_enabled,
+            codegen_activity_scope,
+            report_codegen_model,
+        )
+
         # Stream the agent's NDJSON event log (claude/kimi) so we can detect the
         # terminal `result` event (an accurate success signal — claude -p can
         # exit 0 on a reported error) and watch for a stalled session via an idle
         # guard instead of always burning the full ceiling. Codex also emits
-        # JSONL and is validated by its process exit status. Copilot has no such
-        # mode, so it keeps the blocking path.
-        stream = provider in ("claude", "codex", "kimi")
+        # JSONL and is validated by its process exit status. Copilot's JSONL is
+        # opt-in with the operator feed; retain its existing wall-clock budget.
+        copilot_activity = provider == "copilot" and activity_enabled()
+        stream = provider in ("claude", "codex", "kimi") or copilot_activity
         # claude takes --verbose with stream-json; kimi's stream-json does not.
         stream_args = (["--output-format", "stream-json", "--verbose"] if provider == "claude"
                        else ["--output-format", "stream-json"] if provider == "kimi" else [])
@@ -4457,6 +4474,7 @@ class LLMClient:
                 cli_command, "-p", argv_prompt, "--allow-all-tools", "--no-ask-user",
                 "--no-auto-update", "--no-custom-instructions", *model_args, *nm,
                 *prompt_file_args,
+                *(["--output-format", "json", "--stream", "on"] if copilot_activity else []),
             ],
         }.get(provider, [cli_command, "-p", prompt])
         # This is deliberately a compact execution receipt, not a raw CLI log.
@@ -4503,14 +4521,13 @@ class LLMClient:
                     limit=_AGENTIC_STREAM_LIMIT,
                 )
                 cli_execution["exit_status"] = "running"
+                await report_codegen_model(provider, model)
                 if stdin_prompt and proc.stdin is not None:
                     proc.stdin.write(prompt.encode("utf-8"))
                     await proc.stdin.drain()
                     proc.stdin.close()
-                # For streaming CLIs this is an INACTIVITY fallback, not a total
-                # duration ceiling. Every stream event proves the agent is alive and
-                # resets _consume_agentic_stream's idle wait, so productive full-app
-                # builds may continue until their terminal result event.
+                # Streaming CLIs use an inactivity guard. Copilot additionally
+                # retains its existing total budget when activity is enabled.
                 if stream:
                     idle_timeout = int(
                         _resolved_agentic_idle_timeout(self.settings, agentic_timeout)
@@ -4527,7 +4544,13 @@ class LLMClient:
                     # The attempt counter rides a task-local so this call keeps
                     # its exact 3-argument contract for mocked consumers.
                     _AGENTIC_STREAM_ATTEMPT.set(stall_heals_used)
-                    ok = await self._consume_agentic_stream(proc, provider, idle_timeout)
+                    with codegen_activity_scope(workdir):
+                        consuming = self._consume_agentic_stream(proc, provider, idle_timeout)
+                        if provider == "copilot":
+                            async with asyncio.timeout(agentic_timeout):
+                                ok = await consuming
+                        else:
+                            ok = await consuming
                     observed_execution = _AGENTIC_STREAM_EVIDENCE.get()
                     if isinstance(observed_execution, dict):
                         cli_execution = observed_execution
@@ -4555,6 +4578,7 @@ class LLMClient:
                     stall_kind = str(cli_execution.get("stall_kind") or "")
                     if (
                         not ok
+                        and provider != "copilot"
                         and stall_heals_used < _STALL_MAX_HEALS
                         and stall_kind in _STALL_HEALABLE_KINDS
                     ):
@@ -4602,9 +4626,12 @@ class LLMClient:
                                     err=(err or b"").decode("utf-8", "replace")[:160])
                 break
         except TimeoutError:
-            # Copilot uses the blocking path. Its watchdog is a total timeout;
-            # streamed CLI watchdogs are recorded by the stream consumer as an
-            # idle timeout instead.
+            # Copilot retains a total timeout on both its blocking and opt-in
+            # streaming paths; stream inactivity is recorded by the consumer.
+            observed_execution = _AGENTIC_STREAM_EVIDENCE.get()
+            if isinstance(observed_execution, dict):
+                cli_execution = observed_execution
+                output_text = str(cli_execution.pop("output_text", "") or output_text)
             cli_execution["timed_out"] = True
             cli_execution["timeout_kind"] = "total"
             cli_execution["termination_reason"] = "total_timeout"
@@ -4750,6 +4777,8 @@ class LLMClient:
         keys only, so receipt consumers that predate them are unaffected. The
         heal-attempt counter rides the task-local ``_AGENTIC_STREAM_ATTEMPT``.
         """
+        from skyn3t.observability.activity import report_cli_event
+
         saw_result = False
         result_is_error = False
         events = 0
@@ -4887,6 +4916,7 @@ class LLMClient:
                         continue
                     _record_cli_execution_event(evidence, evt)
                     _capture_agentic_output_text(evt, output_parts, output_budget)
+                    await report_cli_event(evt, provider)
                     if str(evt.get("type") or "") not in _AGENTIC_LIFECYCLE_EVENT_TYPES:
                         content_events += 1
                     if evt.get("type") == "result":
@@ -4942,6 +4972,8 @@ class LLMClient:
             ok = False if timed_out else (
                 (not result_is_error) if saw_result else (returncode == 0)
             )
+            if provider == "copilot":
+                ok = ok and returncode == 0 and not stream_overrun
             evidence["ok"] = ok
             if not ok and not timed_out and not stream_overrun and not saw_result:
                 # The transport ended WITHOUT a terminal result event: the

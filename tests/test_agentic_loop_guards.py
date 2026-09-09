@@ -110,6 +110,54 @@ def test_doom_loop_not_tripped_by_varying_calls(tmp_path, monkeypatch):
     assert not any("identical tool call" in t.lower() for t in _user_texts(fake.bodies))
 
 
+def _empty_turn():
+    """A degenerate provider response: no tool call AND no text. Distinct from
+    a real text-only finish (content present, no tool_calls), which must keep
+    working exactly as before."""
+    return {"choices": [{"message": {"content": ""}}]}
+
+
+def test_empty_response_gets_nudge_then_continues(tmp_path, monkeypatch):
+    write = _tool_turn("write_file", {"path": "a.js", "content": "x"})
+    finish = _tool_turn("finish", {}, "finish")
+    fake = _RecordingClient([_empty_turn(), write, finish])
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(_client()._openrouter_agentic("build", str(tmp_path), "m", stack="phaser"))
+
+    assert res["ok"] is True
+    assert fake.i == 3
+    assert any(
+        "nothing happened" in t.lower() for t in _user_texts(fake.bodies)
+    ), _user_texts(fake.bodies)
+
+
+def test_empty_response_repeated_aborts_without_burning_full_budget(tmp_path, monkeypatch):
+    fake = _RecordingClient([_empty_turn()] * 6)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(_client()._openrouter_agentic("build", str(tmp_path), "m", stack="phaser"))
+
+    assert res["ok"] is False
+    assert "empty response" in res["error"].lower()
+    assert fake.i == 2  # one nudge, then abort -- never the full 6-turn budget
+
+
+def test_real_text_finish_still_accepted_without_nudge(tmp_path, monkeypatch):
+    # Regression: non-empty text with no tool call is a LEGITIMATE finish and
+    # must not be treated as an empty response.
+    write = _tool_turn("write_file", {"path": "a.js", "content": "x"})
+    done = {"choices": [{"message": {"content": "done, app is complete"}}]}
+    fake = _RecordingClient([write, done])
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
+
+    res = asyncio.run(_client()._openrouter_agentic("build", str(tmp_path), "m", stack="phaser"))
+
+    assert res["ok"] is True
+    assert fake.i == 2
+    assert not any("empty response" in t.lower() for t in _user_texts(fake.bodies))
+
+
 def _changed_path_churn_turns(*, offset: int = 0):
     turns = []
     for i in range(8):

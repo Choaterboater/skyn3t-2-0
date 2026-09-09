@@ -220,6 +220,8 @@ class VisualQualityLab:
             from skyn3t.studio.visual_check import VisualChecker, make_vision_fn
             from skyn3t.studio.visual_loop import visual_self_improve
 
+            default_rounds = int(getattr(self.settings, "visual_self_heal_max_rounds", 2) or 2)
+            resolved_rounds = max_rounds if max_rounds else default_rounds
             outcome = await visual_self_improve(
                 self.project_dir,
                 self.brief,
@@ -235,7 +237,7 @@ class VisualQualityLab:
                 ),
                 vision_fn=make_vision_fn(self.settings),
                 stack=self.stack,
-                max_rounds=max(1, int(max_rounds or getattr(self.settings, "visual_self_heal_max_rounds", 2))),
+                max_rounds=max(1, resolved_rounds),
                 correlation_id=identifier,
             )
             run.visual_loop = outcome.to_dict()

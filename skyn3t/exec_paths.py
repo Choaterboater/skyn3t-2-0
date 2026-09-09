@@ -87,10 +87,10 @@ def find_executable(name: str) -> str | None:
             if not directory:
                 continue
             for suffix in WINDOWS_EXEC_SUFFIXES:
-                candidate = Path(directory) / f"{text}{suffix}"
+                path_candidate = Path(directory) / f"{text}{suffix}"
                 try:
-                    if candidate.is_file():
-                        return str(candidate)
+                    if path_candidate.is_file():
+                        return str(path_candidate)
                 except OSError:  # pragma: no cover - defensive lookup
                     continue
         if text.lower() == "docker":
@@ -105,11 +105,11 @@ def find_executable(name: str) -> str | None:
             for root in roots:
                 if not root:
                     continue
-                for suffix in suffixes:
-                    candidate = Path(root).joinpath(*suffix)
+                for path_parts in suffixes:
+                    path_candidate = Path(root).joinpath(*path_parts)
                     try:
-                        if candidate.is_file():
-                            return str(candidate)
+                        if path_candidate.is_file():
+                            return str(path_candidate)
                     except OSError:  # pragma: no cover - defensive lookup
                         continue
     return None

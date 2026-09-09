@@ -29,6 +29,7 @@ from urllib.parse import urlsplit
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.events import Event, EventBus, EventType
+from skyn3t.persistence.recovery import RecoveryResult
 
 # ---------------------------------------------------------------------------
 # Optional spine collaborators. Everything here is optional so the web layer
@@ -157,6 +158,9 @@ class AppState:
         skills: Any | None = None,
         patterns: Any | None = None,
         messaging: Any | None = None,
+        recovered_checkpoint: RecoveryResult | None = None,
+        serve_start_tasks: dict[str, asyncio.Task[Any]] | None = None,
+        serve_launch_history: dict[str, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.event_bus = event_bus or EventBus()
@@ -168,6 +172,9 @@ class AppState:
         self.skills = skills
         self.patterns = patterns
         self.messaging = messaging
+        self.recovered_checkpoint = recovered_checkpoint
+        self.serve_start_tasks = serve_start_tasks
+        self.serve_launch_history = serve_launch_history
         self.ingestors: list[Any] = []
         self.max_terminal_builds = 500
         self.max_terminal_proposals = 500

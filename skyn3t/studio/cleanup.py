@@ -8,6 +8,9 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from skyn3t.process_utils import is_process_alive
+from skyn3t.worktree import worktree_owner_pid
+
 _MANIFEST = "skyn3t_manifest.json"
 _FAILED = {"failed", "pending"}
 
@@ -103,6 +106,9 @@ def scan(projects_dir, worktrees_dir, *, known_worktrees=(), active_slugs=()) ->
                 continue
             if active_prefixes and w.name.startswith(active_prefixes):
                 continue
+            owner_pid = worktree_owner_pid(w)
+            if owner_pid is not None and is_process_alive(owner_pid):
+                continue  # a live process still owns this worktree
             rep.orphaned_worktrees.append(CleanupItem(w, "no live/persisted build", _dir_size(w)))
     return rep
 

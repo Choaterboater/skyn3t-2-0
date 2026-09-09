@@ -177,6 +177,17 @@ async def status_payload(state: AppState) -> dict[str, Any]:
     return {**state.status(), "started_at": _PROCESS_STARTED, "stale_code": code_is_stale()}
 
 
+async def recovery_payload(state: AppState) -> dict[str, Any]:
+    """Read-only view of the checkpoint recovered on boot, if any.
+
+    Surfaces exactly what ``RecoveryResult.to_dict()`` already produces —
+    never reshaped or mutated — so a human/dashboard can see what a restart
+    resumed instead of it silently vanishing.
+    """
+    cp = state.recovered_checkpoint
+    return cp.to_dict() if cp is not None else {"restored": False}
+
+
 async def agents_payload(state: AppState) -> dict[str, Any]:
     return {"agents": state.agents_snapshot()}
 
@@ -4208,8 +4219,9 @@ async def stop_serve(state: AppState, slug: str) -> dict[str, Any]:
     tasks = _serve_start_tasks(state)
     task = tasks.pop(slug, None)
     cancelled_start = task is not None and not task.done()
-    if cancelled_start:
-        task.cancel()
+    if task is not None:
+        if cancelled_start:
+            task.cancel()
         try:
             await task
         except (asyncio.CancelledError, Exception):
@@ -7940,6 +7952,9 @@ def build_router(state: AppState) -> Any:
     async def _status() -> dict[str, Any]:
         return await status_payload(state)
 
+    @router.get("/recovery", dependencies=[auth])
+    async def _recovery() -> dict[str, Any]:
+        return await recovery_payload(state)
     @router.get("/bench/golden", dependencies=[auth])
     async def _bench_golden() -> dict[str, Any]:
         return await golden_bench_payload(state)

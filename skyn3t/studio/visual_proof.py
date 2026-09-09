@@ -605,14 +605,14 @@ def analyze_viewport_snapshot(
             ))
 
     text_chars = int(snapshot.get("main_text_chars") or 0)
-    controls = int(snapshot.get("visible_controls") or 0)
+    visible_controls = int(snapshot.get("visible_controls") or 0)
     media = int(snapshot.get("visible_media") or 0)
     elements = int(snapshot.get("visible_elements") or 0)
     canvas_visible = int(snapshot.get("canvas_count") or 0) > 0 and canvas_ratio > 0.02
     canvas_content = canvas_visible and (game_canvas or not readable_blank_canvas)
     substantive = (
         text_chars >= 20
-        or controls >= 2
+        or visible_controls >= 2
         or media >= 1
         or canvas_content
     )
@@ -623,7 +623,7 @@ def analyze_viewport_snapshot(
             message=f"{target} is blank or near-empty after the page settled",
             evidence={
                 "text_chars": text_chars,
-                "visible_controls": controls,
+                "visible_controls": visible_controls,
                 "visible_media": media,
                 "visible_elements": elements,
                 "canvas_visible": canvas_visible,

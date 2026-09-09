@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from skyn3t.studio.visual_design_contract import write_visual_design_contract
-
 from skyn3t.studio.visual_editor import (
     EMPTY_SHA256,
     AmbiguousSourceError,

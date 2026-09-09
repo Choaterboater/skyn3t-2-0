@@ -32,6 +32,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, Protocol
 
 from skyn3t.exec_paths import resolve_executable
+from skyn3t.working_diff import working_diff
 
 _OUTPUT_LIMIT = 64 * 1024
 _CANDIDATE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
@@ -442,6 +443,7 @@ class CandidateReport:
     candidate_sha: str = ""
     after_sha: str = ""
     changed_paths: list[str] = field(default_factory=list)
+    full_diff: str = ""
     rejected_paths: dict[str, str] = field(default_factory=dict)
     commands: list[CommandEvidence] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -466,6 +468,7 @@ class CandidateReport:
             "candidate_sha": self.candidate_sha,
             "after_sha": self.after_sha,
             "changed_paths": list(self.changed_paths),
+            "full_diff": self.full_diff,
             "rejected_paths": dict(self.rejected_paths),
             "commands": [command.to_dict() for command in self.commands],
             "errors": list(self.errors),
@@ -581,6 +584,7 @@ class CortexCandidateEngine:
 
             changed = self._changed_paths(worktree, report)
             report.changed_paths = sorted(changed)
+            report.full_diff = working_diff(worktree, scope="all").text
             report.rejected_paths = self.validate_changed_paths(changed, worktree=worktree)
             if report.rejected_paths:
                 report.status = CandidateStatus.REJECTED_PATHS
@@ -597,6 +601,7 @@ class CortexCandidateEngine:
                 report=report,
             )
             report.changed_paths = sorted(staged)
+            report.full_diff = working_diff(worktree, scope="all").text
             report.rejected_paths = self.validate_changed_paths(staged, worktree=worktree)
             if report.rejected_paths:
                 report.status = CandidateStatus.REJECTED_PATHS

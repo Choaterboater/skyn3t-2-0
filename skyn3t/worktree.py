@@ -14,14 +14,26 @@ Either way the public API is identical. Import has zero side effects.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import stat
 import subprocess
 import uuid
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from skyn3t.process_utils import is_process_alive
+
+# Sidecar marker written at the root of every worktree, recording the pid
+# (and enough git identity to reconstruct a Worktree handle) of the process
+# that created it -- lets a LATER process (a manual cleanup sweep, or the
+# next server boot) tell a still-running build's worktree apart from one
+# abandoned by a crash, without requiring a human to promise "nothing is
+# building right now" first.
+_WORKTREE_MARKER = ".skyn3t-worktree.json"
 
 # Files/dirs never copied back into a delivered project.
 _IGNORE_NAMES = frozenset(
@@ -37,6 +49,7 @@ _IGNORE_NAMES = frozenset(
         ".build",
         ".swiftpm",
         ".skyn3t-swift-module-cache",
+        _WORKTREE_MARKER,
     }
 )
 
@@ -227,13 +240,38 @@ def create_worktree(
                 timeout=60,
                 check=True,
             )
-            return Worktree(path=wt_path, slug=slug, is_git=True, branch=branch, base_repo=base)
+            wt = Worktree(path=wt_path, slug=slug, is_git=True, branch=branch, base_repo=base)
+            _stamp_owner_marker(wt)
+            return wt
         except (OSError, subprocess.SubprocessError):
             # Fall through to plain directory on any git failure.
             pass
 
     wt_path.mkdir(parents=True, exist_ok=True)
-    return Worktree(path=wt_path, slug=slug, is_git=False, base_repo=base)
+    wt = Worktree(path=wt_path, slug=slug, is_git=False, base_repo=base)
+    _stamp_owner_marker(wt)
+    return wt
+
+
+def _stamp_owner_marker(worktree: Worktree) -> None:
+    """Record the creating process's pid (+ enough to reconstruct a
+    :class:`Worktree` handle later) so a later scan/reap can tell this
+    worktree apart from one abandoned by a crash. Best-effort; a failure
+    here only means this worktree falls back to caller-supplied
+    known/active checks for GC purposes -- it must never break creation.
+    """
+    try:
+        data = {
+            "pid": os.getpid(),
+            "created_at": datetime.now(UTC).isoformat(),
+            "slug": worktree.slug,
+            "is_git": worktree.is_git,
+            "branch": worktree.branch,
+            "base_repo": str(worktree.base_repo) if worktree.base_repo else None,
+        }
+        (worktree.path / _WORKTREE_MARKER).write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        pass
 
 
 _IGNORE_NAMES_CASEFOLD = frozenset(name.casefold() for name in _IGNORE_NAMES)
@@ -693,8 +731,16 @@ def cleanup_worktree(worktree: Worktree) -> None:
     """Remove a worktree. Best-effort; never raises."""
     try:
         if worktree.is_git and worktree.base_repo is not None and _git_available():
+            # Force TWICE: a single --force only overrides a DIRTY worktree
+            # (uncommitted changes), not a LOCKED one -- git exits 128 and
+            # refuses. A locked worktree used to fall through to the manual
+            # rmtree below with git never told, leaving a phantom
+            # `git worktree list` entry (and its branch) behind forever --
+            # `worktree prune` also skips locked entries by design, so a bare
+            # prune call alone would not have fixed this.
             subprocess.run(
-                ["git", "-C", str(worktree.base_repo), "worktree", "remove", "--force", str(worktree.path)],
+                ["git", "-C", str(worktree.base_repo), "worktree", "remove",
+                 "--force", "--force", str(worktree.path)],
                 capture_output=True,
                 text=True,
                 encoding="utf-8", errors="replace",
@@ -710,5 +756,65 @@ def cleanup_worktree(worktree: Worktree) -> None:
                 )
         if worktree.path.exists():
             shutil.rmtree(worktree.path, ignore_errors=True)
+        if worktree.is_git and worktree.base_repo is not None and _git_available():
+            # Defense in depth: reconcile any OTHER failure mode (a transient
+            # git error, disk issue) that still left the directory gone but
+            # its `.git/worktrees/<name>` administrative entry behind.
+            subprocess.run(
+                ["git", "-C", str(worktree.base_repo), "worktree", "prune"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8", errors="replace",
+                timeout=30,
+            )
     except (OSError, subprocess.SubprocessError):
         pass
+
+
+def worktree_owner_pid(path: str | Path) -> int | None:
+    """Return the pid that created the worktree at ``path``, or ``None`` when
+    unknown (no marker, corrupt marker, or one predating this feature)."""
+    try:
+        data = json.loads((Path(path) / _WORKTREE_MARKER).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return None
+    pid = data.get("pid")
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return None
+    return pid
+
+
+def reap_dead_worktrees(worktrees_root: str | Path) -> int:
+    """Best-effort: remove worktrees whose creating process is confirmed dead.
+
+    Only acts on HIGH-CONFIDENCE orphans -- a marker exists AND its pid is
+    verifiably gone. A missing/unreadable marker (a legacy worktree, or one
+    predating this feature) is left alone here; the broader, human-attended
+    ``studio.cleanup`` sweep still covers that ambiguous case via ``--apply``.
+    Safe to call on every boot (mirrors
+    :meth:`~skyn3t.memory.store.MemoryStore.reconcile_orphaned_builds`).
+    Returns the number of worktrees removed. Never raises.
+    """
+    root = Path(worktrees_root)
+    if not root.is_dir():
+        return 0
+    n = 0
+    for entry in sorted(p for p in root.iterdir() if p.is_dir()):
+        pid = worktree_owner_pid(entry)
+        if pid is None or is_process_alive(pid):
+            continue
+        try:
+            data = json.loads((entry / _WORKTREE_MARKER).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeError):
+            continue
+        base_repo = data.get("base_repo")
+        wt = Worktree(
+            path=entry,
+            slug=str(data.get("slug") or entry.name),
+            is_git=bool(data.get("is_git")),
+            branch=data.get("branch"),
+            base_repo=Path(base_repo) if base_repo else None,
+        )
+        cleanup_worktree(wt)
+        n += 1
+    return n

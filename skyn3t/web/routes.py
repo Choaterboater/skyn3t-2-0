@@ -40,6 +40,7 @@ from skyn3t.process_utils import is_process_alive
 from skyn3t.security.secrets import scrub_text
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.manifest import MANIFEST_FILENAME, BuildManifest
+from skyn3t.studio.project_import import is_imported_project, project_source_summary
 from skyn3t.web.deps import (
     AppState,
     BuildRecord,
@@ -3223,6 +3224,9 @@ def _incomplete_project_row(
     raw_extra: dict[str, Any] = (
         dict(raw_extra_value) if isinstance(raw_extra_value, dict) else {}
     )
+    imported = is_imported_project(raw) and normalized == "imported" and not active
+    if imported:
+        status = delivery_state = "imported"
     local_reverify = _compact_local_reverify(raw_extra)
     summary = build_summary(raw) if raw else {}
     record_scorecard = getattr(record, "quality_scorecard", {})
@@ -3261,6 +3265,8 @@ def _incomplete_project_row(
         if status == "incomplete"
         else f"build {status} before delivery"
     )
+    if imported:
+        reason = "Imported source is unverified; use Improve with a specific goal before preview or deploy."
     can_reverify, reverify_reason = _project_reverify_eligibility(
         project,
         manifest,
@@ -3277,6 +3283,8 @@ def _incomplete_project_row(
         "build_active": active,
         "delivery_state": delivery_state,
         "is_complete": False,
+        "can_improve": imported,
+        "source": project_source_summary(raw),
         "verdict": "",
         "score": None,
         "created_at": created_at,
@@ -3309,6 +3317,16 @@ def _incomplete_project_row(
         "live_url": "",
         "deploy_check": {},
     }
+
+
+async def import_existing_project(
+    state: AppState, path: str, *, slug: str = "", stack: str = "",
+) -> dict[str, Any]:
+    from skyn3t.studio.project_import import import_project
+
+    return await asyncio.to_thread(
+        import_project, path, state.settings.projects_dir, slug=slug, stack=stack,
+    )
 
 
 async def list_projects(state: AppState) -> dict[str, Any]:
@@ -3456,6 +3474,8 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "build_active": False,
                 "delivery_state": "delivered",
                 "is_complete": True,
+                "can_improve": True,
+                "source": project_source_summary(m),
                 "verdict": verdict,
                 "score": score,
                 "created_at": m.get("created_at", ""),
@@ -5139,7 +5159,12 @@ async def improve_project(state: AppState, slug: str, goal: str) -> dict[str, An
     project = _resolve_project_dir(state, slug)
     if str(project) in _REVERIFYING_PROJECTS:
         raise ValueError("project local re-verification is still running")
-    _require_delivered_project(state, slug)
+    manifest = BuildManifest.load(project)
+    if not (
+        _manifest_is_delivered(manifest)
+        or (is_imported_project(manifest) and manifest is not None and manifest.status == "imported")
+    ):
+        raise ProjectNotDeliveredError(slug)
     if getattr(state, "orchestrator", None) is None:
         return {"accepted": False, "slug": slug, "reason": "orchestrator unavailable"}
     # Snapshot routing synchronously with the GUI submission. The background
@@ -8121,6 +8146,23 @@ def build_router(state: AppState) -> Any:
         except OSError as exc:
             # An unreadable projects_dir must not leak a 500 with internals.
             raise HTTPException(status_code=500, detail="unable to read projects directory") from exc
+
+    @router.post("/projects/import", dependencies=[auth])
+    async def _import_project(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        path, slug, stack = (body.get(key, "") for key in ("path", "slug", "stack"))
+        if not all(isinstance(value, str) for value in (path, slug, stack)) or not path.strip():
+            raise HTTPException(status_code=422, detail="path is required; path, slug and stack must be strings")
+        try:
+            return await import_existing_project(state, path, slug=slug, stack=stack)
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="source directory not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:
+            log.warning("project_import_failed", error=str(exc))
+            raise HTTPException(status_code=500, detail="unable to copy project directory") from exc
 
     @router.delete("/projects/{slug}", dependencies=[auth])
     async def _delete_project(slug: str) -> dict[str, Any]:

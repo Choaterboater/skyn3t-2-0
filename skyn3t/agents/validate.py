@@ -186,7 +186,9 @@ def looks_elided(content: str) -> bool:
     return bool(_ELISION_MARKERS.search(content))
 
 
-def validate_source(path: str, content: str) -> tuple[bool, str]:
+def validate_source(
+    path: str, content: str, *, existing_project: bool = False, original: str = "",
+) -> tuple[bool, str]:
     """Return (ok, error). ok=True when valid OR unvalidatable for this type."""
     p = path.lower()
     try:
@@ -219,10 +221,18 @@ def validate_source(path: str, content: str) -> tuple[bool, str]:
             # token-truncated rewrite loses the tail, leaving a half-page that renders
             # a blank/broken app). Case-insensitive; attribute-tolerant.
             low = content.lower()
-            if "<html" not in low and "<!doctype" not in low:
-                return False, "HTML file has no <html> root or <!doctype> declaration"
-            if "</html" not in low:
-                return False, "HTML file appears truncated (no closing </html>)"
+            document_expected = (
+                not existing_project
+                or "<html" in original.lower() or "<!doctype" in original.lower()
+                or "<html" in low or "<!doctype" in low
+            )
+            if document_expected:
+                if "<html" not in low and "<!doctype" not in low:
+                    return False, "HTML file has no <html> root or <!doctype> declaration"
+                if "</html" not in low:
+                    return False, "HTML file appears truncated (no closing </html>)"
+            elif _looks_like_prose(content) or looks_elided(content):
+                return False, "HTML fragment looks like prose or elided code"
         # Generic prose guard for any source-code file: chat prose that happens to
         # pass (or skip) the type-specific check must not ship as source.
         if p.endswith(_CODE_EXTS) and _looks_like_prose(content):
@@ -239,7 +249,7 @@ def validate_source(path: str, content: str) -> tuple[bool, str]:
                 )
         # Native-provider-LLM guard: reject `import anthropic` / ANTHROPIC_API_KEY
         # so codegen's retry regenerates the call the compliant OpenRouter way.
-        if p.endswith(_CODE_EXTS):
+        if p.endswith(_CODE_EXTS) and not existing_project:
             why = native_llm_violation(content)
             if why:
                 return False, why + "." + _OPENROUTER_FIX_HINT

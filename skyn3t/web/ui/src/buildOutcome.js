@@ -65,7 +65,9 @@ export function buildOutcome(build = {}) {
     ACTIVE_STATUSES.has(status) ||
     ACTIVE_STATUSES.has(buildStatus)
   );
+  const imported = status === "imported" || explicitDelivery === "imported";
   const explicitlyIncomplete = Boolean(
+    imported ||
     build.is_complete === false ||
     explicitDelivery === "incomplete" ||
     explicitDelivery === "building"
@@ -108,6 +110,11 @@ export function buildOutcome(build = {}) {
     detail = "in progress · not delivered yet";
     tone = "synapse";
     title = `Build status: ${rawLabel}. The build is still in progress and has not delivered an artifact yet.`;
+  } else if (imported) {
+    label = "imported";
+    detail = `unverified copy${files ? ` · ${files} files` : ""}`;
+    tone = "synapse";
+    title = "Imported from an existing local project. The original is untouched; use Improve before preview or deployment.";
   } else if (shippable) {
     label = "GO";
     detail = `delivered · ${rawLabel}`;
@@ -148,7 +155,7 @@ export function buildOutcome(build = {}) {
     status,
     buildStatus,
     verdict,
-    deliveryState: active ? "building" : delivered ? "delivered" : "incomplete",
+    deliveryState: active ? "building" : imported ? "imported" : delivered ? "delivered" : "incomplete",
     active,
     delivered,
     shippable,

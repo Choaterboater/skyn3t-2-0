@@ -622,7 +622,7 @@ def test_projects_does_not_offer_completed_app_actions_for_live_builds() -> None
     assert 'project.delivery_state === "building" ? "Building" : "Not delivered"' in projects
     assert "summarizeBuildOutcomes(projects)" in projects
     assert "canServe={p.has_serve !== false}" in projects
-    assert "p.is_complete !== false ? (" in projects
+    assert "canImproveProject(p) ? (" in projects
     assert "internal .preview excluded" in projects
 
 

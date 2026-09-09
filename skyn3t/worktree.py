@@ -42,6 +42,7 @@ _IGNORE_NAMES = frozenset(
         ".venv",
         "__pycache__",
         "node_modules",
+        ".vite",
         ".DS_Store",
         ".pytest_cache",
         ".mypy_cache",
@@ -209,11 +210,13 @@ def create_worktree(
     slug: str,
     *,
     worktrees_root: str | Path | None = None,
+    use_git: bool = True,
 ) -> Worktree:
     """Create an isolated worktree for ``slug``.
 
     Uses a real ``git worktree`` when ``base_dir`` is a git repo, otherwise a
-    plain isolated directory. Never raises for the non-git path.
+    plain isolated directory. ``use_git=False`` always starts empty, for an
+    external project that must not inherit its managed directory's Git tree.
     """
     base = Path(base_dir).resolve()
     token = uuid.uuid4().hex[:8]
@@ -229,7 +232,7 @@ def create_worktree(
     if not wt_path.resolve().is_relative_to(root.resolve()):
         raise ValueError(f"unsafe worktree slug (path traversal): {slug!r}")
 
-    if _is_git_repo(base):
+    if use_git and _is_git_repo(base):
         branch = f"skyn3t/{slug}-{token}"
         try:
             subprocess.run(

@@ -49,7 +49,7 @@ app = typer.Typer(
 )
 
 studio_app = typer.Typer(help="Run and steer brief->app builds.", no_args_is_help=True)
-project_app = typer.Typer(help="Inspect delivered projects / builds.", no_args_is_help=True)
+project_app = typer.Typer(help="Import existing projects and inspect projects / builds.", no_args_is_help=True)
 domain_app = typer.Typer(help="Ingest external knowledge (RAG corpus).", no_args_is_help=True)
 bench_app = typer.Typer(help="Benchmark/regression harness (Spec 2).", no_args_is_help=True)
 golden_bench_app = typer.Typer(
@@ -504,6 +504,9 @@ def studio_build(
     slug: str = typer.Option("", "--slug", help="Override the project slug."),
     stack: str = typer.Option("", "--stack", help="Pin the stack: react|nextjs|fastapi|static|python|express|phaser|…"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the plan confirmation and build immediately."),
+    activity_file: Annotated[
+        Path | None, typer.Option("--activity-file", help="Write safe, live JSONL activity to a new file."),
+    ] = None,
 ) -> None:
     """Show the plan (what + which stack), confirm, then run the build end to end.
 
@@ -531,9 +534,18 @@ def studio_build(
         return typer.confirm("Build this?", default=True)
 
     interactive = _sys.stdin.isatty() and not yes
-    outcome = asyncio.run(_run_build(
-        brief, best_of=best_of, no_critic=no_critic, slug=slug, stack=stack,
-        confirm=(_confirm_plan if interactive else None)))
+    from skyn3t.observability.activity import run_with_activity
+
+    try:
+        outcome = asyncio.run(run_with_activity(
+            activity_file, "build", slug,
+            lambda: _run_build(
+                brief, best_of=best_of, no_critic=no_critic, slug=slug, stack=stack,
+                confirm=(_confirm_plan if interactive else None)),
+        ))
+    except (ValueError, OSError) as exc:
+        console.print(f"Cannot start build: {exc}", style="red", markup=False)
+        raise typer.Exit(code=2) from exc
     if outcome is None:
         console.print("[red]Build pipeline unavailable (studio package missing).[/red]")
         raise typer.Exit(code=1)
@@ -1273,6 +1285,9 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, st
         return None
 
     spine = await _assemble_spine()
+    from skyn3t.observability.activity import bind_activity_bus
+
+    bind_activity_bus(spine["event_bus"])
     settings = spine["settings"]
     if no_critic:
         # Per-run override on a *copy* so we never mutate the cached
@@ -1394,6 +1409,9 @@ async def _run_improve(project: str, *, goal: str) -> dict[str, Any] | None:
     except Exception:  # noqa: BLE001 - optional studio package
         return None
     spine = await _assemble_spine()
+    from skyn3t.observability.activity import bind_activity_bus
+
+    bind_activity_bus(spine["event_bus"])
     settings = spine["settings"]
     _learning, _patterns, skills, rag = _build_intelligence(settings, spine["event_bus"], spine["memory"])
     engine = ImproveEngine(
@@ -2245,10 +2263,21 @@ def studio_shoot(
 def studio_improve(
     project: str = typer.Argument(..., help="Project slug (under Projects/) or an absolute path."),
     goal: str = typer.Option(..., "--goal", "-g", help="What to add/change, in plain English."),
+    activity_file: Annotated[
+        Path | None, typer.Option("--activity-file", help="Write safe, live JSONL activity to a new file."),
+    ] = None,
 ) -> None:
-    """Improve an already-built project toward a goal (audit -> edit -> verify -> deliver)."""
+    """Fix, refactor or redesign an existing project toward a goal, then verify and deliver."""
     console = _console()
-    outcome = asyncio.run(_run_improve(project, goal=goal))
+    from skyn3t.observability.activity import run_with_activity
+
+    try:
+        outcome = asyncio.run(run_with_activity(
+            activity_file, "improve", project, lambda: _run_improve(project, goal=goal),
+        ))
+    except (ValueError, OSError) as exc:
+        console.print(f"Cannot improve project: {exc}", style="red", markup=False)
+        raise typer.Exit(code=2) from exc
     if outcome is None:
         console.print("[red]Improve pipeline unavailable (studio package missing).[/red]")
         raise typer.Exit(code=1)
@@ -2648,13 +2677,62 @@ def _decide_build(build_id: str, *, approve: bool) -> None:
     console.print(f"Build [bold]{build_id}[/bold] [{color}]{verb}[/{color}].")
 
 
+@project_app.command("import")
+def project_import(
+    path: Annotated[
+        Path, typer.Argument(help="Local project directory to copy; original is never modified.")
+    ],
+    slug: str = typer.Option("", "--name", "--slug", help="Managed project name (default: source folder name)."),
+    stack: str = typer.Option("", "--stack", help="Override automatic stack detection, e.g. react, python, nextjs."),
+) -> None:
+    """Import an existing project into Projects/ without executing or rebuilding it."""
+    from skyn3t.config.settings import get_settings
+    from skyn3t.studio.project_import import import_project
+
+    console = _console()
+    try:
+        result = import_project(
+            path.expanduser().absolute(), get_settings().projects_dir, slug=slug, stack=stack,
+        )
+    except (ValueError, OSError) as exc:
+        console.print(f"Import failed: {exc}", style="red", markup=False)
+        raise typer.Exit(code=2) from exc
+    console.print(
+        f"Imported {result['slug']} ({result['stack']}, {result['files_count']} files, "
+        f"{len(result['skipped'])} excluded) into {result['project_dir']}",
+        style="green", markup=False,
+    )
+    for warning in result["warnings"]:
+        console.print(warning, markup=False)
+    console.print(
+        f'skyn3t studio improve {result["slug"]} --goal "describe what to fix or improve"',
+        markup=False,
+    )
+
+
 @project_app.command("list")
 def project_list(limit: int = typer.Option(20, "--limit", help="Max builds to show.")) -> None:
-    """List recent builds from memory (empty when nothing has been built)."""
+    """List managed imports and recent builds."""
+    from skyn3t.config.settings import get_settings
+    from skyn3t.studio.manifest import BuildManifest
+    from skyn3t.studio.project_import import is_imported_project
+
     console = _console()
     builds = asyncio.run(_recent_builds(limit))
+    projects_dir = Path(get_settings().projects_dir)
+    imported: list[dict[str, Any]] = []
+    if projects_dir.is_dir():
+        for directory in projects_dir.iterdir():
+            if directory.is_dir() and not directory.name.startswith("."):
+                manifest = BuildManifest.load(directory)
+                if manifest is not None and is_imported_project(manifest):
+                    imported.append(manifest.to_dict())
+    imported.sort(key=lambda item: str(item.get("updated_at", "")), reverse=True)
+    imported_slugs = {item["slug"] for item in imported}
+    builds = (imported + [item for item in builds if item.get("slug") not in imported_slugs])[:limit]
     if not builds:
-        console.print("No builds yet. Run [cyan]skyn3t studio build \"<brief>\"[/cyan].")
+        console.print("No projects yet. Use [cyan]skyn3t project import <path>[/cyan] "
+                      "or [cyan]skyn3t studio build \"<brief>\"[/cyan].")
         return
     table = _table("Recent builds", ["build_id", "slug", "stack", "status", "verdict", "score"])
     for b in builds:

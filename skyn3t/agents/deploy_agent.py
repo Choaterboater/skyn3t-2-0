@@ -35,6 +35,7 @@ from urllib.parse import urlsplit
 
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
+from skyn3t.security.project_files import is_private_project_path
 from skyn3t.security.secrets import filter_env
 
 # Provider CLIs are optional. We probe for them lazily (never at import).
@@ -422,50 +423,9 @@ def _stage_static_tree(directory: Path, source_root: Path | None = None) -> Path
         return None
 
 
-_DEPLOY_CONTEXT_PRIVATE_NAMES = frozenset({
-    ".aws",
-    ".azure",
-    ".docker",
-    ".git",
-    ".git-credentials",
-    ".kube",
-    ".netlify",
-    ".netrc",
-    ".npmrc",
-    ".pypirc",
-    ".railway",
-    ".skyn3t",
-    ".ssh",
-    ".terraform",
-    ".terraformrc",
-    ".venv",
-    ".vercel",
-    ".vault-token",
-    ".wrangler",
-    "__pycache__",
-    "application_default_credentials.json",
-    "credentials.json",
-    "id_ed25519",
-    "id_rsa",
-    "node_modules",
-    "pip.conf",
-    "pip.ini",
-    "secrets.json",
-    "skyn3t_manifest.json",
-})
-
-
 def _private_deploy_context_path(relative: Path) -> bool:
     """Exclude credentials, local state, and reproducible dependency caches."""
-    for part in relative.parts:
-        lowered = part.lower()
-        if lowered in _DEPLOY_CONTEXT_PRIVATE_NAMES or lowered.startswith(".env"):
-            return True
-        if lowered.startswith(".dev.vars"):
-            return True
-        if lowered.endswith((".pem", ".key", ".p12", ".pfx", ".jks", ".keystore")):
-            return True
-    return False
+    return is_private_project_path(relative)
 
 
 def _stage_source_tree(directory: Path, *, prefix: str = "deploy-source-") -> Path | None:

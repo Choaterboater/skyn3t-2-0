@@ -52,7 +52,7 @@ class BuildManifest:
     brief: str
     build_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     stack: str = ""
-    status: str = "pending"  # pending|running|completed|completed_no_go|failed
+    status: str = "pending"  # pending|running|imported|completed|completed_no_go|failed
     verdict: str = ""  # go|no_go
     score: float | None = None
     cost_usd: float = 0.0

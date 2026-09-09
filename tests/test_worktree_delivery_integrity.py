@@ -26,6 +26,26 @@ from skyn3t.studio.runner import StudioRunner
 from skyn3t.worktree import delivery_staging_dir, source_tree_snapshot
 
 
+@pytest.mark.parametrize("cache_dir", [".vite", "apps/web/.vite", "apps/web/.VITE"])
+def test_vite_runtime_cache_is_local_but_built_assets_remain_bound(tmp_path, cache_dir):
+    candidate = tmp_path / "candidate"
+    live = tmp_path / "live"
+    for root, cache in ((candidate, "candidate cache"), (live, "live cache")):
+        (root / cache_dir).mkdir(parents=True)
+        (root / cache_dir / "_metadata.json").write_text(cache)
+        (root / "apps/web/dist").mkdir(parents=True, exist_ok=True)
+        (root / "apps/web/dist/index.html").write_text("<h1>Built app</h1>")
+    before = worktree_mod.deliverable_tree_snapshot(candidate)
+    assert before["files"] == ["apps/web/dist/index.html"]
+    assert worktree_mod.list_files(candidate) == ["apps/web/dist/index.html"]
+
+    worktree_mod.merge_back(candidate, live, clean=True)
+    assert (live / cache_dir / "_metadata.json").read_text() == "live cache"
+    assert worktree_mod.deliverable_tree_snapshot(live)["sha256"] == before["sha256"]
+    (live / "apps/web/dist/index.html").write_text("<h1>Unverified app</h1>")
+    assert worktree_mod.deliverable_tree_snapshot(live)["sha256"] != before["sha256"]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL semantics")
 def test_delivery_staging_dir_files_do_not_carry_owner_only_acl(tmp_path):
     # Raw mkdtemp hardens the dir to an owner-only security descriptor; files

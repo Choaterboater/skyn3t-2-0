@@ -145,6 +145,29 @@ def test_improve_delivers_change_and_records_history(tmp_path):
     assert not any(p.name.startswith("improve-demo-") for p in wt_root.iterdir()) if wt_root.exists() else True
 
 
+def test_live_vite_cache_created_during_delivery_does_not_trigger_rollback(tmp_path, monkeypatch):
+    import skyn3t.studio.improve as improve_module
+
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "demo")
+    real_link = improve_module._link_snapshot_files
+
+    def link_with_live_preview_cache(source, target, snapshot):
+        real_link(source, target, snapshot)
+        if target == project:
+            cache = project / "apps/web/.vite/deps"
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / "_metadata.json").write_text('{"generatedBy":"live Vite preview"}')
+
+    monkeypatch.setattr(improve_module, "_link_snapshot_files", link_with_live_preview_cache)
+    engine = ImproveEngine(EventBus(), _FakeOrchestrator(), settings=settings)
+    outcome = asyncio.run(engine.improve("demo", "make it say improved"))
+
+    assert outcome.status == "completed", outcome.detail
+    assert (project / "main.py").read_text() == "print('improved')\n"
+    assert (project / "apps/web/.vite/deps/_metadata.json").is_file()
+
+
 def test_improve_context_includes_design_md(tmp_path):
     """Anti-drift: a delivered DESIGN.md is re-read from the project dir (the
     source of truth) and prepended to the improver's repo context."""

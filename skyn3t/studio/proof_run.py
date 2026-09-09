@@ -4226,7 +4226,7 @@ def proof_run(
         detail["reason"] = "no runnable entrypoint found"
         if "<entrypoint>" not in missing:
             missing = [*missing, "<entrypoint>"]
-    elif boot_error:
+    if boot_error:
         passed = False
         detail["boot_error"] = boot_error
 
@@ -4917,8 +4917,13 @@ def _entrypoint_check(
         if _is_python_package(pdir):
             entrypoints = vc.find_manifests(pdir)
         elif (pdir / "package.json").is_file():
-            package = json.loads((pdir / "package.json").read_text(encoding="utf-8"))
-            scripts = package.get("scripts", {}) if isinstance(package, dict) else {}
+            try:
+                package = json.loads((pdir / "package.json").read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                return ([], f"Invalid package.json: {exc}")
+            if not isinstance(package, dict):
+                return ([], "Invalid package.json: expected a JSON object")
+            scripts = package.get("scripts", {})
             if isinstance(scripts, dict) and any(
                 isinstance(scripts.get(name), str) and scripts[name].strip()
                 for name in ("build", "start", "dev", "test", "check", "typecheck")

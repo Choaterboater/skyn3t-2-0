@@ -7,6 +7,30 @@ import pytest
 import skyn3t.studio.proof_run as pr
 
 
+@pytest.mark.parametrize("package_bytes", [b"{broken", b"null", b"[]", b'"package"', b"42", b"\xff"])
+def test_external_invalid_package_returns_failed_proof_without_mutating_source(
+    tmp_path, monkeypatch, package_bytes,
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    package = project / "package.json"
+    package.write_bytes(package_bytes)
+    before = {p.name: p.read_bytes() for p in project.iterdir()}
+    monkeypatch.setattr(
+        pr, "_run_proof_command",
+        lambda *args, **kwargs: pr._ProofCommandResult(1, "", "No fixture execution"),
+    )
+
+    result = pr.proof_run(
+        project, stack="nextjs", execution_backend="inline",
+        existing_project=True, run_tests=False, run_build=True,
+    )
+
+    assert not result.passed
+    assert result.detail["boot_error"].startswith("Invalid package.json:")
+    assert {p.name: p.read_bytes() for p in project.iterdir()} == before
+
+
 @pytest.mark.parametrize("manager, lockfile, expected", [
     ("npm@10.0.0", "package-lock.json", ["npm", "ci"]),
     ("npm@10.0.0", "", ["npm", "install"]),

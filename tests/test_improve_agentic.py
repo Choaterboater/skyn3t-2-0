@@ -20,6 +20,8 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from skyn3t.agents.code_improver import (
     _AGENTIC_REPO_MAP_MAX_CHARS,
     CodeImproverAgent,
@@ -126,6 +128,35 @@ def test_agentic_improve_counts_changed_and_created_files(tmp_path):
     assert result.output["skipped"] == {}
     assert llm.complete_calls == []  # classic path not consulted
     assert (tmp_path / "app" / "tools" / "audit" / "page.jsx").read_text() == _NEW_TOOL
+
+
+@pytest.mark.parametrize(
+    "cache", [".build", ".BUILD", ".swiftpm", ".skyn3t-swift-module-cache"],
+)
+def test_agentic_improve_leaves_native_dependency_caches_intact(tmp_path, cache):
+    source = tmp_path / "Sources" / "App.swift"
+    source.parent.mkdir()
+    source.write_text("public let value = 1\n", encoding="utf-8")
+    cache_files = {
+        f"{cache}/repositories/dependency/HEAD": "ref: refs/heads/main\n",
+        f"{cache}/checkouts/dependency/Sources/Value.swift": "public let cachedValue = 42\n",
+        f"{cache}/workspace-state.json": '{"object": {"dependencies": []}}\n',
+    }
+    llm = _AgenticLLM(writes={
+        "Sources/App.swift": "public let value = 2\n",
+        **cache_files,
+    })
+
+    result = _run(
+        tmp_path, llm, goal="improve the Swift app",
+        extra={"existing_project": True, "stack": "swift"},
+    )
+
+    assert result.success
+    assert result.output["files"] == ["Sources/App.swift"]
+    assert result.output["skipped"] == {}
+    for relative, content in cache_files.items():
+        assert (tmp_path / relative).read_text(encoding="utf-8") == content
 
 
 def test_agentic_improve_reverts_broken_rewrites(tmp_path):

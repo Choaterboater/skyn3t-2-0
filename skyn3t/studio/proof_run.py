@@ -19,6 +19,8 @@ import os
 import re
 import shutil
 import sys
+import time
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -40,6 +42,7 @@ from skyn3t.persisted_write import (
     is_persisted_write_receipt_body,
 )
 from skyn3t.security.secrets import mask_secrets
+from skyn3t.studio.swift_git import SwiftGitSession, swift_git_session
 
 # Stdlib top-level names (3.10+). A local dir/stem that shadows one of these must
 # NOT make a stdlib-submodule import (os.path, email.mime.text, collections.abc)
@@ -1152,6 +1155,8 @@ class _ProofCommandContext:
     docker_available: bool = False
     warnings: list[str] = field(default_factory=list)
     existing_project: bool = False
+    swift_session: SwiftGitSession | None = None
+    swift_resources: ExitStack = field(default_factory=ExitStack)
 
 
 _NODE_SANDBOX_STACKS = {
@@ -1554,6 +1559,10 @@ def extract_error_gaps(
     # Real pytest failures (500-char tail from _run_generated_tests).
     if d.get("tests") == "failed" and d.get("test_summary"):
         gaps.append(f"TESTS FAILED — make the code satisfy these failing tests:\n{d['test_summary']}")
+    for channel in ("swift_tests", "swift_ios_tests"):
+        summary = d.get(f"{channel}_summary")
+        if d.get(channel) == "failed" and summary:
+            gaps.append(f"{channel.replace('_', ' ').upper()} FAILED — fix these failing tests:\n{summary}")
     # Opted-in Python quality check. The formatter repairs common generated
     # layout defects; anything that remains is a real source problem and should
     # reach the code-improver with Ruff's file/line diagnostics intact.
@@ -4545,9 +4554,14 @@ def proof_run(
             elif t_sum:
                 detail["node_tests_summary"] = t_sum
     finally:
-        if mock_seam is not None:
-            mock_seam.stop()
+        try:
+            if mock_seam is not None:
+                mock_seam.stop()
+        finally:
+            cmd_ctx.swift_resources.close()
 
+    if cmd_ctx.swift_session is not None:
+        detail["swift_git_compatibility"] = "proof_private_explicit_cache"
     if cmd_ctx.used_backend:
         detail["sandbox_backend"] = cmd_ctx.used_backend
         if cmd_ctx.used_backend == "docker":
@@ -5985,6 +5999,45 @@ _SWIFT_STACKS = ("swift",)
 _SWIFT_IOS_STACKS = ("swift_ios",)
 
 
+def _run_swift_command(
+    swift: str,
+    operation: str,
+    *,
+    pdir: Path,
+    timeout: int,
+    env: dict[str, str],
+    cmd_ctx: _ProofCommandContext | None,
+) -> _ProofCommandResult:
+    with ExitStack() as local_resources:
+        resources = cmd_ctx.swift_resources if cmd_ctx is not None else local_resources
+        session = cmd_ctx.swift_session if cmd_ctx is not None else None
+        started = time.monotonic()
+        result = _run_proof_command(
+            cmd_ctx, session.command(swift, operation) if session else [swift, operation],
+            cwd=pdir, timeout=timeout, env=session.env if session else env, network=True,
+        )
+        if (
+            result.returncode == 0 or result.timed_out or session is not None
+            or _use_container_command_names(cmd_ctx)
+            or "cannot use bare repository" not in result.stdout + result.stderr
+        ):
+            return result
+
+        remaining = int(timeout - (time.monotonic() - started))
+        if remaining <= 0:
+            return _ProofCommandResult(124, "", "Swift proof timed out", timed_out=True)
+        try:
+            session = resources.enter_context(swift_git_session(env))
+        except (OSError, ValueError) as exc:
+            return _ProofCommandResult(128, "", f"Swift Git compatibility unavailable: {exc}")
+        if cmd_ctx is not None:
+            cmd_ctx.swift_session = session
+        return _run_proof_command(
+            cmd_ctx, session.command(swift, operation), cwd=pdir,
+            timeout=remaining, env=session.env, network=True,
+        )
+
+
 def _run_swift_build(
     pdir: Path,
     timeout: int,
@@ -6019,9 +6072,9 @@ def _run_swift_build(
     # `swift build` resolves the package graph + compiles. The scaffold ships no
     # external SwiftPM deps (compiles offline), but allow the network in case
     # codegen adds package dependencies.
-    bld = _run_proof_command(
-        cmd_ctx, [swift_cmd, "build"], cwd=pdir, timeout=timeout, env=swift_env,
-        network=True)
+    bld = _run_swift_command(
+        swift_cmd, "build", pdir=pdir, timeout=timeout, env=swift_env, cmd_ctx=cmd_ctx,
+    )
     if bld.timed_out:
         return (True, False, f"swift build timed out after {timeout}s")
     if bld.returncode == 127:
@@ -6144,9 +6197,9 @@ def _run_swift_tests(
     except OSError:
         pass
     swift_env.setdefault("CLANG_MODULE_CACHE_PATH", str(module_cache))
-    res = _run_proof_command(
-        cmd_ctx, [swift_cmd, "test"], cwd=pdir, timeout=timeout, env=swift_env,
-        network=True)
+    res = _run_swift_command(
+        swift_cmd, "test", pdir=pdir, timeout=timeout, env=swift_env, cmd_ctx=cmd_ctx,
+    )
     if res.timed_out:
         return (True, False, "swift test timed out")
     if res.returncode == 127:

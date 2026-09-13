@@ -55,6 +55,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import psutil
 import structlog
 
 from skyn3t.adapters.provider_limits import provider_slot, resolve_provider_limit
@@ -276,7 +277,13 @@ _CLI_COMMANDS: dict[str, list[str]] = {
         "--color", "never", "--skip-git-repo-check",
     ],
     "kimi": ["kimi", "--output-format", "text"],
-    "copilot": ["copilot"],
+    # Completion stages return text; only agentic_build may edit the worktree.
+    # Keep view for image references. An empty --available-tools list does NOT
+    # disable tools in Copilot, so use an explicit read-only allowlist.
+    "copilot": [
+        "copilot", "--available-tools=view", "--no-custom-instructions", "--no-ask-user",
+        "--silent",
+    ],
 }
 # Flags whose VALUE is the prompt. These must be the last argv before the
 # prompt itself, otherwise any flag appended in between (``--model``, the
@@ -5012,14 +5019,49 @@ class LLMClient:
             _AGENTIC_STREAM_EVIDENCE.set(evidence)
 
     @staticmethod
-    async def _terminate(proc) -> None:
-        """Kill + reap a subprocess TREE so it is never orphaned.
+    def _kill_posix_cli_tree(pid: int) -> None:
+        root = psutil.Process(pid)
+        if root.ppid() != os.getpid():
+            raise RuntimeError("Refusing to terminate a CLI process no longer owned by this worker")
+        group = os.getpgid(pid)
+        pending = [root]
+        owned: list[psutil.Process] = []
+        seen: set[tuple[int, float]] = set()
+        try:
+            while pending:
+                process = pending.pop()
+                try:
+                    identity = (process.pid, process.create_time())
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    # SDK tool runners can create their own sessions. Freeze each
+                    # parent before discovering its children so it cannot fork more.
+                    process.suspend()
+                    owned.append(process)
+                    pending.extend(process.children())
+                except psutil.NoSuchProcess:
+                    continue
+        finally:
+            if group == pid and root.is_running():
+                try:
+                    os.killpg(group, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            failures: list[psutil.Error] = []
+            for process in reversed(owned):
+                try:
+                    process.kill()  # psutil checks PID reuse before signaling.
+                except psutil.NoSuchProcess:
+                    continue
+                except psutil.Error as exc:
+                    failures.append(exc)
+            if failures:
+                raise failures[0]
 
-        The CLI agents (``claude -p`` etc.) spawn children; killing only the
-        parent leaves those running. We kill the whole process group (the
-        subprocess was started with ``start_new_session=True``) and reap it under
-        a bounded wait so a stuck process can't re-hang us here.
-        """
+    @staticmethod
+    async def _terminate(proc) -> None:
+        """Stop owned CLI descendants, including tools in separate sessions."""
         if proc is None or proc.returncode is not None:
             return
         try:
@@ -5041,14 +5083,14 @@ class LLMClient:
                     proc.kill()
             else:
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
-                    proc.kill()  # fall back to single-process kill
+                    await asyncio.to_thread(LLMClient._kill_posix_cli_tree, proc.pid)
+                except psutil.NoSuchProcess:
+                    pass
             await asyncio.wait_for(proc.wait(), timeout=5)
         except (TimeoutError, ProcessLookupError):
-            pass
-        except Exception:  # noqa: BLE001
-            pass
+            log.warning("llm.cli_termination_wait_incomplete", pid=proc.pid)
+        except (OSError, psutil.Error, RuntimeError) as exc:
+            log.error("llm.cli_termination_failed", pid=proc.pid, error=str(exc))
 
     # ---- backends --------------------------------------------------------
     async def _openrouter(self, model, prompt, system, max_tokens, json_mode,

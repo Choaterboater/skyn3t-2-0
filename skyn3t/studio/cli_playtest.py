@@ -556,12 +556,19 @@ def check_cli_playtest(
         transcript_limit = max(256, min(int(max_transcript_chars), _MAX_TRANSCRIPT_CHARS))
 
         host_env = dict(os.environ)
+        try:
+            filtered_host_env = filter_env(host_env)
+            env = filter_env({**host_env, **contract.env})
+        except ValueError as exc:
+            return CliPlaytestVerdict(
+                issues=[f"invalid CLI playtest environment: {scrub_text(str(exc))}"],
+                checked={"contract": contract.source},
+            )
         sensitive_values = {
             value
             for name, value in host_env.items()
-            if value and name not in filter_env({name: value})
+            if value and filtered_host_env.get(name) != value
         }
-        env = filter_env({**host_env, **contract.env})
         env = {
             name: value
             for name, value in env.items()
@@ -569,11 +576,11 @@ def check_cli_playtest(
             and not name.upper().startswith(("LD_", "DYLD_"))
         }
         sensitive_values.update(
-            value for name, value in contract.env.items() if name not in env and value
+            value for name, value in contract.env.items() if value and env.get(name) != value
         )
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         env.setdefault("PYTHONUNBUFFERED", "1")
-        removed_env = sorted(set(contract.env) - set(env))
+        removed_env = sorted(name for name, value in contract.env.items() if env.get(name) != value)
 
         checked: dict[str, Any] = {
             "contract": contract.source,

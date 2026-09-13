@@ -202,6 +202,10 @@ the OpenRouter backend in Foundry Settings (or `SKYN3T_LLM_BACKEND=openrouter`)
 to use hosted API billing. With no signed-in CLI and no explicitly selected
 provider, SkyN3t uses its deterministic stub so the whole pipeline still runs.
 
+Copilot-backed planning, review, and other text-completion stages are restricted
+to the read-only `view` tool; they cannot edit files or delegate another build.
+Code generation and agentic repair retain their separate worktree-writing mode.
+
 Two defaults worth knowing:
 
 - **Gate posture is `lab`.** Only proof that the delivery is broken blocks a
@@ -269,6 +273,23 @@ Docker-backed Node proof currently uses Node 22, with Corepack selecting the
 declared pnpm or Yarn version. Its writable package-manager caches are reused
 between dependency installation, build, and test steps. Projects requiring a
 different Node runtime need a compatible execution environment.
+
+Native Swift proof preserves complete indexed Git safety settings while removing
+authentication overrides. If an older SwiftPM fails on implicit bare-repository
+access, proof retries in a private scratch directory with a pinned Git adapter.
+It explicitly addresses only dependency mirrors whose successful creation it
+observed; unrelated repositories and changed or aliased cache directories remain
+subject to the original Git policy. Build and tests share the private scratch
+directory, which is removed afterward. No global Git configuration is changed,
+and a toolchain containing the upstream SwiftPM fix uses the normal path without
+this retry. See the [Git/SwiftPM source research](docs/research/2026-09-12-swift-proof-git-environment.md).
+
+Improve excludes native dependency caches from source edits and leaves their
+metadata intact. Failed CLI runs print bounded, redacted build/test diagnostics
+alongside the delivery-blocking reason instead of only a failed result table.
+CLI timeout/cancellation cleanup includes descendant SDK tool runners that start
+separate process sessions, rather than killing only the writer's process group.
+This prevents those tools from continuing against a rolled-back candidate.
 
 Stack detection reads the existing root manifests, not the improvement goal.
 Use `--stack react`, `--stack python`, `--stack nextjs`, etc. to override it.

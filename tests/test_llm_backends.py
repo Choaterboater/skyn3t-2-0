@@ -839,6 +839,7 @@ async def test_copilot_agentic_build_grants_tools_without_all_paths(
     assert "--no-ask-user" in captured["argv"]
     assert "--no-auto-update" in captured["argv"]
     assert "--no-custom-instructions" in captured["argv"]
+    assert "--available-tools=view" not in captured["argv"]
     assert "--allow-all-paths" not in captured["argv"]
     assert "--allow-all-urls" not in captured["argv"]
     assert ("--model", "gpt-test") == (
@@ -1034,6 +1035,30 @@ def _cli_prompt(captured) -> str:
     if stdin:
         return stdin.decode("utf-8") if isinstance(stdin, bytes) else str(stdin)
     return captured["argv"][-1]
+
+
+@pytest.mark.parametrize("with_image", [False, True])
+async def test_copilot_completion_cannot_write_or_delegate(monkeypatch, tmp_path, with_image):
+    captured = {}
+    _install_fake_cli(monkeypatch, captured)
+    monkeypatch.setenv("COPILOT_ALLOW_ALL", "true")
+    image = tmp_path / "reference.png"
+    image.write_bytes(b"\x89PNG\r\n")
+
+    result = await _client("copilot_cli")._cli(
+        "copilot", "Return a design proposal only", "", True,
+        images=[str(image)] if with_image else None,
+    )
+
+    assert result.backend == "copilot_cli"
+    assert "--available-tools=view" in captured["argv"]
+    assert "--silent" in captured["argv"]
+    assert "--no-custom-instructions" in captured["argv"]
+    assert "--no-ask-user" in captured["argv"]
+    assert "--allow-all-tools" not in captured["argv"]
+    assert captured["argv"][-2] == "-p"
+    if with_image:
+        assert str(image) in _cli_prompt(captured)
 
 
 async def test_cli_references_image_file_path(monkeypatch):

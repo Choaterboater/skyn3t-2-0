@@ -62,3 +62,20 @@ def test_error_gaps_ignores_passed_channels():
         detail={"build": "passed", "build_summary": "ok", "tests": "skipped"},
     )
     assert r.error_gaps() == []
+
+
+def test_error_gaps_surfaces_native_swift_test_failures():
+    result = ProofResult(
+        passed=False, mode="local",
+        detail={
+            "swift_tests": "failed",
+            "swift_tests_summary": "Swift package regression failed",
+            "swift_ios_tests": "failed",
+            "swift_ios_tests_summary": "Native application regression failed",
+        },
+    )
+
+    gaps = result.error_gaps()
+
+    assert any("Swift package regression failed" in gap for gap in gaps)
+    assert any("Native application regression failed" in gap for gap in gaps)

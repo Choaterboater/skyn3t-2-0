@@ -41,6 +41,60 @@ REDACTED = "***REDACTED***"
 # because a real credential never has this literal value, so nothing leaks.
 MOCK_PROOF_VALUE = "mock-proof-key"
 
+_GIT_CONFIG_ENV = re.compile(r"GIT_CONFIG_(?:COUNT|KEY_[0-9]+|VALUE_[0-9]+)")
+_GIT_SAFE_CONFIG_KEYS = frozenset({
+    "core.autocrlf", "core.eol", "core.fsmonitor", "core.hookspath",
+    "core.longpaths", "core.pager", "credential.interactive",
+    "protocol.allow", "protocol.ext.allow", "protocol.file.allow",
+    "safe.barerepository", "safe.directory",
+})
+_MAX_GIT_CONFIG_ENTRIES = 256
+
+
+def _filtered_git_config(
+    source: Mapping[str, str],
+    *,
+    blocked: set[str],
+    kept: set[str],
+) -> dict[str, str]:
+    """Keep indexed Git overrides atomic, without forwarding authentication."""
+    if "GIT_CONFIG_COUNT" in blocked:
+        return {}
+    entries = {
+        name.upper(): value for name, value in source.items()
+        if _GIT_CONFIG_ENV.fullmatch(name.upper())
+    }
+    raw_count = entries.get("GIT_CONFIG_COUNT")
+    if raw_count is None:
+        return {}
+    if (
+        re.fullmatch(r"[0-9]{1,3}", raw_count) is None
+        or int(raw_count) > _MAX_GIT_CONFIG_ENTRIES
+    ):
+        raise ValueError("Invalid Git configuration: unsupported GIT_CONFIG_COUNT")
+
+    clean: dict[str, str] = {}
+    count = 0
+    for index in range(int(raw_count)):
+        key_name = f"GIT_CONFIG_KEY_{index}"
+        value_name = f"GIT_CONFIG_VALUE_{index}"
+        if key_name not in entries or value_name not in entries or not entries[key_name]:
+            raise ValueError(f"Invalid Git configuration: incomplete override at index {index}")
+        if key_name in blocked or value_name in blocked:
+            continue
+        key, value = entries[key_name], entries[value_name]
+        explicitly_kept = key_name in kept and value_name in kept
+        if not explicitly_kept and (
+            key.casefold() not in _GIT_SAFE_CONFIG_KEYS
+            or _value_has_credential(value)
+        ):
+            continue
+        clean[f"GIT_CONFIG_KEY_{count}"] = key
+        clean[f"GIT_CONFIG_VALUE_{count}"] = value
+        count += 1
+    clean["GIT_CONFIG_COUNT"] = str(count)
+    return clean
+
 
 def _looks_secret(name: str) -> bool:
     upper = name.upper()
@@ -137,6 +191,8 @@ def filter_env(
     Used to build the environment passed to sandboxed agent subprocesses so no
     host credentials cross the trust boundary. ``keep`` overrides detection for
     a specific allowlist; ``extra_block`` force-removes named vars.
+    Indexed Git safety overrides are retained as complete, reindexed pairs;
+    malformed groups fail explicitly instead of silently dropping Git policy.
     """
     source = dict(env if env is not None else os.environ)
     keep_upper = {k.upper() for k in keep}
@@ -144,6 +200,8 @@ def filter_env(
     clean: dict[str, str] = {}
     for name, value in source.items():
         up = name.upper()
+        if _GIT_CONFIG_ENV.fullmatch(up):
+            continue
         if up in block_upper:
             continue
         if up in keep_upper:
@@ -158,6 +216,7 @@ def filter_env(
         if _looks_secret(name) or _value_has_credential(value):
             continue
         clean[name] = value
+    clean.update(_filtered_git_config(source, blocked=block_upper, kept=keep_upper))
     return clean
 
 

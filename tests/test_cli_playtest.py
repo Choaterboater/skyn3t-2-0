@@ -199,6 +199,53 @@ def test_host_secrets_are_removed_and_never_appear_in_transcript(
     assert verdict.checked["filtered_env"] == ["SERVICE_TOKEN"]
 
 
+def test_git_environment_is_filtered_as_a_group_and_removed_values_are_redacted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    secret = "fixture-git-authentication-material"
+    entries = (
+        ("http.extraHeader", secret),
+        ("safe.bareRepository", "explicit"),
+        ("credential.interactive", "never"),
+        ("core.fsmonitor", "false"),
+    )
+    monkeypatch.setenv("GIT_CONFIG_COUNT", str(len(entries)))
+    for index, (key, value) in enumerate(entries):
+        monkeypatch.setenv(f"GIT_CONFIG_KEY_{index}", key)
+        monkeypatch.setenv(f"GIT_CONFIG_VALUE_{index}", value)
+    code = (
+        "import os\n"
+        "names = ('GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0')\n"
+        "print('git=' + ','.join(os.environ.get(name, 'missing') for name in names), flush=True)\n"
+        f"print('diagnostic={secret}', flush=True)\n"
+    )
+    contract = {
+        "version": 1,
+        "command": ["{python}", "-B", "main.py"],
+        "scenarios": [{
+            "name": "git-policy",
+            "steps": [{"expect": "git=3,safe.bareRepository,explicit"}],
+            "exit_code": 0,
+        }],
+    }
+
+    verdict = _run(_project(tmp_path, code, contract=contract))
+
+    assert verdict.ok, verdict.to_dict()
+    assert secret not in json.dumps(verdict.to_dict())
+
+
+def test_malformed_git_environment_is_an_issue_not_a_skipped_playtest(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.delenv("GIT_CONFIG_KEY_0", raising=False)
+
+    verdict = _run(_project(tmp_path, "print('not reached')\n"))
+
+    assert not verdict.ok
+    assert not verdict.skipped
+    assert any("Git configuration" in issue for issue in verdict.issues)
+
+
 def test_dangerous_host_environment_is_removed_from_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

@@ -2293,6 +2293,30 @@ def studio_improve(
     table.add_row("project", str(outcome.get("project_dir", "")))
     console.print(table)
     if outcome.get("status") != "completed":
+        from skyn3t.security.secrets import mask_secrets, scrub_text
+        from skyn3t.studio.proof_run import extract_error_gaps
+
+        detail = outcome.get("detail")
+        detail = detail if isinstance(detail, dict) else {}
+        reason = (
+            outcome.get("error") or detail.get("error")
+            or detail.get("improver_error") or detail.get("delivery_blocked")
+            or "Improve did not complete."
+        )
+        messages = [str(reason)]
+        proof = detail.get("proof")
+        if isinstance(proof, dict):
+            proof_detail = proof.get("detail")
+            syntax_errors = proof.get("syntax_errors")
+            messages.extend(extract_error_gaps(
+                proof_detail if isinstance(proof_detail, dict) else None,
+                [str(error) for error in syntax_errors] if isinstance(syntax_errors, list) else None,
+            ))
+        for message in list(dict.fromkeys(messages))[:4]:
+            console.print(
+                mask_secrets(scrub_text(message))[:2000],
+                style="red", markup=False,
+            )
         raise typer.Exit(code=2)
 
 

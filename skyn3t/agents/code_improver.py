@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -42,6 +43,7 @@ from skyn3t.studio.layout_profiles import (
     layout_contract_block,
     profile_from_payload,
 )
+from skyn3t.worktree import SOURCE_TREE_EXCLUDED_DIR_NAMES
 
 
 class _RepairSlotOverrides(TypedDict, total=False):
@@ -474,10 +476,7 @@ class CodeImproverAgent(BaseAgent):
                                   **model_used_out,
                                   "worktree_dir": str(worktree), "backend": self.llm.backend})
 
-    # Directories that are never part of an improve diff: build artifacts,
-    # dependencies, VCS state. Mirrors the agentic loop's own list_files pruning.
-    _SNAPSHOT_PRUNE = {"node_modules", ".git", ".next", "dist", "__pycache__",
-                       ".venv", "venv", "build", ".cache"}
+    _SNAPSHOT_PRUNE = SOURCE_TREE_EXCLUDED_DIR_NAMES | {"venv", ".cache"}
     _SNAPSHOT_MAX_BYTES = 1_000_000  # diffing a >1MB file is a lockfile, not code
     _AGENTIC_NEW_PATH_PREFIXES = (
         "src/", "app/", "pages/", "components/", "lib/", "utils/", "server/",
@@ -491,13 +490,23 @@ class CodeImproverAgent(BaseAgent):
         "requirements.txt", "pyproject.toml", "Dockerfile",
     })
 
+    @classmethod
+    def _snapshot_paths(cls, worktree: Path) -> Iterator[Path]:
+        for current, directories, filenames in os.walk(worktree):
+            directories[:] = sorted(
+                name for name in directories if name.casefold() not in cls._SNAPSHOT_PRUNE
+            )
+            for name in [*directories, *sorted(filenames)]:
+                if name.casefold() not in cls._SNAPSHOT_PRUNE:
+                    yield Path(current) / name
+
     def _snapshot(self, worktree: Path) -> dict[str, str]:
         """rel -> text content for every trackable file. The before/after pair
         of these is how agentic changes are detected: the tool-loop writes
         directly to disk and reports only ok/error, not a file list."""
         snap: dict[str, str] = {}
-        for f in sorted(worktree.rglob("*")):
-            if not f.is_file() or self._SNAPSHOT_PRUNE & set(f.parts):
+        for f in self._snapshot_paths(worktree):
+            if not f.is_file():
                 continue
             try:
                 if f.stat().st_size > self._SNAPSHOT_MAX_BYTES:
@@ -565,12 +574,12 @@ class CodeImproverAgent(BaseAgent):
             ".java", ".kt", ".cs", ".rb", ".php", ".c", ".cpp", ".h", ".swift",
         }
         existing_suffixes = {Path(rel).suffix for rel in original_paths} & source_suffixes
-        for path in sorted(root.rglob("*"), key=lambda value: len(value.parts), reverse=True):
+        for path in sorted(
+            cls._snapshot_paths(root), key=lambda value: len(value.parts), reverse=True,
+        ):
             try:
                 rel_path = path.relative_to(root)
             except ValueError:
-                continue
-            if cls._SNAPSHOT_PRUNE & set(rel_path.parts):
                 continue
             rel = rel_path.as_posix()
             in_existing_root = (
@@ -680,8 +689,7 @@ class CodeImproverAgent(BaseAgent):
         # The bounded text snapshot cannot identify pre-existing binary/large assets.
         existing_paths = {
             path.relative_to(worktree).as_posix()
-            for path in worktree.rglob("*")
-            if not self._SNAPSHOT_PRUNE & set(path.relative_to(worktree).parts)
+            for path in self._snapshot_paths(worktree)
         }
         prompt = self._agentic_improve_prompt(
             brief,

@@ -25,6 +25,7 @@ dependencies = [
     "structlog>=24.1",
     # Cross-platform interactive process driver for the default cli_playtest gate.
     "pexpect>=4.9",
+    "psutil>=6.1",
 ]
 
 [project.optional-dependencies]

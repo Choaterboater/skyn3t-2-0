@@ -2362,7 +2362,8 @@ class CodeAgent(BaseAgent):
     # "ignore" then re-writing it via _write_files would corrupt it.
     _SKIP_PARTS = frozenset({".git", "node_modules", "__pycache__", ".venv", ".pytest_cache", "dist", ".next", "assets"})
     _BINARY_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico",
-                              ".bmp", ".svg", ".pdf", ".woff", ".woff2", ".ttf"})
+                              ".bmp", ".svg", ".pdf", ".woff", ".woff2", ".ttf",
+                              ".zip", ".esx"})
     _AGENTIC_NEW_ROOT_FILES = frozenset({
         ".env.example", "CREDITS.md", "Dockerfile", "LICENSE", "README.md",
         "eslint.config.js", "index.css", "index.html", "main.js", "main.jsx",
@@ -2377,6 +2378,10 @@ class CodeAgent(BaseAgent):
         "utils",
     })
     _AGENTIC_ALWAYS_ALLOWED_ROOTS = frozenset({"assets", "data", "public", "test", "tests"})
+    _AGENTIC_PYTHON_INPUT_EXTS = frozenset({
+        ".py", ".pyi", ".json", ".csv", ".toml", ".yaml", ".yml", ".ini", ".cfg",
+        ".zip", ".esx",
+    })
 
     # Static decoration the model routinely PLANS and then does not write.
     # Content here is deliberately neutral and unbranded — the point is that the
@@ -2561,16 +2566,30 @@ class CodeAgent(BaseAgent):
         # plans still receive the stricter source-root policy below.
         if not expected:
             return bool(path.suffix)
-        if len(path.parts) < 2 or not path.suffix:
-            return False
-        root = path.parts[0]
-        if root not in cls._AGENTIC_SOURCE_ROOTS:
+        if not path.suffix:
             return False
         planned_roots = {
             PurePosixPath(item).parts[0]
             for item in expected
             if len(PurePosixPath(item).parts) > 1
         }
+        python_layout = bool(expected & {"pyproject.toml", "requirements.txt"}) or any(
+            PurePosixPath(item).suffix == ".py" for item in expected
+        )
+        if python_layout and path.suffix.lower() in cls._AGENTIC_PYTHON_INPUT_EXTS:
+            if len(path.parts) == 1 or path.parts[0] in {
+                "examples", "fixtures", "scripts", "tools",
+            }:
+                return True
+        if len(path.parts) < 2:
+            return False
+        root = path.parts[0]
+        # An architect-selected package name is a source root too, even when
+        # it is not one of the web layouts in the built-in root allowlist.
+        if root in planned_roots:
+            return True
+        if root not in cls._AGENTIC_SOURCE_ROOTS:
+            return False
         planned_source_roots = planned_roots & cls._AGENTIC_SOURCE_ROOTS
         return (
             root in cls._AGENTIC_ALWAYS_ALLOWED_ROOTS

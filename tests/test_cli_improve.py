@@ -5,6 +5,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+from typer.testing import CliRunner
+
 from skyn3t.cli import main as cli
 
 
@@ -36,3 +38,53 @@ def test_run_improve_returns_outcome(tmp_path, monkeypatch):
 async def _fake_spine(settings, orch, bus):
     return {"settings": settings, "event_bus": bus, "orchestrator": orch,
             "llm": None, "router": None, "memory": None}
+
+
+def test_failed_improve_prints_redacted_proof_diagnostics(monkeypatch):
+    credential = "sk-" + "f" * 32
+
+    async def failed(project, *, goal):
+        return {
+            "slug": project, "goal": goal, "status": "failed",
+            "files_changed": [], "proof_passed": False,
+            "detail": {
+                "delivery_blocked": "proof_failed",
+                "proof": {
+                    "detail": {
+                        "build": "failed",
+                        "build_summary": (
+                            "missing config key GIT_CONFIG_KEY_0\n"
+                            f"[bold]literal compiler output[/bold]\n{credential}"
+                        ),
+                    },
+                },
+            },
+        }
+
+    monkeypatch.setattr(cli, "_run_improve", failed)
+    result = CliRunner().invoke(
+        cli.app, ["studio", "improve", "demo", "--goal", "fix the Swift build"],
+    )
+
+    assert result.exit_code == 2
+    assert "proof_failed" in result.output
+    assert "missing config key GIT_CONFIG_KEY_0" in result.output
+    assert "[bold]literal compiler output[/bold]" in result.output
+    assert credential not in result.output
+
+
+def test_failed_improve_prints_snapshot_guard_reason(monkeypatch):
+    async def failed(project, *, goal):
+        return {
+            "slug": project, "goal": goal, "status": "failed",
+            "files_changed": [], "proof_passed": False,
+            "detail": {"delivery_blocked": "project_snapshot_invalid"},
+        }
+
+    monkeypatch.setattr(cli, "_run_improve", failed)
+    result = CliRunner().invoke(
+        cli.app, ["studio", "improve", "demo", "--goal", "improve performance"],
+    )
+
+    assert result.exit_code == 2
+    assert "project_snapshot_invalid" in result.output

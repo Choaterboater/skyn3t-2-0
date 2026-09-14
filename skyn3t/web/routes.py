@@ -7418,7 +7418,7 @@ async def clear_proposals(state: AppState, scope: str = "resolved") -> dict[str,
 
 async def scout_now(state: AppState, topic: str = "") -> dict[str, Any]:
     """Trigger one GitHub RepoScout pass immediately (on-demand), bypassing the
-    periodic timer. Returns how many ingest proposals it filed. Never raises."""
+    periodic timer. Returns how many ingest proposals it filed and receipt. Never raises."""
     cortex = state.cortex
     if cortex is None:
         return {"scouted": 0, "error": "cortex not running"}
@@ -7435,6 +7435,17 @@ async def scout_now(state: AppState, topic: str = "") -> dict[str, Any]:
         topic = scout._next_topic()
     topic = topic or "python cli tool"
     try:
+        if hasattr(scout, "scout_with_receipt"):
+            proposals, receipt = await scout.scout_with_receipt(topic)
+            return {
+                "scouted": len(proposals),
+                "topic": topic,
+                "source": receipt.source,
+                "outcome": receipt.outcome,
+                "reason": receipt.reason,
+                "page": receipt.page,
+                "receipt": receipt.to_dict(),
+            }
         proposals = await scout.scout(topic)
         return {"scouted": len(proposals), "topic": topic}
     except Exception as exc:  # noqa: BLE001

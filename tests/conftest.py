@@ -204,6 +204,20 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     """
     from skyn3t.config import settings as settings_mod
 
+    # Proof supplies unprefixed mock credentials; parent factory runs also
+    # export routing/settings overrides. Clear both before applying test defaults.
+    provider_variables = {
+        "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "KIMI_API_KEY",
+        "REPLICATE_API_TOKEN", "REPLICATE_MODEL", "GITHUB_TOKEN", "GH_TOKEN",
+        "FLY_API_TOKEN", "VERCEL_TOKEN", "CLOUDFLARE_API_TOKEN", "NETLIFY_AUTH_TOKEN",
+        "RAILWAY_TOKEN", "RENDER_API_KEY",
+        "OPENAI_BASE_URL", "OPENAI_API_BASE", "ANTHROPIC_BASE_URL",
+        "MOCK_LLM_BASE_URL", "OPENROUTER_BASE_URL",
+    }
+    for name in tuple(os.environ):
+        if name.startswith("SKYN3T_") or name in provider_variables:
+            monkeypatch.delenv(name, raising=False)
+
     # Runtime backend-selection tests intentionally mutate os.environ. Re-pin
     # the offline backend for every test so that mutation cannot leak into the
     # next test and make unrelated API tests depend on an installed CLI.
@@ -232,20 +246,14 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("SKYN3T_MOA_ENABLED", "false")
     monkeypatch.setenv("SKYN3T_MOA_ADVISORS", "")
     monkeypatch.setenv("SKYN3T_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SKYN3T_LOGS_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("SKYN3T_PROJECTS_DIR", str(tmp_path / "Projects"))
+    monkeypatch.setenv("SKYN3T_VECTOR_DB_PATH", str(tmp_path / "data" / "vector_db"))
     # Don't read the developer's real repo .env during tests. Settings hard-codes
     # env_file=REPO_ROOT/.env, so a locally-configured secret (replicate/github
     # token, …) otherwise bleeds in and breaks tests that assert on the DEFAULT
     # ("not configured"). Tests get config from explicit kwargs + os.environ only.
     monkeypatch.setitem(settings_mod.Settings.model_config, "env_file", None)
-    # LLM keys included: a shell-exported SKYN3T_OPENROUTER_API_KEY would flip
-    # every test's LLMClient from "stub" to a REAL paid backend (the vision-CLI
-    # cousin of this leak is fenced by _no_cli_vision above). Tests that need a
-    # key set it explicitly via monkeypatch/kwargs.
-    for _var in ("SKYN3T_REPLICATE_API_TOKEN", "SKYN3T_REPLICATE_MODEL",
-                 "SKYN3T_GITHUB_TOKEN",
-                 "SKYN3T_OPENROUTER_API_KEY", "SKYN3T_ANTHROPIC_API_KEY",
-                 "SKYN3T_OPENAI_API_KEY", "SKYN3T_KIMI_API_KEY"):
-        monkeypatch.delenv(_var, raising=False)
     settings_mod.get_settings.cache_clear()
     yield
     settings_mod.get_settings.cache_clear()

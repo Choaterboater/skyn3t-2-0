@@ -20,13 +20,15 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from skyn3t.atomic_io import atomic_write_text
+from skyn3t.github_identity import normalize_github_commit_sha
+from skyn3t.security.secrets import scrub_text
 from skyn3t.studio.product_spec import (
     BacklogRecord,
     RequirementRecord,
     ResearchSourceRecord,
 )
 
-SIMILARITY_CACHE_SCHEMA_VERSION = 1
+SIMILARITY_CACHE_SCHEMA_VERSION = 2
 DEFAULT_CACHE_TTL_SECONDS = 6 * 60 * 60
 DEFAULT_ACTIVE_WITHIN_DAYS = 3 * 365
 MAX_SOURCE_CARDS = 8
@@ -98,6 +100,7 @@ _METADATA_FIELDS = frozenset(
         "license",
         "name",
         "open_issues_count",
+        "pinned_revision",
         "pushed_at",
         "sha",
         "stargazers_count",
@@ -128,6 +131,10 @@ def _clean(value: Any, *, default: str = "") -> str:
     if not isinstance(value, str):
         return default
     return _SPACE_RE.sub(" ", value).strip()
+
+
+def _bounded_error(value: Any) -> str:
+    return _clean(scrub_text(str(value or "")))[:240]
 
 
 def _tokens(value: Any) -> list[str]:
@@ -256,6 +263,8 @@ class SourceCard:
     code_copy_allowed: bool = False
     activity_at: str = ""
     description: str = ""
+    verified: bool | None = None
+    verification_error: str | None = None
 
     def __post_init__(self) -> None:
         self.repository = _clean(self.repository)
@@ -269,6 +278,16 @@ class SourceCard:
         self.reuse_policy = (
             "patterns_allowed" if self.reuse_policy == "patterns_allowed" else "idea_only"
         )
+        self.verification_error = _bounded_error(self.verification_error) or None
+        if self.verified is not None:
+            revision = normalize_github_commit_sha(self.commit)
+            self.verified = self.verified is True and revision is not None
+            self.commit = revision or "unknown"
+        if self.verified is False:
+            self.reuse_policy = "idea_only"
+            self.verification_error = (
+                self.verification_error or "GitHub inspection did not verify an immutable revision"
+            )
         # No source-code copying is authorized, including from permissive repos.
         self.code_copy_allowed = False
         converted: list[ResearchIdea] = []
@@ -277,8 +296,16 @@ class SourceCard:
                 idea if isinstance(idea, ResearchIdea) else ResearchIdea.from_dict(idea)
             )
         self.ideas = converted
+        if self.verified is False:
+            for idea in self.ideas:
+                idea.reusable_pattern = False
         if not self.repository or not self.url or not self.retrieved_at:
             raise ValueError("source card repository, url, and retrieved_at are required")
+
+    @property
+    def pinned_revision(self) -> str | None:
+        """A resolved live pin, distinct from a legacy supplied commit hint."""
+        return normalize_github_commit_sha(self.commit) if self.verified is not None else None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -293,6 +320,9 @@ class SourceCard:
             "code_copy_allowed": False,
             "activity_at": self.activity_at,
             "description": self.description,
+            "verified": self.verified,
+            "pinned_revision": self.pinned_revision,
+            "verification_error": self.verification_error,
         }
 
     @classmethod
@@ -311,6 +341,8 @@ class SourceCard:
             code_copy_allowed=False,
             activity_at=_clean(value.get("activity_at")),
             description=_clean(value.get("description")),
+            verified=None if value.get("verified") is None else value.get("verified") is True,
+            verification_error=_bounded_error(value.get("verification_error")) or None,
         )
 
     def to_research_source(self) -> ResearchSourceRecord:
@@ -326,6 +358,9 @@ class SourceCard:
                 "activity_at": self.activity_at,
                 "score": round(self.score, 6),
                 "code_copy_allowed": False,
+                "pinned_revision": self.pinned_revision,
+                "verified": self.verified,
+                "verification_error": self.verification_error,
             },
         )
 
@@ -359,7 +394,12 @@ class SimilarityReport:
         self.cache_hit = bool(self.cache_hit)
         # This must remain false by construction. Ideas are backlog candidates.
         self.requirements_modified = False
-        self.error = _clean(self.error) or None
+        self.error = _bounded_error(self.error) or None
+        failed_sources = [source for source in self.sources if source.verified is False]
+        if failed_sources:
+            self.status = "unavailable"
+            self.cache_hit = False
+            self.error = self.error or failed_sources[0].verification_error
 
     @property
     def research_sources(self) -> list[ResearchSourceRecord]:
@@ -464,6 +504,19 @@ def _supplied_repository(
                 canonical = "readme" if material_name == "README" else material_name
                 combined[canonical] = _safe_material(source[material_name])
                 break
+    # Supplied search/offline fields cannot attest to a live inspection.
+    combined["verified"] = None
+    combined["verification_error"] = None
+    if inspection is not None and ("verified" in inspection or "pinned_revision" in inspection):
+        revision = normalize_github_commit_sha(inspection.get("pinned_revision"))
+        verified = inspection.get("verified") is True and revision is not None
+        combined["pinned_revision"] = revision
+        combined["verified"] = verified
+        if not verified:
+            combined["verification_error"] = (
+                _bounded_error(inspection.get("error"))
+                or "GitHub inspection did not verify an immutable revision"
+            )
     return combined
 
 
@@ -745,6 +798,8 @@ class SimilarityScout:
             report = SimilarityReport.from_dict(report_value)
         except (TypeError, ValueError):
             return None
+        if report.status != "ok":
+            return None
         self._memory_cache[key] = (cached_at, report)
         return SimilarityReport.from_dict(report.to_dict())
 
@@ -843,7 +898,7 @@ class SimilarityScout:
                 results = await self._search(query)
                 successful_searches += 1
             except Exception as exc:  # noqa: BLE001 - transport failure is reported.
-                errors.append(str(exc) or exc.__class__.__name__)
+                errors.append(_bounded_error(exc) or exc.__class__.__name__)
                 continue
             for raw in results:
                 if not isinstance(raw, Mapping):
@@ -873,6 +928,7 @@ class SimilarityScout:
             )
 
         supplied: list[dict[str, Any]] = []
+        inspection_failed = False
         for raw in candidates.values():
             metadata_only = _supplied_repository(raw, None)
             if not _repository_name(metadata_only) or not _repository_url(metadata_only):
@@ -887,8 +943,15 @@ class SimilarityScout:
             try:
                 inspection_value = await self._inspect(raw)
             except Exception as exc:  # noqa: BLE001 - one repo must not fail research.
-                errors.append(str(exc) or exc.__class__.__name__)
+                inspection_value = {
+                    "verified": False,
+                    "pinned_revision": None,
+                    "error": _bounded_error(exc) or exc.__class__.__name__,
+                }
             combined = _supplied_repository(raw, inspection_value)
+            if combined.get("verified") is False:
+                inspection_failed = True
+                errors.append(combined["verification_error"])
             if _is_active(
                 combined,
                 now=now,
@@ -926,6 +989,8 @@ class SimilarityScout:
         for score, repo in scored[: self.max_results]:
             license_name = normalize_license(repo.get("license"))
             reuse_policy = license_reuse_policy(license_name)
+            verification = repo.get("verified")
+            verified = verification if isinstance(verification, bool) else None
             commit = _clean(
                 repo.get("commit_sha")
                 or repo.get("default_branch_sha")
@@ -934,6 +999,10 @@ class SimilarityScout:
                 or repo.get("commit"),
                 default="unknown",
             )
+            if verified is not None:
+                commit = normalize_github_commit_sha(repo.get("pinned_revision")) or "unknown"
+            if verified is False:
+                reuse_policy = "idea_only"
             activity = _activity_time(repo)
             source_cards.append(
                 SourceCard(
@@ -948,6 +1017,8 @@ class SimilarityScout:
                     code_copy_allowed=False,
                     activity_at=activity.isoformat() if activity else "",
                     description=_clean(repo.get("description")),
+                    verified=verified,
+                    verification_error=repo.get("verification_error"),
                 )
             )
 
@@ -969,12 +1040,15 @@ class SimilarityScout:
                         "license": card.license,
                         "reuse_policy": card.reuse_policy,
                         "code_copy_allowed": False,
+                        "pinned_revision": card.pinned_revision,
+                        "verified": card.verified,
+                        "verification_error": card.verification_error,
                     },
                 )
                 backlog_by_id.setdefault(item.id, item)
 
         report = SimilarityReport(
-            status="ok",
+            status="unavailable" if inspection_failed else "ok",
             queries=queries,
             sources=source_cards,
             backlog=list(backlog_by_id.values()),
@@ -983,5 +1057,6 @@ class SimilarityScout:
             requirements_modified=False,
             error="; ".join(dict.fromkeys(errors)) or None,
         )
-        self._write_cache(key, report, now=now)
+        if report.status == "ok":
+            self._write_cache(key, report, now=now)
         return report

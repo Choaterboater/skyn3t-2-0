@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 
 # Source-code extensions a generated file is expected to be CODE for. A model
 # that replies with chat prose instead of code must not ship as one of these.
@@ -165,25 +166,40 @@ _ELISION_MARKERS = re.compile(
 )
 
 
-def elided_code_violation(content: str) -> str:
+def _elision_context(content: str, match: re.Match[str]) -> str:
+    start = content.rfind("\n", 0, match.start()) + 1
+    end = content.find("\n", match.end())
+    return content[start:end if end >= 0 else len(content)]
+
+
+def elided_code_violation(content: str, *, original: str | None = None) -> str:
     """Reason string if ``content`` elides its body with an edit-style 'unchanged'
     / 'existing code' placeholder (a non-functional stub); '' when complete.
 
     High-precision: only the ellipsis-paired elision idioms and explicit
     "rest of the file ... unchanged" / "unchanged from the original" phrases
     match, so legitimate complete code (rest/spread operators, incidental
-    'unchanged' comments) is never flagged."""
-    m = _ELISION_MARKERS.search(content)
-    if m:
-        return f"elides code with an edit-style placeholder ({m.group(0).strip()!r}); the file is an incomplete stub"
+    'unchanged' comments) is never flagged. Existing-project edits may preserve
+    markers on unchanged lines; extra occurrences or changed contexts still fail.
+    """
+    preserved = Counter(
+        _elision_context(original, match)
+        for match in _ELISION_MARKERS.finditer(original)
+    ) if original is not None else Counter()
+    for match in _ELISION_MARKERS.finditer(content):
+        context = _elision_context(content, match)
+        if preserved[context]:
+            preserved[context] -= 1
+            continue
+        return f"elides code with an edit-style placeholder ({match.group(0).strip()!r}); the file is an incomplete stub"
     return ""
 
 
-def looks_elided(content: str) -> bool:
+def looks_elided(content: str, *, original: str | None = None) -> bool:
     """True when ``content`` is a code file whose body was elided with an
     edit-style 'unchanged'/'existing code' placeholder. Thin bool wrapper over
     :func:`elided_code_violation`."""
-    return bool(_ELISION_MARKERS.search(content))
+    return bool(elided_code_violation(content, original=original))
 
 
 def validate_source(
@@ -231,7 +247,9 @@ def validate_source(
                     return False, "HTML file has no <html> root or <!doctype> declaration"
                 if "</html" not in low:
                     return False, "HTML file appears truncated (no closing </html>)"
-            elif _looks_like_prose(content) or looks_elided(content):
+            elif _looks_like_prose(content) or looks_elided(
+                content, original=original if existing_project else None
+            ):
                 return False, "HTML fragment looks like prose or elided code"
         # Generic prose guard for any source-code file: chat prose that happens to
         # pass (or skip) the type-specific check must not ship as source.
@@ -241,8 +259,15 @@ def validate_source(
         # a non-functional stub (there is no original to be unchanged from) — reject
         # so codegen's retry rewrites the file IN FULL.
         if p.endswith(_CODE_EXTS):
-            why = elided_code_violation(content)
+            why = elided_code_violation(
+                content, original=original if existing_project else None
+            )
             if why:
+                if existing_project:
+                    return False, (
+                        why + ". Write the COMPLETE edited file; do not replace "
+                        "implementation with new placeholders."
+                    )
                 return False, (
                     why + ". Write the COMPLETE file from scratch — implement every "
                     "function and class body in full; there is no pre-existing version."

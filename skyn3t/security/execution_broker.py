@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -50,7 +51,7 @@ from pathlib import Path
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.security.audit import AuditLog
 from skyn3t.security.sandbox import SandboxRunner
-from skyn3t.security.secrets import SecretsStore
+from skyn3t.security.secrets import SecretsStore, mask_secrets, scrub_text
 
 
 class SecurityProfile(StrEnum):
@@ -140,8 +141,11 @@ class ExecutionBroker:
         stack: str | None = None,
         actor: str = "system",
     ) -> ExecutionReceipt:
-        """Run ``spec`` — a shell command line, e.g. ``shlex.join(argv)`` or
+        """Run ``spec`` — a quoted command line, e.g. ``shlex.join(argv)`` or
         ``shlex.join([python, "-c", code])`` — against ``cwd``.
+
+        Parse the quoted command into argv for both backends; never execute it
+        through a host shell. Shell operators remain literal arguments.
 
         Synchronous by design: both call sites are async agents that already
         offload this through ``asyncio.to_thread`` (``SandboxRunner`` itself
@@ -158,16 +162,20 @@ class ExecutionBroker:
         del profile  # only one profile exists today; kept for call-site stability
         env = {**os.environ, **(secrets or {})}
         try:
+            argv = shlex.split(spec)
+            if not argv:
+                raise ValueError("command must not be empty")
             result = asyncio.run(
                 self.sandbox.run(
-                    spec, cwd=Path(cwd), timeout=timeout,
+                    argv, cwd=Path(cwd), timeout=timeout,
                     stack=stack, env=env, network=network,
                 )
             )
         except Exception as exc:  # noqa: BLE001 - a broker bug must degrade, not crash the caller
+            error = mask_secrets(scrub_text(f"execution broker error: {exc}", self.secrets))
             receipt = ExecutionReceipt(
-                disposition=Disposition.ERROR, exit_code=None, stdout="", stderr="",
-                backend="", duration_ms=0.0, warning=f"execution broker error: {exc}",
+                disposition=Disposition.ERROR, exit_code=None, stdout="", stderr=error,
+                backend="", duration_ms=0.0, warning=error,
             )
             self._audit(spec, cwd=cwd, actor=actor, receipt=receipt)
             return receipt

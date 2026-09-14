@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiPost } from "../api.js";
+import { scoutFeedback } from "../scoutFeedback.js";
 import { PageHeader, Panel, PanelHead, Stat, Pill, Empty } from "../components/ui.jsx";
 
 export default function Cortex() {
@@ -33,6 +34,9 @@ export default function Cortex() {
     mutationFn: () => apiPost("/cortex/scout", {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["proposals"] }),
   });
+  const scoutNotice = scout.isPending ? null : scout.isError
+    ? { tone: "error", message: `Scout failed: ${String(scout.error?.message || "request could not be completed").slice(0, 240)}` }
+    : scoutFeedback(scout.data);
 
   const { data: candidateData, error: candidateError } = useQuery({
     queryKey: ["cortex-candidates"],
@@ -169,7 +173,7 @@ export default function Cortex() {
               onClick={() => scout.mutate()}
               disabled={scout.isPending}
               className="btn-ember disabled:opacity-50"
-              title="Scout GitHub now for repos to ingest (files gated proposals)"
+              title="Research GitHub now; offline or degraded outcomes are reported"
             >
               {scout.isPending ? "Scouting…" : "Scout now"}
             </button>
@@ -214,6 +218,22 @@ export default function Cortex() {
           </div>
         }
       />
+
+      {scoutNotice ? (
+        <Panel className={`mb-6 p-4 text-sm ${
+          scoutNotice.tone === "error" ? "border-ember/40 text-ember"
+            : scoutNotice.tone === "warning" ? "border-amber-400/40 text-amber-300"
+              : scoutNotice.tone === "success" ? "border-emerald-400/40 text-emerald-300"
+                : "border-hairline text-ash"
+        }`}>
+          <div
+            role={scoutNotice.tone === "error" ? "alert" : "status"}
+            aria-label="GitHub scout result"
+          >
+            {scoutNotice.message}
+          </div>
+        </Panel>
+      ) : null}
 
       {error ? (
         <Panel className="mb-6 border-ember/40 p-4 text-sm text-ember">

@@ -7,6 +7,9 @@ import base64
 import sys
 from types import SimpleNamespace
 
+import httpx
+import pytest
+
 import skyn3t.agents.github_fetch as gh
 from skyn3t.cortex.handlers import HandlerRegistry
 from skyn3t.cortex.proposal_store import Proposal, ProposalType
@@ -371,6 +374,7 @@ def test_fetch_evidence_records_only_github_supplied_commit_and_license(monkeypa
         _FetchResponse(
             200,
             {
+                "full_name": "acme/example",
                 "description": "An example.",
                 "language": "Python",
                 "stargazers_count": 7,
@@ -386,7 +390,7 @@ def test_fetch_evidence_records_only_github_supplied_commit_and_license(monkeypa
         ),
         _FetchResponse(200, {"tree": []}),
     ]
-    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=_FetchClient))
+    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=_FetchClient, HTTPError=httpx.HTTPError))
 
     evidence = asyncio.run(gh.fetch_github_repo_evidence("https://github.com/acme/example"))
 
@@ -397,6 +401,7 @@ def test_fetch_evidence_records_only_github_supplied_commit_and_license(monkeypa
     assert evidence.license == "MIT"
     assert "Revision: " + _PINNED_SHA in evidence.text
     assert "Source path: docs/README.md" in evidence.text
+    assert _FetchClient.calls[2][0].endswith(f"readme?ref={_PINNED_SHA}")
     assert len(_FetchClient.calls) == 4
 
 
@@ -407,7 +412,7 @@ def test_fetch_evidence_collects_only_bounded_safe_markdown_at_the_pinned_revisi
     ).decode("ascii")
     _FetchClient.calls = []
     _FetchClient.responses = [
-        _FetchResponse(200, {"default_branch": "main"}),
+        _FetchResponse(200, {"full_name": "acme/example", "default_branch": "main"}),
         _FetchResponse(200, {"sha": _PINNED_SHA}),
         _FetchResponse(200, {"path": "README.md", "encoding": "base64", "content": readme}),
         _FetchResponse(
@@ -427,7 +432,7 @@ def test_fetch_evidence_collects_only_bounded_safe_markdown_at_the_pinned_revisi
             {"path": "docs/guide.md", "encoding": "base64", "content": guide},
         ),
     ]
-    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=_FetchClient))
+    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=_FetchClient, HTTPError=httpx.HTTPError))
 
     evidence = asyncio.run(gh.fetch_github_repo_evidence("https://github.com/acme/example"))
 
@@ -442,11 +447,11 @@ def test_fetch_evidence_never_uses_a_branch_name_as_a_pin(monkeypatch):
     encoded = base64.b64encode(b"# Example\n").decode("ascii")
     _FetchClient.calls = []
     _FetchClient.responses = [
-        _FetchResponse(200, {"default_branch": "main", "license": {"spdx_id": "NOASSERTION"}}),
+        _FetchResponse(200, {"full_name": "acme/example", "default_branch": "main", "license": {"spdx_id": "NOASSERTION"}}),
         _FetchResponse(200, {"sha": "main"}),
         _FetchResponse(200, {"path": "README.md", "encoding": "base64", "content": encoded}),
     ]
-    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=_FetchClient))
+    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(AsyncClient=_FetchClient, HTTPError=httpx.HTTPError))
 
     evidence = asyncio.run(gh.fetch_github_repo_evidence("https://github.com/acme/example"))
 
@@ -459,6 +464,173 @@ def test_fetch_evidence_never_uses_a_branch_name_as_a_pin(monkeypatch):
 
 def test_fetch_non_github_returns_none():
     assert asyncio.run(gh.fetch_github_repo_text("https://example.com/x/y")) is None
+
+
+def test_transferred_repo_raw_readme_and_docs_keep_canonical_pin_through_ingest(
+    tmp_path, monkeypatch,
+):
+    alias = "former/example"
+    canonical = "acme/renamed"
+    canonical_url = f"https://github.com/{canonical}"
+    root = f"/repos/{canonical}"
+    branch_sha = _PINNED_SHA
+    calls: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal branch_sha
+        calls.append(request)
+        path = request.url.path
+        if path == f"/repos/{alias}":
+            return httpx.Response(301, headers={"Location": f"https://api.github.com{root}"})
+        if path == root:
+            return httpx.Response(200, json={
+                "full_name": canonical,
+                "default_branch": "main",
+                "description": "Repeatable verification workflows",
+                "license": {"spdx_id": "MIT"},
+                "language": "Python",
+            })
+        if path == f"{root}/commits/main":
+            resolved = branch_sha
+            branch_sha = "b" * 40
+            return httpx.Response(200, json={"sha": resolved})
+        if path == f"{root}/readme":
+            assert request.url.params["ref"] == _PINNED_SHA
+            if request.headers["Accept"] == "application/vnd.github.raw":
+                return httpx.Response(200, text=_RICH_TEXT)
+            return httpx.Response(200, json={"path": "README.md", "encoding": "none"})
+        if path == f"{root}/git/trees/{_PINNED_SHA}":
+            assert request.url.params["recursive"] == "1"
+            return httpx.Response(200, json={"tree": [
+                {"path": "README.md", "type": "blob", "size": 100},
+                {"path": "docs/testing.md", "type": "blob", "size": 1000},
+            ]})
+        if path == f"{root}/contents/docs/testing.md":
+            assert request.url.params["ref"] == _PINNED_SHA
+            return httpx.Response(200, json={
+                "path": "docs/testing.md",
+                "encoding": "base64",
+                "content": base64.b64encode(_DOC_TEXT.encode()).decode("ascii"),
+            })
+        return httpx.Response(404)
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    monkeypatch.setattr(gh, "resolve_github_token", lambda: "test-token")
+    rag = _FakeRag(n=1)
+    skills = SkillLibrary(tmp_path / "skills")
+    registry = HandlerRegistry(rag=rag, skills=skills)
+
+    result = asyncio.run(registry.apply(_prop({
+        "url": f"https://github.com/{alias}", "language": "Python",
+    })))
+
+    assert result["applied"] is True
+    assert result["ingested"] == 2
+    assert result["source"] == canonical_url
+    assert rag.calls[0][1] == canonical_url
+    assert rag.calls[1][1] == f"{canonical_url}/blob/{_PINNED_SHA}/docs/testing.md"
+    assert all(call[3]["source_url"] == canonical_url for call in rag.calls)
+    assert all(call[3]["pinned_revision"] == _PINNED_SHA for call in rag.calls)
+    assert all(call[3]["external_unreviewed"] is True for call in rag.calls)
+    assert "GitHub repo: acme/renamed" in rag.calls[0][0]
+    assert result["skill_count"] == 2
+    assert result["skills"][0] == "gh-acme-renamed"
+    for slug in result["skills"]:
+        skill = skills.get(slug)
+        assert skill is not None
+        assert skill.provenance.source_url == canonical_url
+        assert skill.provenance.pinned_revision == _PINNED_SHA
+        assert "hygiene:quarantine" in skill.tags
+        assert "external-candidate" in skill.tags
+    assert branch_sha == "b" * 40
+    assert [request.url.path for request in calls if "/commits/" in request.url.path] == [
+        f"{root}/commits/main",
+    ]
+    assert all(request.url.path.startswith(root) for request in calls[1:])
+    readmes = [request for request in calls if request.url.path.endswith("/readme")]
+    assert len(readmes) == 2
+    assert readmes[0].url == readmes[1].url
+    assert all(
+        request.url.params["ref"] == _PINNED_SHA
+        for request in calls
+        if "/readme" in request.url.path or "/contents/" in request.url.path
+    )
+
+
+@pytest.mark.parametrize("full_name", [None, 123, "acme/../example", "acme/example?ref=main"])
+def test_fetch_rejects_invalid_canonical_metadata_without_fetching_content(
+    monkeypatch, caplog, full_name,
+):
+    calls: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path == "/repos/alias/example":
+            return httpx.Response(200, json={"full_name": full_name, "default_branch": "main"})
+        if "/commits/" in request.url.path:
+            return httpx.Response(200, json={"sha": _PINNED_SHA})
+        if "/readme" in request.url.path:
+            return httpx.Response(200, json={"path": "README.md", "content": "# Unverified"})
+        return httpx.Response(200, json={"tree": []})
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    monkeypatch.setattr(gh, "resolve_github_token", lambda: "test-token")
+
+    evidence = asyncio.run(gh.fetch_github_repo_evidence("https://github.com/alias/example"))
+
+    assert evidence is None
+    assert len(calls) == 1
+    assert "canonical" in caplog.text.lower()
+    assert len(caplog.text) < 500
+
+
+@pytest.mark.parametrize(("status", "sha"), [(403, None), (200, "main"), (200, 10**39)])
+def test_fetch_unresolved_commit_never_falls_back_to_mutable_content(
+    monkeypatch, caplog, status, sha,
+):
+    calls: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if request.url.path == "/repos/alias/example":
+            return httpx.Response(200, json={"full_name": "acme/renamed", "default_branch": "main"})
+        if "/commits/" in request.url.path:
+            return httpx.Response(status, json={"sha": sha, "message": "test-token"})
+        if "/readme" in request.url.path:
+            return httpx.Response(200, json={"path": "README.md", "content": "# Mutable"})
+        return httpx.Response(200, json={"tree": []})
+
+    async_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kwargs: async_client(transport=httpx.MockTransport(handle), **kwargs),
+    )
+    monkeypatch.setattr(gh, "resolve_github_token", lambda: "test-token")
+
+    evidence = asyncio.run(gh.fetch_github_repo_evidence("https://github.com/alias/example"))
+
+    assert evidence is not None
+    assert evidence.source_url == "https://github.com/acme/renamed"
+    assert evidence.pinned_revision is None
+    assert evidence.markdown_files == ()
+    assert "README:" not in evidence.text
+    assert [request.url.path for request in calls] == [
+        "/repos/alias/example", "/repos/acme/renamed/commits/main",
+    ]
+    assert "unverified" in caplog.text.lower()
+    assert "test-token" not in caplog.text
+    assert len(caplog.text) < 500
 
 
 def test_repo_scout_rotates_topics():

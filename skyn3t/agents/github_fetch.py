@@ -1,14 +1,19 @@
 """Fetch a GitHub repo's Markdown guidance plus auditable evidence for ingest.
 
 Single source of truth shared by the CLI ``domain ingest`` path and the Cortex
-INGEST handler. Read-only, secrets-scrubbed, and degrade-don't-crash: returns
-``None`` offline / on any error and never raises. Import has zero side effects
-(``httpx`` is imported lazily).
+INGEST handler. Read-only and secrets-scrubbed: unavailable canonical metadata
+returns ``None``; an unresolved commit yields explicitly unverified metadata
+without fetching mutable content. ``httpx`` is imported lazily.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+
+from skyn3t.github_identity import normalize_github_commit_sha, parse_github_full_name
+
+_logger = logging.getLogger(__name__)
 
 # Repository documentation can be plentiful (and large). These limits keep a
 # single approved ingest useful without turning it into an unbounded remote
@@ -73,16 +78,6 @@ def resolve_github_token() -> str:
 
 def _text(value: object) -> str:
     return str(value).strip() if value is not None else ""
-
-
-def _commit_sha(value: object) -> str | None:
-    """Accept only a full Git object ID, never a mutable branch or tag."""
-    import re as _re
-
-    candidate = _text(value)
-    if _re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", candidate):
-        return candidate.lower()
-    return None
 
 
 def _license_identifier(value: object) -> str | None:
@@ -156,22 +151,29 @@ async def fetch_github_repo_evidence(url: str) -> GitHubRepoEvidence | None:
     """Fetch README plus a bounded set of pinned Markdown documents.
 
     The README remains the stable repository-level RAG record. When GitHub also
-    supplies a full default-branch commit SHA, selected ``*.md`` files are
-    fetched at that exact revision and returned as independent evidence for
-    per-file advisory-skill distillation. A failed extra document never makes a
-    successful README ingest fail.
+    supplies a canonical identity and full default-branch commit SHA, all
+    content is fetched at that exact revision and returned as independent
+    evidence for per-file advisory-skill distillation. A failed extra document
+    never makes a successful README ingest fail.
     """
     import re as _re
     from urllib.parse import quote
 
     try:
         import httpx
-    except Exception:  # noqa: BLE001 - httpx is optional
+    except ImportError:
+        _logger.warning("GitHub evidence unavailable: httpx is not installed")
         return None
     m = _re.search(r"github\.com/([^/\s]+)/([^/\s#?]+)", url)
     if not m:
         return None
-    owner, repo = m.group(1), m.group(2).removesuffix(".git")
+    try:
+        owner, repo = parse_github_full_name(
+            f"{m.group(1)}/{m.group(2).removesuffix('.git')}"
+        )
+    except ValueError:
+        _logger.warning("GitHub evidence unavailable: invalid repository identity")
+        return None
     source_url = f"https://github.com/{owner}/{repo}"
     token = resolve_github_token() or None
     headers = {"Accept": "application/vnd.github+json"}
@@ -185,60 +187,81 @@ async def fetch_github_repo_evidence(url: str) -> GitHubRepoEvidence | None:
     try:
         async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
             meta = await client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers)
-            if meta.status_code == 200:
+            if meta.status_code != 200:
+                _logger.warning("GitHub evidence unavailable: canonical metadata HTTP %s", meta.status_code)
+                return None
+            try:
+                metadata = meta.json()
+                if not isinstance(metadata, dict):
+                    raise ValueError("repository metadata must be an object")
+                owner, repo = parse_github_full_name(metadata.get("full_name"))
+            except (ValueError, UnicodeError):
+                _logger.warning("GitHub evidence unavailable: invalid canonical repository metadata")
+                return None
+
+            root = f"https://api.github.com/repos/{owner}/{repo}"
+            source_url = f"https://github.com/{owner}/{repo}"
+            parts = [f"GitHub repo: {owner}/{repo}"]
+            parts.append(f"Description: {metadata.get('description') or ''}")
+            parts.append(
+                f"Language: {metadata.get('language') or ''} · Stars: "
+                f"{metadata.get('stargazers_count', 0)}"
+            )
+            topics = metadata.get("topics")
+            if isinstance(topics, list):
+                parts.append("Topics: " + ", ".join(topic for topic in topics if isinstance(topic, str)))
+            license_identifier = _license_identifier(metadata.get("license"))
+            if license_identifier:
+                parts.append(f"License: {license_identifier}")
+            default_branch = metadata.get("default_branch")
+            if isinstance(default_branch, str) and default_branch:
+                parts.append(f"Default branch: {default_branch}")
                 try:
-                    metadata = meta.json()
-                except Exception:  # noqa: BLE001 - malformed remote response
-                    metadata = {}
-                if isinstance(metadata, dict):
-                    parts.append(f"Description: {metadata.get('description') or ''}")
-                    parts.append(
-                        f"Language: {metadata.get('language') or ''} · Stars: "
-                        f"{metadata.get('stargazers_count', 0)}"
+                    commit = await client.get(
+                        f"{root}/commits/{quote(default_branch, safe='')}",
+                        headers=headers,
                     )
-                    if metadata.get("topics"):
-                        parts.append("Topics: " + ", ".join(metadata.get("topics", [])))
-                    license_identifier = _license_identifier(metadata.get("license"))
-                    if license_identifier:
-                        parts.append(f"License: {license_identifier}")
-                    default_branch = _text(metadata.get("default_branch"))
-                    if default_branch:
-                        parts.append(f"Default branch: {default_branch}")
-                        try:
-                            commit = await client.get(
-                                "https://api.github.com/repos/"
-                                f"{owner}/{repo}/commits/{quote(default_branch, safe='')}",
-                                headers=headers,
-                            )
-                            if commit.status_code == 200:
-                                try:
-                                    commit_data = commit.json()
-                                except Exception:  # noqa: BLE001 - malformed remote response
-                                    commit_data = {}
-                                if isinstance(commit_data, dict):
-                                    pinned_revision = _commit_sha(commit_data.get("sha"))
-                                    if pinned_revision:
-                                        parts.append(f"Revision: {pinned_revision}")
-                        except Exception:  # noqa: BLE001 - README fetch can continue
-                            pass
+                    if commit.status_code == 200:
+                        commit_data = commit.json()
+                        if isinstance(commit_data, dict):
+                            pinned_revision = normalize_github_commit_sha(commit_data.get("sha"))
+                    else:
+                        _logger.warning("GitHub evidence unverified: commit HTTP %s", commit.status_code)
+                except (httpx.HTTPError, ValueError, UnicodeError) as exc:
+                    _logger.warning("GitHub evidence unverified: commit lookup failed (%s)", type(exc).__name__)
+
+            if pinned_revision is None:
+                _logger.warning("GitHub evidence unverified: no full immutable commit SHA")
+                parts.append("Evidence: unverified (immutable revision unavailable)")
+                return GitHubRepoEvidence(
+                    source_url=source_url,
+                    text=_scrub_remote_text("\n\n".join(parts)),
+                    source_path=source_path,
+                    pinned_revision=None,
+                    license=license_identifier,
+                )
+            parts.append(f"Revision: {pinned_revision}")
 
             repo_parts = list(parts)
+            ref_param = f"?ref={quote(pinned_revision, safe='')}"
             readme = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}/readme",
+                f"{root}/readme{ref_param}",
                 headers=headers,
             )
             if readme.status_code == 200:
                 try:
                     readme_text, readme_path = _decode_readme(readme.json())
-                except Exception:  # noqa: BLE001 - support unusual API gateways
+                except (ValueError, UnicodeError):
                     readme_text, readme_path = None, "README"
                 if readme_text is None:
                     raw_readme = await client.get(
-                        f"https://api.github.com/repos/{owner}/{repo}/readme",
+                        f"{root}/readme{ref_param}",
                         headers={**headers, "Accept": "application/vnd.github.raw"},
                     )
                     if raw_readme.status_code == 200:
                         readme_text = raw_readme.text
+                    else:
+                        _logger.warning("GitHub evidence README unavailable: raw HTTP %s", raw_readme.status_code)
                 safe_readme_path = _safe_markdown_path(readme_path)
                 if safe_readme_path is not None:
                     source_path = safe_readme_path
@@ -255,6 +278,8 @@ async def fetch_github_repo_evidence(url: str) -> GitHubRepoEvidence | None:
                             ),
                         )
                     )
+            else:
+                _logger.warning("GitHub evidence README unavailable: HTTP %s", readme.status_code)
 
             # Fetch extra docs only when GitHub supplied a full immutable
             # revision. A branch name is not a reproducible evidence receipt.
@@ -263,10 +288,11 @@ async def fetch_github_repo_evidence(url: str) -> GitHubRepoEvidence | None:
                 seen_paths = {source_path.casefold()}
                 try:
                     tree = await client.get(
-                        "https://api.github.com/repos/"
-                        f"{owner}/{repo}/git/trees/{quote(pinned_revision, safe='')}?recursive=1",
+                        f"{root}/git/trees/{quote(pinned_revision, safe='')}?recursive=1",
                         headers=headers,
                     )
+                    if tree.status_code != 200:
+                        _logger.warning("GitHub evidence document listing unavailable: HTTP %s", tree.status_code)
                     tree_data = tree.json() if tree.status_code == 200 else {}
                     entries = tree_data.get("tree", []) if isinstance(tree_data, dict) else []
                     if isinstance(entries, list):
@@ -289,20 +315,22 @@ async def fetch_github_repo_evidence(url: str) -> GitHubRepoEvidence | None:
                                 break
                             selected.append(path)
                             seen_paths.add(path.casefold())
-                except Exception:  # noqa: BLE001 - README ingest remains available
+                except (httpx.HTTPError, ValueError, UnicodeError) as exc:
+                    _logger.warning("GitHub evidence document listing unavailable (%s)", type(exc).__name__)
                     selected = []
 
                 for path in selected:
                     try:
                         remote = await client.get(
-                            "https://api.github.com/repos/"
-                            f"{owner}/{repo}/contents/{quote(path, safe='/')}?ref={quote(pinned_revision, safe='')}",
+                            f"{root}/contents/{quote(path, safe='/')}{ref_param}",
                             headers=headers,
                         )
                         if remote.status_code != 200:
+                            _logger.warning("GitHub evidence document skipped: HTTP %s", remote.status_code)
                             continue
                         document, returned_path = _decode_readme(remote.json())
                         if document is None or _safe_markdown_path(returned_path) != path:
+                            _logger.warning("GitHub evidence document skipped: invalid content or source path")
                             continue
                         markdown_files.append(
                             GitHubMarkdownEvidence(
@@ -312,9 +340,11 @@ async def fetch_github_repo_evidence(url: str) -> GitHubRepoEvidence | None:
                                 ),
                             )
                         )
-                    except Exception:  # noqa: BLE001 - each external document is optional
+                    except (httpx.HTTPError, ValueError, UnicodeError) as exc:
+                        _logger.warning("GitHub evidence document skipped (%s)", type(exc).__name__)
                         continue
-    except Exception:  # noqa: BLE001 - degrade, don't crash
+    except (httpx.HTTPError, ValueError, UnicodeError) as exc:
+        _logger.warning("GitHub evidence fetch incomplete (%s)", type(exc).__name__)
         if len(parts) <= 1:
             return None
     text = _scrub_remote_text("\n\n".join(parts))

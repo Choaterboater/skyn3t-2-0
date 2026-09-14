@@ -2334,11 +2334,13 @@ class StudioRunner:
         soft-skips ($0, before serving) without Playwright or a non-stub LLM
         backend. Never raises."""
         if not bool(getattr(self.settings, "web_interact_check_enabled", True)):
+            manifest.extra.pop("web_interact", None)
             return
         stack = str(getattr(plan, "stack", "") or getattr(manifest, "stack", "") or "")
         try:
             result = await check_web_interact(
-                project_dir, stack, settings=self.settings
+                project_dir, stack, settings=self.settings,
+                brief=str(getattr(manifest, "brief", "") or getattr(plan, "brief", "") or ""),
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("web_interact.failed", error=str(exc))

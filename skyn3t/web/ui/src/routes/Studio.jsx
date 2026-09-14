@@ -1184,7 +1184,7 @@ export default function Studio({ stream }) {
         <div className="min-w-0 space-y-4">
           <Panel className="p-4">
             <form
-              className="flex flex-col gap-3 sm:flex-row sm:items-stretch"
+              className="space-y-4"
               onSubmit={(e) => {
                 e.preventDefault();
                 if (
@@ -1210,14 +1210,24 @@ export default function Studio({ stream }) {
                 submit.mutate(payload);
               }}
             >
-              <input
-                ref={briefRef}
-                className="field flex-1"
-                placeholder="Describe the app to build…"
-                aria-label="App brief"
-                value={brief}
-                onChange={(e) => setBrief(e.target.value)}
-              />
+              <div>
+                <label htmlFor="studio-app-brief" className="block text-sm font-semibold text-bone">
+                  1. Describe what you want to build
+                </label>
+                <p id="studio-app-brief-help" className="mt-1 text-xs text-ash">
+                  Include the product, audience, important screens, and behavior. Use as many lines as you need.
+                </p>
+                <textarea
+                  id="studio-app-brief"
+                  ref={briefRef}
+                  className="field mt-2 min-h-[100px] w-full resize-y"
+                  placeholder="Describe the app to build…"
+                  aria-label="App brief"
+                  aria-describedby="studio-app-brief-help"
+                  value={brief}
+                  onChange={(e) => setBrief(e.target.value)}
+                />
+              </div>
               {/* "Build from a picture": attach one reference image (screenshot,
                   drawing, or diagram) that the design/architecture agents match. */}
               <input
@@ -1228,8 +1238,10 @@ export default function Studio({ stream }) {
                 className="hidden"
                 onChange={(e) => onPickImage(e.target.files?.[0])}
               />
+              <div className="flex flex-col gap-3 border-t border-hairline pt-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
               {refImage ? (
-                <div className="flex items-center gap-2 rounded border border-hairline px-2 py-1">
+                <div className="flex min-w-0 items-center gap-2 rounded border border-hairline px-2 py-1">
                   <img
                     src={refImage.url}
                     alt={"Reference preview: " + refImage.name}
@@ -1258,18 +1270,20 @@ export default function Studio({ stream }) {
                   + Image
                 </button>
               )}
-              <button
-                type="submit"
-                disabled={
-                  submit.isPending ||
-                  foundryBackendMut.isPending ||
-                  selectedFoundryUnavailable ||
-                  !brief.trim()
-                }
-                className="btn-ember disabled:opacity-50"
-              >
-                {submit.isPending ? "Forging…" : "Forge build"}
-              </button>
+                </div>
+                <button
+                  type="submit"
+                  disabled={
+                    submit.isPending ||
+                    foundryBackendMut.isPending ||
+                    selectedFoundryUnavailable ||
+                    !brief.trim()
+                  }
+                  className="btn-ember min-w-[10rem] disabled:opacity-50"
+                >
+                  {submit.isPending ? "Forging…" : "Forge build"}
+                </button>
+              </div>
             </form>
             {/* Mixture-of-Agents advisors for THIS build. Tool-free models that
                 read the brief and advise the coding agent — they never write

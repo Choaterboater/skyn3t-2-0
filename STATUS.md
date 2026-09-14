@@ -4,6 +4,28 @@ _Last reviewed: 2026-08-01 (4,234 passed / 12 skipped; full suite green.
 Design trend: 7/15 → 11/15 → 14/15 → effectively 15/15 live codex, zero
 AI-look warnings with briefs threaded)._
 
+**2026-09-14 — native dashboard facelift:** SkyN3t's Improve pipeline delivered
+a shared light/dark workspace design, grouped navigation, an accessible mobile
+drawer, and a keyboard page switcher. Overview prioritizes starting or continuing
+work; Studio has a multiline brief composer; Projects and Workspace have real
+search with selected-project continuity. Existing routes, provider controls,
+approvals, previews, and stream handling remain intact. Production assets and
+self-hosted font/license files are included in the rebuilt wheel. A coupled fix
+in `agents/validate.py` distinguishes JSX child text from JavaScript delimiters,
+so valid workflow edits are no longer discarded because of ordinary UI copy;
+malformed-expression checks and compiler/build proof remain in place.
+
+**2026-09-14 — rendered browser QA milestone:** `studio/web_interact_check.py`
+now waits for delayed JavaScript shells to settle, prioritizes rendered controls,
+and grounds one declarative flow in visible outcome IDs, placeholders, labels,
+and the product brief. It requires a visible post-interaction UI assertion (plus
+a backend state assertion when an API exists), supports persistence reloads, and
+uses the browser request context so session cookies survive API verification.
+Build and Improve refresh the same advisory evidence—including first-time
+imported-project manifests—without changing scores or verdicts. Remaining
+limitation: this covers one bounded flow; a broader
+workflow benchmark and bounded repair loop are still future work.
+
 **2026-07-31 — de-slop pass (generated-app look):** deep-dived why builds had
 converged on the AI-default look and removed the same-look drivers. Design
 tokens are now brief-derived (`studio/design_tokens.py`): four AA-contrast

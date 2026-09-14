@@ -5,11 +5,11 @@ import React from "react";
 
 export function PageHeader({ eyebrow, title, sub, actions }) {
   return (
-    <header className="mb-7 flex flex-col items-start justify-between gap-4 animate-risefade sm:flex-row sm:items-end">
+    <header className="mb-7 flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
       <div>
         {eyebrow ? <div className="eyebrow mb-2">{eyebrow}</div> : null}
-        <h1 className="font-display text-2xl font-bold text-bone">{title}</h1>
-        {sub ? <p className="mt-1 max-w-xl text-sm text-ash">{sub}</p> : null}
+        <h1 className="font-display text-3xl font-semibold text-bone">{title}</h1>
+        {sub ? <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-ash">{sub}</p> : null}
       </div>
       {actions ? (
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end">{actions}</div>
@@ -26,8 +26,8 @@ export function Panel({ children, className = "", glow = false, id }) {
 
 export function PanelHead({ label, right }) {
   return (
-    <div className="flex items-center justify-between border-b border-hairline px-4 py-3">
-      <span className="eyebrow">{label}</span>
+    <div className="flex min-h-12 items-center justify-between gap-3 border-b border-hairline px-4 py-3">
+      <span className="text-sm font-semibold text-bone">{label}</span>
       {right}
     </div>
   );
@@ -53,10 +53,10 @@ export function SignalGrid({
         {items.map((item) => (
           <div
             key={item.label}
-            className="min-w-0 rounded-md border border-hairline bg-void/45 p-3"
+            className="min-w-0 rounded-lg border border-hairline bg-panel-2/45 p-3"
             title={item.title || String(item.value ?? "")}
           >
-            <div className="eyebrow text-[9px]">{item.label}</div>
+            <div className="text-xs font-medium text-ash">{item.label}</div>
             <div
               className={`mt-2 min-w-0 break-words [overflow-wrap:anywhere] font-mono text-xs text-bone ${valueClassName}`}
             >
@@ -77,7 +77,7 @@ export function Stat({ label, value, tone = "bone", hint }) {
     <Panel className="relative overflow-hidden p-4">
       <div className="eyebrow">{label}</div>
       <div className={`metric mt-2 ${toneCls}`}>{value}</div>
-      {hint ? <div className="mt-1 font-mono text-[11px] text-ash">{hint}</div> : null}
+      {hint ? <div className="mt-1 text-xs text-ash">{hint}</div> : null}
     </Panel>
   );
 }
@@ -92,11 +92,11 @@ export function Pill({ children, tone = "ash" }) {
   return <span className={`badge ${map[tone] || map.ash}`}>{children}</span>;
 }
 
-export function Empty({ icon = "◇", children }) {
+export function Empty({ icon = "◇", children, className = "", ...props }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 px-4 py-12 text-center">
+    <div className={`flex flex-col items-center justify-center gap-2 px-4 py-12 text-center ${className}`} {...props}>
       <span aria-hidden="true" className="text-2xl text-ash/50">{icon}</span>
-      <p className="font-mono text-sm text-ash">{children}</p>
+      <div className="max-w-lg text-sm text-ash">{children}</div>
     </div>
   );
 }
@@ -105,7 +105,7 @@ export function ErrorText({ children, className = "" }) {
   return (
     <p
       role="alert"
-      className={`min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-md border border-ember/30 bg-ember/5 px-3 py-2 font-mono text-xs leading-relaxed text-ember [overflow-wrap:anywhere] ${className}`}
+      className={`notice-error min-w-0 max-w-full overflow-auto whitespace-pre-wrap rounded-md border px-3 py-2 font-mono text-xs leading-relaxed [overflow-wrap:anywhere] ${className}`}
     >
       {children}
     </p>

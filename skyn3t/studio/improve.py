@@ -50,6 +50,7 @@ from skyn3t.studio.proof_run import (
     proof_run,
     stabilize_node_dependencies,
 )
+from skyn3t.studio.web_interact_check import check_web_interact
 from skyn3t.worktree import (
     cleanup_worktree,
     create_worktree,
@@ -1159,6 +1160,20 @@ class ImproveEngine:
                 await _emit_failed_outcome(outcome)
                 return outcome
 
+            web_interact: dict[str, Any] | None = None
+            if bool(getattr(self.settings, "web_interact_check_enabled", True)):
+                original_brief = str(getattr(manifest, "brief", "") or "")
+                web_interact = await check_web_interact(
+                    wt.dir,
+                    stack,
+                    settings=self.settings,
+                    brief="\n\n".join(part for part in (original_brief, goal) if part),
+                )
+                if manifest is not None:
+                    manifest.extra["web_interact"] = web_interact
+            elif manifest is not None:
+                manifest.extra.pop("web_interact", None)
+
             if _file_identity(
                 Path(wt.dir) / PRODUCT_SPEC_RELATIVE_PATH
             ) != contract_preimage:
@@ -1482,6 +1497,7 @@ class ImproveEngine:
                             slug,
                             config_summary,
                             files_changed=files_changed,
+                            web_interact=web_interact,
                         )
                     except Exception as rec_exc:  # noqa: BLE001
                         _log.warning(
@@ -1651,6 +1667,8 @@ class ImproveEngine:
                 "routing_snapshot": routing_summary,
                 "layout_profile": layout_profile,
             }
+            if web_interact is not None:
+                detail["web_interact"] = web_interact
             if skipped:
                 detail["skipped"] = skipped
             # An honest signal for the dashboard: 0 files touched must not read
@@ -1820,21 +1838,27 @@ class ImproveEngine:
                         stack: str, slug: str,
                         config_summary: dict[str, Any] | None = None,
                         files_changed: list[str] | None = None,
-                        delivered_change: bool = True) -> None:
+                        delivered_change: bool = True,
+                        web_interact: dict[str, Any] | None = None) -> None:
         from datetime import datetime
 
         man = manifest or BuildManifest(slug=slug, brief="", stack=stack, status="completed")
         if manifest is None:
             man.extra["existing_project"] = True
+        if delivered_change and web_interact is not None:
+            man.extra["web_interact"] = deepcopy(web_interact)
         hist = man.extra.setdefault("improve_history", [])
         # `files` is the TOTAL delivered to the project dir (kept for compat);
         # `files_changed` is the honest signal — it stayed at "files: 261" while
         # 8 consecutive improves changed nothing, hiding the silent no-op.
-        hist.append({"goal": goal, "files": len(delivered),
+        history_entry = {"goal": goal, "files": len(delivered),
                      "files_changed": len(files_changed or []),
                      "at": datetime.now(UTC).isoformat(),
                      "proof_passed": bool(proof.passed), "score": float(proof.score),
-                     "delivered": bool(delivered_change)})
+                     "delivered": bool(delivered_change)}
+        if delivered_change and "web_interact" in man.extra:
+            history_entry["web_interact"] = deepcopy(man.extra["web_interact"])
+        hist.append(history_entry)
         if delivered_change and config_summary:
             man.extra["config_spec"] = config_summary.get("config_spec", {})
             man.extra["config_wiring"] = config_summary.get("wiring", {})

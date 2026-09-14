@@ -276,7 +276,7 @@ export default function Activity({ stream }) {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
         <Panel className="overflow-hidden">
-        <div className="max-h-[70vh] overflow-auto">
+        <div className="max-h-[70vh] overflow-auto" role="region" aria-label="Activity events table" tabIndex={0}>
           {filtered.length === 0 ? (
             <Empty icon="≋">
               {filter ? "No events match this filter." : "Quiet forge. No events yet."}

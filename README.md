@@ -305,6 +305,12 @@ directory, which is removed afterward. No global Git configuration is changed,
 and a toolchain containing the upstream SwiftPM fix uses the normal path without
 this retry. See the [Git/SwiftPM source research](docs/research/2026-09-12-swift-proof-git-environment.md).
 
+For HTTP-served apps, the advisory `web_interact` check inspects the hydrated
+DOM and asks for one brief-grounded declarative browser flow. It records only
+successful visible UI/backend assertions and reloads, shares browser cookies
+with API state probes, and skips when the browser harness or plan cannot provide
+honest coverage. This remains one bounded flow, not full user-journey coverage.
+
 Improve excludes native dependency caches from source edits and leaves their
 metadata intact. Boot/build verifier commands use argument lists rather than a
 host shell, including the hardened local fallback. Broker startup errors surface
@@ -335,6 +341,7 @@ choice when you want to keep the original untouched.
 
 The project extension in `.github/extensions/skyn3t-activity/` shows a live
 activity feed in Copilot's own timeline; no Foundry browser is required.
+
 After adding or updating it, ask Copilot to reload its extensions.
 
 Before a long run, Copilot calls `skyn3t_activity_watch`. It returns a private,

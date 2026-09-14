@@ -8,15 +8,15 @@ export default {
   theme: {
     extend: {
       colors: {
-        void: "#0A0E17",
-        panel: "#111722",
-        "panel-2": "#161E2B",
-        hairline: "#222C3C",
-        ember: { DEFAULT: "#FF6A3D", soft: "#FF9166", deep: "#C2410C" },
-        plasma: { DEFAULT: "#3DD9C4", soft: "#7FEBDD", deep: "#0E7A6B" },
-        synapse: { DEFAULT: "#A688FF", soft: "#C5B2FF" },
-        bone: "#E8EDF7",
-        ash: "#7E8AA0",
+        void: "rgb(var(--c-canvas) / <alpha-value>)",
+        panel: "rgb(var(--c-surface) / <alpha-value>)",
+        "panel-2": "rgb(var(--c-surface-2) / <alpha-value>)",
+        hairline: "rgb(var(--c-border) / <alpha-value>)",
+        ember: { DEFAULT: "rgb(var(--c-accent) / <alpha-value>)", soft: "rgb(var(--c-accent-soft) / <alpha-value>)", deep: "rgb(var(--c-accent-deep) / <alpha-value>)" },
+        plasma: { DEFAULT: "rgb(var(--c-success) / <alpha-value>)", soft: "rgb(var(--c-success-soft) / <alpha-value>)", deep: "rgb(var(--c-success-deep) / <alpha-value>)" },
+        synapse: { DEFAULT: "rgb(var(--c-synapse) / <alpha-value>)", soft: "rgb(var(--c-synapse-soft) / <alpha-value>)" },
+        bone: "rgb(var(--c-text) / <alpha-value>)",
+        ash: "rgb(var(--c-muted) / <alpha-value>)",
         // keep `brand` as an alias so any stray reference still resolves
         brand: { DEFAULT: "#FF6A3D", dim: "#C2410C" },
       },

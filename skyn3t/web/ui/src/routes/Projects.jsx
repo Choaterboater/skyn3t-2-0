@@ -27,6 +27,7 @@ import {
 import StreamStaleBanner from "../components/StreamStaleBanner.jsx";
 import ImportProjectPanel from "../components/ImportProjectPanel.jsx";
 import { canImproveProject } from "../projectImport.js";
+import { filterProjects } from "../projectSearch.js";
 
 function fmtMB(bytes) {
   if (bytes == null) return "—";
@@ -964,6 +965,7 @@ export default function Projects({ stream }) {
   const [serveErr, setServeErr] = useState({}); // slug -> message
   const [reverifyState, setReverifyState] = useState({});
   const [sort, setSort] = useState({ key: "updated_at", dir: "desc" });
+  const [searchQuery, setSearchQuery] = useState("");
 
   const { data, isLoading, error } = useQuery({
     queryKey: ["projects"],
@@ -1085,7 +1087,7 @@ export default function Projects({ stream }) {
     : projectSignals;
 
   const sorted = useMemo(() => {
-    const arr = [...projects];
+    const arr = [...filterProjects(projects, searchQuery)];
     const dir = sort.dir === "asc" ? 1 : -1;
     arr.sort((a, b) => {
       let av, bv;
@@ -1102,7 +1104,7 @@ export default function Projects({ stream }) {
       return av < bv ? -dir : av > bv ? dir : 0;
     });
     return arr;
-  }, [projects, sort]);
+  }, [projects, searchQuery, sort]);
 
   return (
     <div>
@@ -1143,15 +1145,12 @@ export default function Projects({ stream }) {
 
       {error ? (
         <Panel className="mb-6 border-ember/40 p-4 text-sm text-ember">
-          Could not load projects: {String(error.message)}
+          {projects.length > 0
+            ? "Could not refresh projects. Showing cached results: "
+            : "Could not load projects: "}
+          {String(error.message)}
         </Panel>
       ) : null}
-
-      <Panel className="mb-4 p-3">
-        <SignalGrid label="Projects cockpit" items={visibleProjectSignals} />
-      </Panel>
-
-      <CleanupPanel qc={qc} />
 
       {/* dead stream: the serve/improve columns replay a frozen event buffer */}
       <StreamStaleBanner stream={stream} />
@@ -1161,16 +1160,56 @@ export default function Projects({ stream }) {
           label="Project list"
           right={
             <span className="font-mono text-[11px] text-ash">
-              {isLoading ? "loading…" : projects.length + " total"}
+              {isLoading ? "loading…" : `${sorted.length} shown · ${projects.length} total`}
             </span>
           }
         />
+        <div className="border-b border-hairline p-4">
+          <label htmlFor="project-search" className="block text-sm font-semibold text-bone">
+            Find a project
+          </label>
+          <div className="mt-2 flex flex-col gap-2 sm:flex-row">
+            <input
+              id="project-search"
+              type="search"
+              aria-label="Search projects"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search name, stack, status, verdict, or source"
+              className="field min-w-0 flex-1"
+            />
+            {searchQuery ? (
+              <button type="button" className="btn-ghost" onClick={() => setSearchQuery("")}>
+                Clear search
+              </button>
+            ) : null}
+          </div>
+        </div>
         {isLoading ? (
           <Empty icon="≋">Loading projects…</Empty>
+        ) : error && projects.length === 0 ? (
+          <Empty icon="!">
+            Projects are unavailable. Retry the request before treating this collection as empty.
+          </Empty>
         ) : projects.length === 0 ? (
-          <Empty icon="▤">No projects yet. Import an existing project or forge a brief in Studio.</Empty>
+          <Empty icon="▤">
+            <p>No projects yet. Start a new build or import an existing project.</p>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              <Link to="/studio" className="btn-ember">New build</Link>
+              <button type="button" className="btn-ghost" onClick={() => setImportOpen(true)}>
+                Import project
+              </button>
+            </div>
+          </Empty>
+        ) : sorted.length === 0 ? (
+          <Empty icon="⌕">
+            <p>No projects match “{searchQuery.trim()}”.</p>
+            <button type="button" className="btn-ghost mt-4" onClick={() => setSearchQuery("")}>
+              Clear search
+            </button>
+          </Empty>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto" role="region" aria-label="Projects table" tabIndex={0}>
             <table className="w-full text-left">
               <thead>
                 <tr className="eyebrow border-b border-hairline text-ash">
@@ -1468,6 +1507,14 @@ export default function Projects({ stream }) {
           </div>
         )}
       </Panel>
+
+      <details className="panel mt-4" open>
+        <summary className="px-4 py-3 font-semibold text-bone">Project operations</summary>
+        <div className="space-y-4 border-t border-hairline p-4">
+          <SignalGrid label="Projects cockpit" items={visibleProjectSignals} />
+          <CleanupPanel qc={qc} />
+        </div>
+      </details>
     </div>
   );
 }

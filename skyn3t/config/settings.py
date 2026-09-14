@@ -553,11 +553,11 @@ class Settings(BaseSettings):
     security_check_enabled: bool = True
     web_polish_gate_enabled: bool = True
     # Advisory end-of-build WEB INTERACTION check (web stacks): serve the delivered
-    # app in the isolated preview and drive ONE LLM-authored Playwright script
-    # through ONE real user flow (click the nav, submit the main form), asserting
-    # BOTH the UI surface (success state visible) and the backend surface (the
-    # API/state endpoint reflects it) — the "renders but isn't wired" catch no
-    # static/route gate can make. ADVISORY only: recorded to
+    # app in the isolated preview, inspect the hydrated DOM, and drive ONE
+    # brief-grounded declarative Playwright flow. A flow must perform a user
+    # interaction and then prove a UI outcome; API apps must also prove backend
+    # state in the same cookie-bearing browser context. Reload is available for
+    # persistence promises. ADVISORY only: recorded to
     # manifest.extra["web_interact"], it NEVER flips the verdict; it soft-skips
     # ($0, decided before anything is served) without Playwright or a real
     # (non-stub) LLM backend.

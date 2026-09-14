@@ -1,4 +1,5 @@
 import React from "react";
+import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { queryFn } from "../api.js";
 import { agentActivity, agentIsBusy } from "../agentSignals.js";
@@ -57,25 +58,44 @@ export default function Overview({ stream }) {
   const events = stream?.events || [];
   const health = useQuery({ queryKey: ["health"], queryFn: queryFn("/health") });
   const agentsQ = useQuery({ queryKey: ["agents"], queryFn: queryFn("/agents") });
+  const projectsQ = useQuery({ queryKey: ["projects"], queryFn: queryFn("/projects") });
   const heat = agentActivity(events);
 
   const agents = Array.isArray(agentsQ.data) ? agentsQ.data : agentsQ.data?.agents || [];
   const d = health.data || {};
   const recent = [...events].slice(-9).reverse();
   const forging = agents.filter((agent) => agentIsBusy(agent, heat)).length;
+  const projects = Array.isArray(projectsQ.data) ? projectsQ.data : projectsQ.data?.projects || [];
+  const recentProjects = [...projects].sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)).slice(0, 4);
 
   return (
     <div>
       <PageHeader
-        eyebrow="Foundry · Mission Control"
-        title="Overview"
-        sub="An autonomous factory that builds any kind of app from a brief — and proves each one before it ships."
+        eyebrow="Product workspace"
+        title="Good to see you. What will you make?"
+        sub="Start a new build, continue a project, or refine a running app. SkyN3t keeps the technical proof available without putting it in your way."
         actions={
           <span className="badge border-hairline text-ash">
             backend · <span className="ml-1 text-ember">{d.backend || d.llm_backend || "stub"}</span>
           </span>
         }
       />
+
+      <div className="mb-6 grid gap-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(280px,.8fr)]">
+        <Panel className="p-5 sm:p-6">
+          <p className="text-sm font-semibold text-bone">Start with a brief</p>
+          <p className="mt-1 max-w-2xl text-sm leading-relaxed text-ash">Describe the outcome you need. The build workspace will keep model, budget, attachment, approval, and verification controls within reach.</p>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <Link to="/studio" className="btn-ember">New build <span aria-hidden="true">→</span></Link>
+            <Link to="/projects" className="btn-ghost">Browse projects</Link>
+            <Link to="/workspace" className="btn-ghost">Open workspace</Link>
+          </div>
+        </Panel>
+        <Panel className="overflow-hidden">
+          <PanelHead label="Recent work" right={<Link to="/projects" className="text-xs font-medium text-ember">View all</Link>} />
+          {projectsQ.isLoading ? <div role="status" className="p-4 text-sm text-ash">Loading recent projects…</div> : projectsQ.error ? <div role="alert" className="p-4 text-sm text-ember">Recent projects unavailable.</div> : recentProjects.length ? <ul className="divide-y divide-hairline">{recentProjects.map((project) => <li key={project.slug}><Link to={`/workspace?slug=${encodeURIComponent(project.slug)}`} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-panel-2/60"><span className="min-w-0"><strong className="block truncate text-sm text-bone">{project.name || project.slug}</strong><span className="mt-0.5 block text-xs text-ash">{project.stack || "Stack unavailable"}</span></span><span className="text-xs font-medium text-ember">Continue</span></Link></li>)}</ul> : <Empty icon="◇">No project work is available yet. Start a build or import a project.</Empty>}
+        </Panel>
+      </div>
 
       {health.error ? (
         <Panel className="mb-6 border-ember/40 p-4 text-sm text-ember">
@@ -85,6 +105,8 @@ export default function Overview({ stream }) {
 
       {/* a dead stream freezes the ladder's heat — say so instead of pulsing */}
       <StreamStaleBanner stream={stream} />
+
+      <div className="mb-3 mt-8"><h2 className="font-display text-xl font-semibold text-bone">System confidence</h2><p className="mt-1 text-sm text-ash">Connection, verification, agents, and recorded activity from the real backend.</p></div>
 
       {/* the signature: every build climbs the verify ladder before it ships */}
       <GateLadder stream={stream} />

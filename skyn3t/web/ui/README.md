@@ -1,8 +1,16 @@
 # SkyN3t 2.0 Dashboard (web/ui)
 
-Live swarm / pipeline / brain visualization for SkyN3t 2.0.
+SkyN3t's product workspace for building, verifying, running, and improving projects.
 
-Stack: **Vite + React 18 + Tailwind CSS + @tanstack/react-query + react-router-dom + three / @react-three/fiber**.
+Stack: **Vite 8 + React 19 + Tailwind CSS 3 + @tanstack/react-query + react-router 8**. Three.js and `@react-three/fiber` are lazy-loaded only for the Brain view.
+
+## Workspace navigation and appearance
+
+The sidebar groups all ten routes into Work, Intelligence, and System areas. On smaller screens it becomes a labelled navigation drawer so page content keeps the full viewport width. Use **Cmd+K** on macOS or **Ctrl+K** elsewhere to open **Find a page**, then filter and move with the arrow keys or Enter. Escape closes the palette and mobile drawer.
+
+The interface follows the operating system's light/dark preference until the user explicitly selects a theme. Only that explicit selection is stored. If browser preference storage is blocked, the dashboard remains usable and announces that the selection may not persist. Both themes use the self-hosted Inter, Space Grotesk, and JetBrains Mono fonts from `public/fonts`; no remote fonts or artwork are loaded.
+
+Build begins with a labelled multiline app brief and optional reference image; execution, routing, model, advisor, budget, pipeline, and outcome controls retain their backend-backed behavior. Projects can be filtered by identity, stack, status, verdict, delivery state, or import source before continuing in Workspace. Metrics and cleanup controls follow the project collection under an operations disclosure.
 
 The production `dist/` is committed and included in Python wheels so an
 installed control plane has a working dashboard without Node. Rebuild it after
@@ -54,9 +62,9 @@ All under the same origin as the served bundle (or proxied in dev):
 | Settings     | `GET  /api/settings`                  | poll   |
 | (all pages)  | `WS   /ws`                            | live event stream |
 
-Every endpoint is read defensively: the UI degrades to empty/placeholder
-state when an endpoint is missing or the API is unreachable, so it remains
-buildable and renderable even before the backend routes exist.
+Every endpoint is read defensively. The UI keeps loading, request-error,
+cached-stale, unavailable, and unverified states explicit instead of presenting
+missing API data as an empty or successful result.
 
 ### WebSocket frames
 

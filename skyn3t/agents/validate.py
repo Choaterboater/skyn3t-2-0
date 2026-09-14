@@ -227,7 +227,7 @@ def validate_source(
             except Exception as exc:  # noqa: BLE001
                 return False, f"TOML error: {exc}"
         elif p.endswith((".js", ".jsx", ".ts", ".tsx")):
-            ok, err = _balanced(content)
+            ok, err = _balanced(content, jsx_allowed=not p.endswith(".ts"))
             if not ok:
                 return ok, err
         elif p.endswith((".html", ".htm")):
@@ -283,10 +283,11 @@ def validate_source(
     return True, ""
 
 
-def _balanced(content: str) -> tuple[bool, str]:
+def _balanced(content: str, *, jsx_allowed: bool = True) -> tuple[bool, str]:
     """Cheap brace/bracket/paren balance check for JS/TS (no toolchain needed).
-    Ignores chars inside strings/line comments/block comments. Best-effort, never
-    false-negatives a real syntax error class but only catches gross imbalance.
+    Ignores chars inside strings, comments, and JSX child text. JavaScript inside
+    JSX expression containers is still checked. This is a best-effort scanner
+    that catches gross imbalance, not a replacement for a compiler or parser.
     Known blind spot: regex literals (e.g. /[{]/) — reliably detecting a regex
     needs full JS semantics, so an unbalanced brace inside a regex literal may
     false-positive; acceptable for this best-effort check."""
@@ -295,8 +296,105 @@ def _balanced(content: str) -> tuple[bool, str]:
     stack: list[str] = []
     i, n = 0, len(content)
     in_str = ""
+    mode = "js"
+    jsx_depth = 0
+    jsx_returns: list[tuple[str, int]] = []
+    expression_returns: list[tuple[str, int]] = []
+
+    def starts_jsx(offset: int) -> bool:
+        """Whether ``<`` begins JSX rather than a comparison or TS generic."""
+        if not jsx_allowed:
+            return False
+        if offset + 1 >= n or not (content[offset + 1].isalpha() or content[offset + 1] == ">"):
+            return False
+        before = content[:offset].rstrip()
+        if not before:
+            return True
+        if before.endswith("return") and (len(before) == 6 or not before[-7].isalnum()):
+            return True
+        if before[-1] not in "=>([,:{;!?&|":
+            return False
+
+        # In TSX, generic arrow functions occupy the same expression positions as
+        # JSX. A comma or constraint *immediately after the first parameter name*
+        # identifies that syntax. Do not inspect the rest of a possible tag: commas
+        # and words such as ``in`` may occur in ordinary JSX attributes.
+        tag_end = content.find(">", offset + 1)
+        if tag_end >= 0:
+            head = content[offset + 1:tag_end]
+            if re.match(r"[A-Za-z_$][\w$]*\s*(?:,|extends\b)", head):
+                return False
+        return True
+
     while i < n:
         c = content[i]
+
+        if mode == "jsx_text":
+            if content.startswith("{/*", i):
+                end = content.find("*/}", i + 3)
+                if end < 0:
+                    return False, "Unclosed JSX comment"
+                i = end + 3
+                continue
+            if content.startswith("</", i):
+                mode = "jsx_close_tag"
+                i += 2
+                continue
+            if c == "<" and i + 1 < n and (content[i + 1].isalpha() or content[i + 1] == ">"):
+                jsx_returns.append((mode, jsx_depth))
+                mode = "jsx_tag"
+                i += 1
+                continue
+            if c == "{":
+                stack.append(c)
+                expression_returns.append((mode, len(stack) - 1))
+                mode = "js_expression"
+            elif c == "}":
+                return False, f"Unbalanced '}}' at offset {i}"
+            i += 1
+            continue
+
+        if mode in {"jsx_tag", "jsx_close_tag"}:
+            if c == "/" and i + 1 < n and content[i + 1] == "/":
+                while i < n and content[i] != "\n":
+                    i += 1
+                continue
+            if c == "/" and i + 1 < n and content[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (content[i] == "*" and content[i + 1] == "/"):
+                    i += 1
+                i += 2
+                continue
+            if c in "\"'":
+                quote = c
+                i += 1
+                while i < n and content[i] != quote:
+                    i += 2 if content[i] == "\\" else 1
+                i += 1
+                continue
+            if c == "{" and mode == "jsx_tag":
+                stack.append(c)
+                expression_returns.append((mode, len(stack) - 1))
+                mode = "js_expression"
+                i += 1
+                continue
+            if c == ">":
+                self_closing = mode == "jsx_tag" and content[:i].rstrip().endswith("/")
+                if mode == "jsx_close_tag":
+                    jsx_depth -= 1
+                elif not self_closing:
+                    jsx_depth += 1
+                return_mode, base_depth = jsx_returns[-1]
+                if self_closing or jsx_depth == base_depth:
+                    jsx_returns.pop()
+                    mode = return_mode
+                else:
+                    mode = "jsx_text"
+                i += 1
+                continue
+            i += 1
+            continue
+
         if in_str:
             if c == "\\":
                 i += 2
@@ -315,12 +413,17 @@ def _balanced(content: str) -> tuple[bool, str]:
                 i += 1
             i += 2  # skip the closing */
             continue
+        elif c == "<" and starts_jsx(i):
+            jsx_returns.append((mode, jsx_depth))
+            mode = "jsx_tag"
         elif c in opens:
             stack.append(c)
         elif c in pairs:
             if not stack or stack[-1] != pairs[c]:
                 return False, f"Unbalanced '{c}' at offset {i}"
             stack.pop()
+            if c == "}" and expression_returns and len(stack) == expression_returns[-1][1]:
+                mode, _ = expression_returns.pop()
         i += 1
     if stack:
         return False, f"Unclosed '{stack[-1]}'"

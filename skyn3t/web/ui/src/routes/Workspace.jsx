@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { filterProjects, projectsForSelector } from "../projectSearch.js";
 import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { queryFn, apiFetch, apiPost } from "../api.js";
@@ -1331,9 +1332,21 @@ export default function Workspace({ stream }) {
   const [selectedSignature, setSelectedSignature] = useState(null);
   const [previewRevision, setPreviewRevision] = useState(0);
   const [annotationPins, setAnnotationPins] = useState([]);
+  const [projectQuery, setProjectQuery] = useState("");
 
-  const { data } = useQuery({ queryKey: ["projects"], queryFn: queryFn("/projects") });
+  const { data, error: projectsError, isLoading: projectsLoading } = useQuery({ queryKey: ["projects"], queryFn: queryFn("/projects") });
   const projects = Array.isArray(data) ? data : data?.projects || [];
+  const matchingProjects = useMemo(
+    () => filterProjects(projects, projectQuery),
+    [projectQuery, projects],
+  );
+  const selectorProjects = useMemo(
+    () => projectsForSelector(projects, matchingProjects, slug),
+    [matchingProjects, projects, slug],
+  );
+  const selectedOutsideSearch = Boolean(
+    projectQuery.trim() && slug && !matchingProjects.some((project) => project.slug === slug),
+  );
 
   function pick(next) {
     const p = new URLSearchParams(params);
@@ -1386,26 +1399,50 @@ export default function Workspace({ stream }) {
   return (
     <div className="flex h-full flex-col">
       <PageHeader
-        eyebrow="Foundry · Live Workspace"
+        eyebrow="Continue your work"
         title="Workspace"
-        sub="Run a delivered app and refine it in place — serve on the left, improve on the right."
+        sub="Preview a delivered app, inspect its details, and make focused improvements in one place."
         actions={
-          <select
-            aria-label="Workspace project"
-            value={slug}
-            onChange={(e) => pick(e.target.value)}
-            className="max-w-full rounded border border-hairline bg-ink/60 px-3 py-1.5 font-mono text-xs text-bone focus:border-ember focus:outline-none"
-          >
-            <option value="">Select a project…</option>
-            {projects.map((p) => (
-              <option key={p.slug} value={p.slug}>
-                {p.slug}
-                {p.stack ? ` · ${p.stack}` : ""}
+          <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+            <label>
+              <span className="sr-only">Find a workspace project</span>
+              <input
+                type="search"
+                className="field min-h-11 sm:w-56"
+                placeholder="Find a project…"
+                value={projectQuery}
+                onChange={(event) => setProjectQuery(event.target.value)}
+              />
+            </label>
+            <select
+              aria-label="Workspace project"
+              value={slug}
+              onChange={(e) => pick(e.target.value)}
+              className="field min-h-11 max-w-full font-mono text-xs sm:w-64"
+            >
+              <option value="">
+                {projectsLoading ? "Loading projects…" : "Select a project…"}
               </option>
-            ))}
-          </select>
+              {selectorProjects.map((p) => (
+                <option key={p.slug} value={p.slug}>
+                  {p.slug}{p.stack ? ` · ${p.stack}` : ""}
+                  {selectedOutsideSearch && p.slug === slug ? " · current (outside search)" : ""}
+                </option>
+              ))}
+            </select>
+          </div>
         }
       />
+
+      {projectsError ? (
+        <p role="alert" className="notice notice-error mb-4">
+          Projects are unavailable: {String(projectsError.message || projectsError)}
+        </p>
+      ) : projectQuery && matchingProjects.length === 0 ? (
+        <p role="status" className="notice mb-4 border-hairline text-ash">
+          No projects match “{projectQuery}”. Clear the search to see every project.
+        </p>
+      ) : null}
 
       <Panel className="mb-3 p-3">
         <SignalGrid label="Workspace signals" items={workspaceSignals} />
@@ -1424,7 +1461,7 @@ export default function Workspace({ stream }) {
           refreshRevision={previewRevision}
         />
         <div className="flex min-h-0 flex-col gap-2">
-          <div className="flex gap-2">
+          <div className="flex gap-2 overflow-x-auto pb-1" aria-label="Workspace tools">
             <button
               className={rightMode === "improve" ? "btn-ember" : "btn-ghost"}
               onClick={() => setRightMode("improve")}

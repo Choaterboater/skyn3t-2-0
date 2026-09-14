@@ -273,6 +273,7 @@ class HandlerRegistry:
             staged["ingested"] = 0
             staged["degraded"] = True
             return staged
+        url = evidence.source_url
         rag = self.rag
         if rag is None:
             return self._stage(proposal, "ingest")

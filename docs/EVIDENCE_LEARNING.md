@@ -76,13 +76,52 @@ skyn3t cortex evaluations
 This is intentionally separate from `skyn3t cortex ratchet`, which is an
 opt-in before/after tuning experiment that runs real builds.
 
-## GitHub-derived skills
+## GitHub-derived skills and Repo Scout evidence
 
 GitHub documentation ingestion is read-only. SkyN3t keeps the README as the
 repository-level RAG record and, only when GitHub supplies a full immutable
 commit SHA, may fetch up to 24 small `*.md` files (README included) at that
 exact revision. Each accepted Markdown document gets its own unreviewed RAG
 record and source path; a failed extra document never fails the README ingest.
+
+Both GitHub clients (`fetch_github_repo_evidence` and
+`GitHubResearchClient.inspect_repository`) validate the canonical `full_name`
+returned by repository metadata, including after a rename or transfer. Commit
+lookup, content requests, returned URLs, and downstream provenance use that
+identity rather than the caller's old alias. The default branch is resolved
+once to a full immutable commit SHA. Every README JSON/raw fallback, directory
+listing, manifest, and document request uses `?ref=<commit_sha>`; recursive tree
+requests use that same SHA in their path. A branch advancing cannot mix revisions.
+
+Similarity source cards retain the resolved `commit`/`pinned_revision`,
+`verified` outcome, and bounded, redacted verification error through reports,
+cache persistence, product-spec research sources, and backlog provenance.
+Failed live inspections report `unavailable`, remain `idea_only`, and cannot
+mark an idea as a reusable pattern or replace a successful cache entry. A
+content-fetch failure retains any identity and SHA already resolved but is
+still unverified. Legacy supplied/offline material keeps its existing idea
+policy with `verified: null` and no claimed live `pinned_revision`; a supplied
+commit hint is not proof of a live pin. Receipt-less version-1 similarity caches
+are invalidated rather than silently reclassified as verified.
+
+Invalid canonical metadata cannot yield a pinned snapshot: research returns an
+explicit unverified error and ingestion returns no evidence. If the full commit
+cannot be resolved, no live README or other content is fetched at a mutable
+reference. Ingestion may retain labeled, unverified repository metadata with
+`pinned_revision: None`; research remains unverified and unavailable. None of
+these paths relax skill promotion or quarantine requirements.
+
+Repo Scout emits request-local typed receipts (`ScoutReceipt`) separating
+transport capability from actual search outcomes (`live`, `offline`, or
+`degraded`). Network errors, HTTP 403/429 rate limits, or malformed payloads
+degrade gracefully to deterministic offline seeds with `offline=true` and
+explicit reason metadata, never masquerading as live search hits. Per-topic
+page cursors advance exactly once only after a valid live search response
+(including valid zero-result queries), then persistence is attempted. If that
+save fails, the in-memory cursor continues and the receipt remains `live` with
+`reason="cursor_persist_failed"`; Cortex explicitly warns that the cursor was
+not saved. Cursors are preserved on transport errors, rate limits, malformed
+payloads, or cancellation. Same-topic requests are serialized.
 
 SkyN3t does not inject remote GitHub text directly into build prompts. New
 GitHub RAG records carry `external_unreviewed`; older GitHub source URLs are

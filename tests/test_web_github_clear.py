@@ -82,6 +82,43 @@ def test_scout_now_triggers_repo_scout():
     assert sc.topics == ["python cli tool"]
 
 
+def test_scout_now_returns_honest_receipt_metadata():
+    from skyn3t.cortex.repo_scout import ScoutReceipt
+
+    class RepoScout:
+        def __init__(self):
+            self.topics = []
+
+        async def scout_with_receipt(self, topic):
+            self.topics.append(topic)
+            receipt = ScoutReceipt(
+                transport_capability=True,
+                source="offline_seed",
+                outcome="degraded",
+                topic=topic,
+                page=1,
+                reason="http_403",
+                items_count=3,
+            )
+            return ["prop1", "prop2", "prop3"], receipt
+
+    class _Cortex:
+        def __init__(self, scout):
+            self._components = [scout]
+
+    st = _state()
+    sc = RepoScout()
+    st.cortex = _Cortex(sc)
+    res = asyncio.run(routes.scout_now(st, topic="fastapi service"))
+    assert res["scouted"] == 3
+    assert res["topic"] == "fastapi service"
+    assert res["outcome"] == "degraded"
+    assert res["source"] == "offline_seed"
+    assert res["reason"] == "http_403"
+    assert res["page"] == 1
+    assert res["receipt"]["transport_capability"] is True
+
+
 def test_scout_now_without_cortex_is_safe():
     st = _state()
     st.cortex = None

@@ -206,6 +206,23 @@ Copilot-backed planning, review, and other text-completion stages are restricted
 to the read-only `view` tool; they cannot edit files or delegate another build.
 Code generation and agentic repair retain their separate worktree-writing mode.
 
+OpenRouter agentic generation validates response state and the entire tool batch
+before dispatch. Truncated responses receive at most two recovery requests;
+explicit refusals stop without retry, and malformed arguments cannot become a
+successful `finish`. Valid legacy completions remain supported, and every billed
+response still counts toward the budget. Writes require explicit string content
+(including an intentionally empty string). Rejected batches cannot partially
+execute or leave malformed tool messages in recovery history, and native activity
+distinguishes tool failures from successful reads of error-prefixed file content.
+
+Eligible provider retries honor numeric or HTTP-date `Retry-After` minimums.
+When a requested wait cannot fit `SKYN3T_LLM_RETRY_MAX_DELAY` or the configured
+call deadline, the call stops instead of retrying early through the same model
+or a fallback. Native activity reports the bounded retry decision before waiting,
+without copying provider headers, response bodies, or prompts. The latest server
+minimum also applies across model fallbacks; deadlines are rechecked after
+activity reporting and sleep, and a zero maximum delay is respected.
+
 Two defaults worth knowing:
 
 - **Gate posture is `lab`.** Only proof that the delivery is broken blocks a
@@ -289,11 +306,18 @@ and a toolchain containing the upstream SwiftPM fix uses the normal path without
 this retry. See the [Git/SwiftPM source research](docs/research/2026-09-12-swift-proof-git-environment.md).
 
 Improve excludes native dependency caches from source edits and leaves their
-metadata intact. Failed CLI runs print bounded, redacted build/test diagnostics
+metadata intact. Boot/build verifier commands use argument lists rather than a
+host shell, including the hardened local fallback. Broker startup errors surface
+redacted diagnostics instead of an empty failure. Failed CLI runs print bounded, redacted build/test diagnostics
 alongside the delivery-blocking reason instead of only a failed result table.
 CLI timeout/cancellation cleanup includes descendant SDK tool runners that start
 separate process sessions, rather than killing only the writer's process group.
 This prevents those tools from continuing against a rolled-back candidate.
+
+Existing-project source validation permits pre-existing elision examples only on
+unchanged lines, so instructional strings do not invalidate unrelated complete
+edits. Added occurrences and changed contexts still fail validation; new files
+retain the strict anti-elision check.
 
 Stack detection reads the existing root manifests, not the improvement goal.
 Use `--stack react`, `--stack python`, `--stack nextjs`, etc. to override it.

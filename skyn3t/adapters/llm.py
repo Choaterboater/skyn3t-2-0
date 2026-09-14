@@ -50,9 +50,11 @@ from contextlib import contextmanager
 from copy import copy as shallow_copy
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import httpx
 import psutil
@@ -1278,6 +1280,162 @@ def _err_reason(exc: BaseException | None) -> str:
         return "unknown"
     s = _err_status(exc)
     return f"http_{s}" if s is not None else type(exc).__name__
+
+
+_MISSING = object()
+
+
+def _parse_retry_after(exc: BaseException | None) -> float | None:
+    """Parse HTTP Retry-After header in seconds or HTTP-date format."""
+    if exc is None:
+        return None
+    response = getattr(exc, "response", None)
+    if response is None or not hasattr(response, "headers") or not response.headers:
+        return None
+    header_val = response.headers.get("Retry-After") or response.headers.get("retry-after")
+    if not header_val or not isinstance(header_val, str):
+        return None
+    val_str = header_val.strip()
+    if not val_str:
+        return None
+
+    if re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", val_str):
+        try:
+            seconds = Decimal(val_str)
+        except InvalidOperation:
+            coefficient, _, exponent = val_str.lower().partition("e")
+            if (
+                coefficient.startswith("-")
+                or not coefficient.lstrip("+").replace(".", "").strip("0")
+                or exponent.startswith("-")
+            ):
+                return 0.0
+            return math.inf
+        if seconds <= 0:
+            return 0.0
+        # Positive numeric overflow must be rejected as oversized, not retried early.
+        return float(seconds)
+
+    try:
+        dt = parsedate_to_datetime(val_str)
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            now = datetime.now(UTC)
+            delay = (dt - now).total_seconds()
+            if not math.isfinite(delay):
+                return None
+            return max(0.0, delay)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+    return None
+
+
+def _agentic_envelope_error(message: dict[str, Any], finish_reason: object) -> str:
+    if message.get("role", "assistant") != "assistant":
+        return "response message must have the assistant role"
+    content = message.get("content")
+    if content is not None and not isinstance(content, str):
+        return "message content must be text or null"
+    refusal = message.get("refusal")
+    if refusal is not None and not isinstance(refusal, str):
+        return "message refusal must be text or null"
+    calls = message.get("tool_calls")
+    if calls is not None and not isinstance(calls, list):
+        return "tool_calls must be a list or null"
+    if finish_reason is not _MISSING and finish_reason is not None:
+        if not isinstance(finish_reason, str) or finish_reason not in {
+            "stop", "tool_calls", "length", "content_filter", "refusal",
+        }:
+            return "unknown or malformed finish_reason"
+    if finish_reason == "stop" and calls:
+        return "stop finish_reason cannot contain tool calls"
+    if finish_reason == "tool_calls" and not calls:
+        return "tool_calls finish_reason requires a tool batch"
+    return ""
+
+
+def _validate_tool_batch(
+    tcs: list[Any],
+) -> tuple[bool, str, list[tuple[dict[str, Any], str, dict[str, Any]]]]:
+    """Preflight check for OpenRouter agentic tool calls batch."""
+    if not isinstance(tcs, list) or not tcs:
+        return False, "tool_calls must be a non-empty list", []
+    parsed_calls: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
+    known_tools = {"write_file", "write_files", "read_file", "list_files", "finish"}
+    identifiers: set[str] = set()
+
+    for tc in tcs:
+        if not isinstance(tc, dict):
+            return False, "tool call item must be an object", []
+        tc_id = tc.get("id")
+        if not isinstance(tc_id, str) or not tc_id.strip() or tc_id in identifiers:
+            return False, "tool call id is missing or invalid", []
+        identifiers.add(tc_id)
+
+        tc_type = tc.get("type")
+        if tc_type is not None and tc_type != "function":
+            return False, "unsupported tool call type", []
+
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            return False, "tool call function field must be an object", []
+
+        name = fn.get("name")
+        if not isinstance(name, str) or not name or name not in known_tools:
+            return False, "unknown or invalid tool function name", []
+
+        raw_args = fn.get("arguments")
+        if raw_args is None:
+            return False, f"tool call arguments missing for {name}", []
+
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args)
+            except (ValueError, TypeError):
+                return False, f"malformed JSON string in arguments for tool {name}", []
+        elif isinstance(raw_args, dict):
+            args = raw_args
+        else:
+            return False, f"arguments for tool {name} must be a JSON object or string", []
+
+        if not isinstance(args, dict):
+            return False, f"arguments for tool {name} must parse to a JSON object (got {type(args).__name__})", []
+
+        if name == "write_file":
+            path_val = args.get("path")
+            if not isinstance(path_val, str) or not path_val.strip():
+                return False, "write_file arguments require a non-empty string path", []
+            if not isinstance(args.get("content"), str):
+                return False, "write_file requires string content", []
+        elif name == "write_files":
+            files_val = args.get("files")
+            if not isinstance(files_val, list) or not files_val:
+                return False, "write_files arguments require a non-empty list of files", []
+            for item in files_val:
+                if not isinstance(item, dict):
+                    return False, "write_files item must be an object", []
+                item_path = item.get("path")
+                if not isinstance(item_path, str) or not item_path.strip():
+                    return False, "write_files item requires a non-empty string path", []
+                if not isinstance(item.get("content"), str):
+                    return False, "write_files item requires string content", []
+        elif name == "read_file":
+            path_val = args.get("path")
+            if not isinstance(path_val, str) or not path_val.strip():
+                return False, "read_file arguments require a non-empty string path", []
+
+        tc_copy = dict(tc)
+        tc_copy["function"] = dict(fn)
+        if isinstance(raw_args, dict):
+            try:
+                tc_copy["function"]["arguments"] = json.dumps(args, allow_nan=False)
+            except (TypeError, ValueError):
+                return False, f"arguments for tool {name} must be JSON-serializable", []
+        parsed_calls.append((tc_copy, name, args))
+
+    return True, "", parsed_calls
 
 
 def _usage_token_count(value: Any) -> int:
@@ -2673,6 +2831,37 @@ class LLMClient:
         self._unhealthy_models[model] = max(previous, until)
         log.warning("llm.model_quarantined", model=model, ttl_s=ttl, reason=_err_reason(exc))
 
+    async def _report_retry_decision(
+        self,
+        model: str,
+        attempt: int,
+        reason: str,
+        delay: float,
+        outcome: str,
+    ) -> None:
+        import math as _math
+        d_val = round(delay, 3) if isinstance(delay, (int, float)) and _math.isfinite(delay) else 0.0
+        log.info(
+            "llm.retry",
+            model=model,
+            attempt=attempt,
+            reason=reason,
+            delay=d_val,
+            outcome=outcome,
+        )
+        try:
+            from skyn3t.observability.activity import report_retry_activity
+            await report_retry_activity(
+                provider="openrouter",
+                model=model,
+                attempt=attempt,
+                reason=reason,
+                delay=delay,
+                outcome=outcome,
+            )
+        except Exception as exc:  # noqa: BLE001 - telemetry failure is reported, not fatal
+            log.warning("llm.report_retry_activity_failed", error_type=type(exc).__name__)
+
     async def _resilient_call(
         self,
         primary: str,
@@ -2704,11 +2893,48 @@ class LLMClient:
         settings = self._routing_settings()
         max_retries = self._retry_budget()
         try:
-            limit = float(getattr(settings, "llm_call_deadline_seconds", 0) or 0)
+            max_retry_delay = float(getattr(settings, "llm_retry_max_delay", 8.0))
+            limit = float(getattr(settings, "llm_call_deadline_seconds", 0.0))
         except (TypeError, ValueError):
-            limit = 0.0
+            log.warning("llm.invalid_retry_bounds")
+            raise ValueError("LLM retry bounds must be finite non-negative numbers") from None
+        if not all(math.isfinite(value) and value >= 0 for value in (max_retry_delay, limit)):
+            log.warning("llm.invalid_retry_bounds")
+            raise ValueError("LLM retry bounds must be finite non-negative numbers")
         deadline = (time.monotonic() + limit) if limit > 0 else 0.0
         first_exc: BaseException | None = None
+        pending_server_delay = 0.0
+        pending_reason = "unknown"
+        pending_cause: BaseException | None = None
+
+        async def stop_retry(
+            model: str, attempt: int, reason: str, delay: float,
+            outcome: str, cause: BaseException | None,
+        ) -> NoReturn:
+            await self._report_retry_decision(
+                model=model, attempt=attempt, reason=reason,
+                delay=delay if math.isfinite(delay) else 0.0, outcome=outcome,
+            )
+            assert first_exc is not None
+            if cause is not None and cause is not first_exc:
+                raise first_exc from cause
+            raise first_exc
+
+        async def wait_retry(
+            model: str, attempt: int, reason: str, delay: float,
+            cause: BaseException | None,
+        ) -> None:
+            if not math.isfinite(delay) or delay < 0:
+                await stop_retry(model, attempt, reason, 0.0, "stopped_oversized", cause)
+            if deadline and time.monotonic() + delay >= deadline:
+                await stop_retry(model, attempt, reason, delay, "stopped_deadline", cause)
+            await self._report_retry_decision(
+                model=model, attempt=attempt, reason=reason, delay=delay, outcome="waiting",
+            )
+            if deadline and time.monotonic() + delay >= deadline:
+                await stop_retry(model, attempt, reason, delay, "stopped_deadline", cause)
+            await asyncio.sleep(delay)
+
         candidates = [primary]
         if self._model_unhealthy(primary):
             fallbacks = await asyncio.to_thread(
@@ -2724,15 +2950,32 @@ class LLMClient:
         ci = 0
         while ci < len(candidates):
             if deadline and first_exc is not None and time.monotonic() >= deadline:
-                log.warning("llm.call_deadline_spent",
-                            limit_s=limit, candidates_tried=ci)
-                raise first_exc
+                await stop_retry(
+                    candidates[ci], 1, pending_reason, 0.0,
+                    "stopped_deadline", pending_cause,
+                )
             model = candidates[ci]
             model_exc: BaseException | None = None
             # The transient-retry budget belongs to the PRIMARY; re-spending it
             # on every rung of the ladder multiplies an outage's wall clock.
             budget = max_retries if ci == 0 else min(max_retries, 1)
             for attempt in range(budget + 1):
+                if deadline and first_exc is not None and time.monotonic() >= deadline:
+                    await stop_retry(
+                        model, attempt + 1, pending_reason, 0.0,
+                        "stopped_deadline", pending_cause,
+                    )
+                if pending_server_delay > 0:
+                    await wait_retry(
+                        model, attempt + 1, pending_reason,
+                        pending_server_delay, pending_cause,
+                    )
+                    pending_server_delay = 0.0
+                if deadline and first_exc is not None and time.monotonic() >= deadline:
+                    await stop_retry(
+                        model, attempt + 1, pending_reason, 0.0,
+                        "stopped_deadline", pending_cause,
+                    )
                 try:
                     return await attempt_fn(model)
                 except Exception as exc:  # noqa: BLE001 - classified for recovery
@@ -2750,17 +2993,44 @@ class LLMClient:
                         first_exc = exc
                     model_exc = exc
                     cat = classify_llm_error(exc)
+                    reason = _err_reason(exc)
+
                     if cat == "fatal":
+                        await self._report_retry_decision(
+                            model=model, attempt=attempt + 1, reason=reason, delay=0.0, outcome="fatal"
+                        )
                         raise
-                    if cat == "transient" and attempt < budget:
-                        if deadline and time.monotonic() >= deadline:
-                            log.warning("llm.call_deadline_spent",
-                                        limit_s=limit, candidates_tried=ci + 1)
-                            raise first_exc from exc
-                        log.info("llm.retry", model=model, attempt=attempt + 1,
-                                 reason=_err_reason(exc))
-                        await asyncio.sleep(self._retry_delay(attempt))
-                        continue
+
+                    server_min = _parse_retry_after(exc) if cat == "transient" else None
+                    server_min_val = server_min if (server_min is not None and server_min > 0.0) else 0.0
+                    pending_server_delay = server_min_val
+                    pending_reason = reason
+                    pending_cause = exc
+
+                    if server_min_val > 0.0 and server_min_val > max_retry_delay:
+                        await stop_retry(
+                            model, attempt + 1, reason, server_min_val,
+                            "stopped_oversized", exc,
+                        )
+
+                    if cat == "transient":
+                        local_delay = self._retry_delay(attempt)
+                        delay = max(server_min_val, local_delay) if server_min_val > 0.0 else local_delay
+
+                        if attempt < budget:
+                            await wait_retry(
+                                model, attempt + 1, reason, delay, exc,
+                            )
+                            pending_server_delay = 0.0
+                            continue
+                        else:
+                            await self._report_retry_decision(
+                                model=model, attempt=attempt + 1, reason=reason, delay=0.0, outcome="exhausted"
+                            )
+                    else:
+                        await self._report_retry_decision(
+                            model=model, attempt=attempt + 1, reason=reason, delay=0.0, outcome="model_failover"
+                        )
                     break  # transient budget spent, or a model error -> try a fallback
             # Resolve fallbacks lazily the first time a candidate misses, and
             # never re-append a model already tried this call: with exactly
@@ -3396,7 +3666,6 @@ class LLMClient:
         app itself via tool-calls (write_file/read_file/list_files/finish) with full
         context — coherent like bolt/v0/Aider, vs skyn3t's weak per-file gen. Files
         are confined to ``workdir``. Returns {ok, backend, error}. Never raises."""
-        import json as _json
         import time as _t
 
         from skyn3t.observability.activity import report_codegen_model, report_tool_activity
@@ -3443,8 +3712,8 @@ class LLMClient:
         def _planned_missing_count() -> int:
             return sum(1 for raw in planned if not _planned_path_ready(raw))
 
-        def _run_tool(name: str, args: dict) -> tuple[str, int]:
-            """Run one tool and return ``(message, changed_file_count)``.
+        def _run_tool(name: str, args: dict[str, Any]) -> tuple[str, int, bool]:
+            """Run one tool and return ``(message, changed_file_count, failed)``.
 
             The progress watchdog advances only for new content. Repeating a
             successful no-op write is activity, but it is not build progress.
@@ -3455,45 +3724,48 @@ class LLMClient:
                         "ERROR: persisted write receipt is history metadata, not file "
                         "content; use read_file to inspect the existing file",
                         0,
+                        True,
                     )
                 rel = str(args.get("path", "")).strip()
                 p = _safe(rel)
                 if not rel or not p or p == root:
-                    return "ERROR: path escapes the project", 0
+                    return "ERROR: path escapes the project", 0, True
                 if not _owned(p):
-                    return f"ERROR: path is outside this slice's owned files: {rel}", 0
+                    return f"ERROR: path is outside this slice's owned files: {rel}", 0, True
                 if p.suffix.lower() in _AGENTIC_BINARY_WRITE_EXTS:
                     return (
                         f"ERROR: {rel} is binary media and cannot be written by a text "
                         "tool; preserve/use generated assets already in the workspace",
                         0,
+                        True,
                     )
                 try:
                     body = str(args.get("content", ""))
                     if p.is_file() and p.read_text(
                         encoding="utf-8", errors="replace"
                     ) == body:
-                        return f"OK unchanged {rel} ({len(body)} bytes)", 0
+                        return f"OK unchanged {rel} ({len(body)} bytes)", 0, False
                     p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_text(body, encoding="utf-8")
-                    return f"OK wrote {rel} ({len(body)} bytes)", 1
+                    return f"OK wrote {rel} ({len(body)} bytes)", 1, False
                 except OSError as e:
-                    return f"ERROR: {e}", 0
+                    return f"ERROR: {e}", 0, True
             if name == "write_files":
                 if _is_persisted_write_receipt(args):
                     return (
                         "ERROR: persisted write receipt batch is history metadata and "
                         "cannot be replayed",
                         0,
+                        True,
                     )
                 batch = args.get("files")
                 if not isinstance(batch, list) or not batch:
-                    return "ERROR: files must contain at least one file object", 0
+                    return "ERROR: files must contain at least one file object", 0, True
                 checked: list[tuple[Path, str, str]] = []
                 targets: set[str] = set()
                 for item in batch:
                     if not isinstance(item, dict):
-                        return "ERROR: every files item must be an object", 0
+                        return "ERROR: every files item must be an object", 0, True
                     if _is_persisted_write_receipt(item):
                         # Reject the entire batch before validating or writing any
                         # sibling. A receipt mixed with real bodies must never turn
@@ -3502,14 +3774,15 @@ class LLMClient:
                             "ERROR: write_files batch contains a persisted write "
                             "receipt and was rejected atomically",
                             0,
+                            True,
                         )
                     rel = str(item.get("path", "")).strip()
                     p = _safe(rel)
                     if not rel or not p or p == root:
-                        return f"ERROR: path escapes the project: {rel}", 0
+                        return f"ERROR: path escapes the project: {rel}", 0, True
                     target_key = os.path.normcase(str(p))
                     if target_key in targets:
-                        return f"ERROR: duplicate batch path: {rel}", 0
+                        return f"ERROR: duplicate batch path: {rel}", 0, True
                     targets.add(target_key)
                     checked.append((p, rel, str(item.get("content", ""))))
                 rejected = [rel for p, rel, _body in checked if not _owned(p)]
@@ -3531,11 +3804,13 @@ class LLMClient:
                             "preserve/use generated assets already in the workspace: "
                             + ", ".join(binary_rejected[:8]),
                             0,
+                            True,
                         )
                     return (
                         "ERROR: every batch path is outside this slice's owned files: "
                         + ", ".join(rejected[:8]),
                         0,
+                        True,
                     )
                 try:
                     changed: list[tuple[Path, str, str]] = []
@@ -3550,7 +3825,11 @@ class LLMClient:
                         p.write_text(body, encoding="utf-8")
                     total = sum(len(body) for _p, _rel, body in changed)
                     if not changed:
-                        return f"OK unchanged batch ({len(checked)} files)", 0
+                        return (
+                            f"OK unchanged batch ({len(checked)} files)",
+                            0,
+                            bool(rejected or binary_rejected),
+                        )
                     message = (
                         f"OK wrote batch ({len(changed)} changed of {len(checked)} files, "
                         f"{total} bytes)"
@@ -3561,24 +3840,24 @@ class LLMClient:
                         message += "; rejected binary media: " + ", ".join(
                             binary_rejected[:8]
                         )
-                    return message, len(changed)
+                    return message, len(changed), bool(rejected or binary_rejected)
                 except OSError as e:
-                    return f"ERROR: {e}", 0
+                    return f"ERROR: {e}", 0, True
             if name == "read_file":
                 p = _safe(args.get("path", ""))
                 if not p or not p.is_file():
-                    return "ERROR: not found", 0
+                    return "ERROR: not found", 0, True
                 try:
-                    return p.read_text(encoding="utf-8", errors="replace"), 0
+                    return p.read_text(encoding="utf-8", errors="replace"), 0, False
                 except OSError as e:
-                    return f"ERROR: {e}", 0
+                    return f"ERROR: {e}", 0, True
             if name == "list_files":
                 out: list[str] = []
                 for f in root.rglob("*"):
                     if f.is_file() and not ({"node_modules", ".git", ".next", "dist"} & set(f.parts)):
                         out.append(str(f.relative_to(root)))
-                return "\n".join(sorted(out)) or "(empty)", 0
-            return "ERROR: unknown tool", 0
+                return "\n".join(sorted(out)) or "(empty)", 0, False
+            return "ERROR: unknown tool", 0, True
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": _agentic_system_for(stack)},
@@ -3654,6 +3933,8 @@ class LLMClient:
             return _agentic_project_looks_stub(root, stack)
         turn = 0
         no_progress_turns = 0
+        length_recovery_count = 0
+        protocol_recovery_count = 0
         try:
             async with httpx.AsyncClient(timeout=180) as client:
                 while no_progress_turns < max_turns:
@@ -3790,11 +4071,15 @@ class LLMClient:
                         loop_error = "agentic provider returned malformed JSON after billing"
                         log.warning("llm.or_agentic_malformed", error=str(exc)[:160])
                         break
+                    finish_reason: Any = _MISSING
                     raw_msg: Any = None
-                    if isinstance(data, dict):
+                    if isinstance(data, dict) and isinstance(data.get("choices"), list) and data["choices"]:
                         try:
-                            raw_msg = data["choices"][0]["message"]
-                        except (KeyError, IndexError, TypeError):
+                            first_choice = data["choices"][0]
+                            if isinstance(first_choice, dict):
+                                finish_reason = first_choice.get("finish_reason", _MISSING)
+                                raw_msg = first_choice.get("message")
+                        except (IndexError, KeyError, TypeError):
                             raw_msg = None
                     try:
                         usage_result = self._record_openrouter_agentic_usage(
@@ -3814,37 +4099,76 @@ class LLMClient:
                         loop_error = "agentic provider response had no usable message after billing"
                         log.warning("llm.or_agentic_malformed", error=loop_error)
                         break
-                    usage_result.status = "succeeded"
                     msg = raw_msg
-                    # Own a shallow structural copy so successful write arguments
-                    # can be compacted without mutating the provider response object.
-                    tcs: list[dict[str, Any]] = []
-                    for raw_tc in msg.get("tool_calls") or []:
-                        if not isinstance(raw_tc, dict):
+                    envelope_error = _agentic_envelope_error(msg, finish_reason)
+                    if envelope_error:
+                        usage_result.status = "malformed_response"
+                        loop_error = f"agentic provider malformed response: {envelope_error}"
+                        await report_tool_activity("provider_response", root=root, failed=True)
+                        log.warning("llm.or_agentic_malformed", error=envelope_error)
+                        break
+
+                    refusal_val = msg.get("refusal")
+                    is_refused = bool(refusal_val) or finish_reason in ("content_filter", "refusal")
+                    if is_refused:
+                        usage_result.status = "refused"
+                        loop_error = "agentic provider explicit refusal or content filter"
+                        await report_tool_activity("provider_response", root=root, failed=True)
+                        log.warning("llm.or_agentic_refused", reason="provider_refusal")
+                        break
+
+                    if finish_reason == "length":
+                        usage_result.status = "truncated"
+                        length_recovery_count += 1
+                        await report_tool_activity("provider_response", root=root, failed=True)
+                        if length_recovery_count <= 2:
+                            messages.append({"role": "assistant", "content": msg.get("content") or ""})
+                            messages.append({
+                                "role": "user",
+                                "content": "Your response was truncated due to length limits. Please continue and complete your response.",
+                            })
+                            log.info("llm.or_agentic_length_recovery", attempt=length_recovery_count)
                             continue
-                        tc_copy = dict(raw_tc)
-                        raw_function = raw_tc.get("function")
-                        if isinstance(raw_function, dict):
-                            tc_copy["function"] = dict(raw_function)
-                        tcs.append(tc_copy)
-                    messages.append({"role": "assistant", "content": msg.get("content") or "",
-                                     "tool_calls": tcs})
-                    _capture_agentic_output_text(
-                        {"type": "assistant", "message": msg},
-                        output_text_parts,
-                        output_text_budget,
-                    )
+                        loop_error = "agentic provider response truncated due to length limits"
+                        log.warning("llm.or_agentic_length_exhausted", turns=turn)
+                        break
+
+                    raw_tcs = msg.get("tool_calls")
                     wrote_before = wrote
-                    if tcs:
+                    if isinstance(raw_tcs, list) and len(raw_tcs) > 0:
+                        valid_batch, batch_err_msg, parsed_calls = _validate_tool_batch(raw_tcs)
+                        if not valid_batch:
+                            usage_result.status = "malformed_tool_batch"
+                            await report_tool_activity("provider_response", root=root, failed=True)
+                            protocol_recovery_count += 1
+                            if protocol_recovery_count > 2:
+                                loop_error = f"agentic provider tool protocol exhausted: {batch_err_msg}"
+                                log.warning("llm.or_agentic_protocol_exhausted", error=batch_err_msg)
+                                break
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    f"Your tool batch was rejected before any tool ran: {batch_err_msg}. "
+                                    "Retry with a complete, valid tool-call batch."
+                                ),
+                            })
+                            continue
+
+                        usage_result.status = "succeeded"
+                        tcs = [tc_copy for tc_copy, _name, _args in parsed_calls]
+                        messages.append({
+                            "role": "assistant",
+                            "content": msg.get("content") or "",
+                            "tool_calls": tcs,
+                        })
+                        _capture_agentic_output_text(
+                            {"type": "assistant", "message": msg},
+                            output_text_parts,
+                            output_text_budget,
+                        )
                         empty_response_streak = 0
-                        for tc in tcs:
+                        for tc_copy, name, args in parsed_calls:
                             tool_call_count += 1
-                            fn = tc.get("function") or {}
-                            name = fn.get("name", "")
-                            try:
-                                args = _json.loads(fn.get("arguments") or "{}")
-                            except ValueError:
-                                args = {}
                             await report_tool_activity(name, args, root=root)
                             if name == "finish":
                                 finished, result = True, "OK"
@@ -3855,13 +4179,11 @@ class LLMClient:
                                 elif name == "write_files":
                                     write_tool_calls += 1
                                     batch_write_calls += 1
-                                result, changed_files = _run_tool(name, args)
-                                await report_tool_activity(name, root=root, finished=True)
-                                # Output-side secret masking: a read_file /
-                                # list_files observation can echo a credential
-                                # that reached the worktree; scrub it before the
-                                # text re-enters the message history sent back
-                                # to the provider (and any persisted context).
+                                result, changed_files, tool_failed = _run_tool(name, args)
+                                await report_tool_activity(
+                                    name, root=root,
+                                    finished=not tool_failed, failed=tool_failed,
+                                )
                                 result = _mask_agentic_text(result)
                                 if changed_files:
                                     wrote += changed_files
@@ -3884,19 +4206,12 @@ class LLMClient:
                                     ]
                                     current_missing = _planned_missing_count()
                                     if current_missing < planned_missing_count:
-                                        # A real architecture file landed: this is
-                                        # productive exploration, not sustained churn.
                                         auxiliary_churn_paths.clear()
                                         auxiliary_churn_warned = False
                                         coverage_stagnation_writes = 0
                                         coverage_stagnation_warned = False
                                         incomplete_finish_nudged = False
                                     elif current_missing > 0:
-                                        # Wrapper/build-helper proliferation has
-                                        # its own family-aware guard below. Do not
-                                        # let this broader coverage guard preempt
-                                        # its better diagnostic after a single
-                                        # helper write on a one-file manifest.
                                         non_helper_changes = sum(
                                             1
                                             for changed_path in changed_paths
@@ -3922,25 +4237,35 @@ class LLMClient:
                                             and _agentic_auxiliary_family(normalized)
                                         ):
                                             auxiliary_churn_paths.add(normalized)
-                                    # Live per-file progress so a tailed build log shows
-                                    # codegen advancing (the agentic phase was silent).
                                     log.info("llm.agentic_wrote",
                                              file=str(args.get("path", ""))[:80], n=wrote)
+                                fn_obj = tc_copy.get("function") or {}
                                 doom_recent = (doom_recent
-                                               + [(name, fn.get("arguments") or "")])[-3:]
+                                               + [(name, fn_obj.get("arguments") or "")])[-3:]
                                 if name in {"write_file", "write_files"}:
                                     write_argument_bytes_compacted += (
-                                        self._compact_persisted_write_call(tc, args, result)
+                                        self._compact_persisted_write_call(tc_copy, args, result)
                                     )
-                            messages.append({"role": "tool", "tool_call_id": tc.get("id", ""),
-                                             "content": result})
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc_copy.get("id", ""),
+                                "content": result,
+                            })
                     else:
                         content = (msg.get("content") or "").strip()
                         if content:
-                            finished = True  # final text answer -> done
+                            usage_result.status = "succeeded"
+                            finished = True
                             empty_response_streak = 0
+                            messages.append({"role": "assistant", "content": msg.get("content") or ""})
+                            _capture_agentic_output_text(
+                                {"type": "assistant", "message": msg},
+                                output_text_parts,
+                                output_text_budget,
+                            )
                         else:
                             empty_response_streak += 1
+                            messages.append({"role": "assistant", "content": msg.get("content") or ""})
                     if wrote > wrote_before:
                         progress_deadline = _t.monotonic() + budget
                         no_progress_turns = 0

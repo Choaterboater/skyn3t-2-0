@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import math
 import os
 import re
 import time
@@ -204,6 +205,18 @@ class ActivityLog:
                 path = _path_hint(payload.get("path"))
                 self.emit("warning" if failed else "activity",
                           f"{action}{': ' + path if path else ''}", tool=tool, path=path)
+            elif kind == "retry":
+                model, provider = _token(payload.get("model")), _token(payload.get("provider"))
+                reason, outcome = _token(payload.get("reason")), _token(payload.get("outcome"))
+                delay_val = payload.get("delay")
+                delay_str = f"{delay_val:.1f}s" if isinstance(delay_val, (int, float)) and math.isfinite(delay_val) else "0s"
+                attempt_val = payload.get("attempt", 1)
+                self.emit(
+                    "warning",
+                    f"Retry decision: {model or 'model'} ({reason or 'error'}), attempt {attempt_val}, delay {delay_str}, outcome {outcome}",
+                    model=model,
+                    provider=provider,
+                )
             return
         if event.type in {EventType.BUILD_STARTED, EventType.IMPROVE_STARTED}:
             slug = _text(payload.get("slug"), 128)
@@ -320,14 +333,39 @@ def codegen_activity_scope(workdir: str) -> Iterator[None]:
 
 async def _publish(payload: dict[str, object]) -> None:
     current = _CURRENT.get()
-    if current is not None and current.bus is not None and not current.closed:
-        await current.bus.emit(EventType.CODEGEN_ACTIVITY, "codegen", payload)
+    if current is not None and not current.closed:
+        if current.bus is not None:
+            await current.bus.emit(EventType.CODEGEN_ACTIVITY, "codegen", payload)
+        else:
+            await current.on_event(Event(type=EventType.CODEGEN_ACTIVITY, source="codegen", payload=payload))
 
 
 async def report_codegen_model(provider: str, model: str | None) -> None:
     if activity_enabled():
         await _publish({"event": "model", "provider": _token(provider),
                         "model": _token(model) if model else f"{provider}-default"})
+
+
+async def report_retry_activity(
+    provider: str,
+    model: str,
+    attempt: int,
+    reason: str,
+    delay: float,
+    outcome: str,
+) -> None:
+    if not activity_enabled():
+        return
+    import math as _math
+    await _publish({
+        "event": "retry",
+        "provider": _token(provider),
+        "model": _token(model),
+        "attempt": attempt,
+        "reason": _token(reason),
+        "delay": round(delay, 3) if isinstance(delay, (int, float)) and _math.isfinite(delay) else 0.0,
+        "outcome": _token(outcome),
+    })
 
 
 async def report_tool_activity(

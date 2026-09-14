@@ -82,6 +82,11 @@ the complete verification lifecycle.
 
 ## Useful Commands
 
+**Cortex > Scout now** reports live GitHub matches, a genuine empty result page,
+intentional offline seeds, or degraded fallback with a reason. These are candidate
+counts, not a promise that new proposals were added. A separate warning identifies
+a page cursor that could not be saved, even when the returned research is live.
+
 ```bash
 python -m skyn3t.cli.main doctor
 python -m skyn3t.cli.main studio build "a task tracker with due dates"
@@ -91,6 +96,14 @@ python -m pytest -q
 
 The liveness command writes desktop/mobile browser evidence as described in
 [Responsive Visual Proof](RESPONSIVE_VISUAL_PROOF.md).
+
+Tests isolate settings, data, logs, projects, and vector-store directories.
+Image-upload fixtures also keep reference images inside the test's temporary data.
+Inherited provider credentials,
+endpoint overrides, and parent `SKYN3T_*` settings are cleared before each test;
+tests that need them set explicit fixtures or constructor arguments. This also
+prevents a self-improvement run's mock credentials or model routing from changing
+the suite's defaults without disabling production proof gates.
 
 ## Offline Defaults
 

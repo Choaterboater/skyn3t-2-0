@@ -82,3 +82,14 @@ def test_missing_or_corrupt_cursor_state_degrades_to_page_one(tmp_path):
     state.write_text("{not json", encoding="utf-8")
     assert scout._load_topic_pages() == {}
     assert scout._next_page("anything") == 1
+
+
+def test_persistence_failure_handled_gracefully(tmp_path, monkeypatch):
+    scout = _scout(tmp_path)
+
+    def fail_write(*args, **kwargs):
+        raise OSError("injected storage failure")
+
+    monkeypatch.setattr("skyn3t.atomic_io.atomic_write_text", fail_write)
+    assert scout._advance_and_save_page("test topic", 1) is False
+    assert scout._peek_page("test topic") == 2

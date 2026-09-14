@@ -745,7 +745,10 @@ class CodeImproverAgent(BaseAgent):
             # An elided "// rest unchanged" stub is the same class of damage.
             prose = False
             if rel.lower().endswith(_CODE_EXTS):
-                prose = _looks_like_prose(content) or looks_elided(content)
+                prose = _looks_like_prose(content) or looks_elided(
+                    content,
+                    original=original if payload.get("existing_project") is True else None,
+                )
             if ok and not prose and self._preserves_html_entrypoints(
                 rel, original or "", content
             ):

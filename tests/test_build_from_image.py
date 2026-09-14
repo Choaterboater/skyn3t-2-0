@@ -9,12 +9,13 @@ text-only) → exactly today's behavior, never a crash.
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 
 import pytest
 
 from skyn3t.adapters import llm as llm_mod
 from skyn3t.adapters.llm import LLMClient, _to_data_url
-from skyn3t.config.settings import Settings
+from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.model_router import Tier
 
 # A 1x1 transparent PNG (smallest valid).
@@ -392,7 +393,7 @@ class _FakeState:
         self.event_bus = _FakeBus()
         self.builds = {}
         # This endpoint fixture exercises image handoff, not automatic routing.
-        self.settings = SimpleNamespace(data_dir="data", llm_backend="stub")
+        self.settings = SimpleNamespace(data_dir=get_settings().data_dir, llm_backend="stub")
         self._n = 0
 
     def new_build_id(self):
@@ -400,7 +401,7 @@ class _FakeState:
         return f"b{self._n}"
 
 
-async def test_submit_build_decodes_and_passes_reference_image():
+async def test_submit_build_decodes_and_passes_reference_image(tmp_path):
     studio = _FakeStudio()
     state = _FakeState(studio)
     res = await routes.submit_build(
@@ -416,11 +417,12 @@ async def test_submit_build_decodes_and_passes_reference_image():
     if ref.startswith("data:"):
         assert ref == _DATA_URL
     else:
+        assert Path(ref).resolve().is_relative_to(tmp_path)
         with open(ref, "rb") as f:
             assert f.read() == _PNG_BYTES
 
 
-async def test_submit_build_decodes_and_passes_multiple_reference_images():
+async def test_submit_build_decodes_and_passes_multiple_reference_images(tmp_path):
     studio = _FakeStudio()
     state = _FakeState(studio)
     res = await routes.submit_build(
@@ -434,6 +436,7 @@ async def test_submit_build_decodes_and_passes_multiple_reference_images():
     assert extra.get("reference_image") == refs[0]
     assert refs[0] != refs[1]
     for ref in refs:
+        assert Path(ref).resolve().is_relative_to(tmp_path)
         with open(ref, "rb") as f:
             assert f.read() == _PNG_BYTES
 

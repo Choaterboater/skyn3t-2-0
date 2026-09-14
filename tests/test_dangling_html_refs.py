@@ -13,7 +13,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from skyn3t.studio.proof_run import _dangling_html_refs, extract_error_gaps, proof_run
+import pytest
+
+from skyn3t.studio.proof_run import (
+    _dangling_html_refs,
+    _reachable_files,
+    extract_error_gaps,
+    proof_run,
+)
 
 
 def _site(root: Path, index_html: str) -> None:
@@ -61,6 +68,69 @@ def test_query_and_hash_suffixes_do_not_defeat_resolution(tmp_path):
     _site(tmp_path, '<html><body><script src="app.js?v=2"></script></body></html>')
 
     assert _dangling_html_refs(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "{{ '/assets/css/style.css' | relative_url }}",
+        "{{ url_for('static', filename='style.css') }}",
+        "{% static 'assets/style.css' %}",
+        '{{ url_for("static", filename="style.css") }}',
+        "{% static 'assets/style.css?v=2#chunk' %}",
+        '{% static "assets/style.css" %}',
+    ],
+)
+def test_defers_template_references_but_still_checks_literal_assets(tmp_path, reference):
+    includes = tmp_path / "docs" / "_includes"
+    includes.mkdir(parents=True)
+    (includes / "head_custom.html").write_text(
+        f'<link rel="stylesheet" href="{reference}">'
+        '<script src="missing.js"></script>',
+        encoding="utf-8",
+    )
+
+    assert _dangling_html_refs(tmp_path) == [
+        "docs/_includes/head_custom.html -> missing.js"
+    ]
+
+
+def test_quoted_reference_keeps_embedded_quote_and_html_entities(tmp_path):
+    (tmp_path / "owner's & app.js").write_text("export const ready = true;\n")
+    _site(tmp_path, '<script src="owner\'s &amp; app.js"></script>')
+
+    assert _dangling_html_refs(tmp_path) == []
+
+
+def test_missing_asset_with_query_and_hash_suffix_is_not_ignored(tmp_path):
+    _site(tmp_path, '<script src="missing.js?v=2#entry"></script>')
+
+    assert _dangling_html_refs(tmp_path) == ["index.html -> missing.js"]
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["?v={{ build_id }}", "#{{ anchor }}", "?v={% cache_stamp %}"],
+)
+def test_template_suffix_does_not_hide_a_literal_missing_asset(tmp_path, suffix):
+    _site(tmp_path, f'<script src="missing.js{suffix}"></script>')
+
+    assert _dangling_html_refs(tmp_path) == ["index.html -> missing.js"]
+
+
+@pytest.mark.parametrize("suffix", ["?v=2#entry", "?v={{ build_id }}#entry"])
+def test_reachable_entry_with_query_and_hash_suffix(tmp_path, suffix):
+    entry = tmp_path / "bootstrap.js"
+    entry.write_text("export const ready = true;\n")
+    _site(tmp_path, f'<script src="bootstrap.js{suffix}"></script>')
+
+    assert entry.resolve() in _reachable_files(tmp_path)
+
+
+def test_incomplete_template_marker_remains_a_literal_missing_reference(tmp_path):
+    _site(tmp_path, '<script src="{{"></script>')
+
+    assert _dangling_html_refs(tmp_path) == ["index.html -> {{"]
 
 
 def test_the_real_golf_failure_shape(tmp_path):

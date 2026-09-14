@@ -269,6 +269,10 @@ manager and existing lockfiles; native-provider SDKs and HTML template
 fragments are not forced into factory conventions. Preview/deploy stay blocked until delivery; import never sends
 changes back to the original repository or pushes them anywhere.
 
+Literal-asset proof defers Liquid/Jinja-generated URLs to their renderer while
+still checking neighboring literal references, including cache-busted URLs
+whose query or fragment is templated.
+
 Docker-backed Node proof currently uses Node 22, with Corepack selecting the
 declared pnpm or Yarn version. Its writable package-manager caches are reused
 between dependency installation, build, and test steps. Projects requiring a

@@ -23,6 +23,7 @@ import time
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from functools import lru_cache
+from html import escape, unescape
 from pathlib import Path
 from typing import Any
 
@@ -938,7 +939,7 @@ def _reachable_files(root: Path) -> set[Path]:
             markup = html.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for ref in _HTML_LOCAL_REF_RE.findall(markup):
+        for ref in _literal_html_asset_refs(markup):
             target = ref.strip()
             if not target or target.startswith(
                 ("http://", "https://", "//", "data:", "mailto:")
@@ -969,9 +970,27 @@ def _reachable_files(root: Path) -> set[Path]:
 
 
 _HTML_LOCAL_REF_RE = re.compile(
-    r"""<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*["']([^"'#?]+)["']""",
+    r"""<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)')""",
     re.IGNORECASE,
 )
+_HTML_TEMPLATE_REF_RE = re.compile(r"{{.*?}}|{%.*?%}", re.DOTALL)
+_HTML_REF_BOUNDARY_RE = re.compile(_HTML_TEMPLATE_REF_RE.pattern + r"|[?#]", re.DOTALL)
+
+
+def _literal_html_asset_refs(markup: str) -> list[str]:
+    """Resolve literal URL spelling; template-generated URLs need their renderer."""
+    refs: list[str] = []
+    # Template-owned quotes must not terminate the surrounding HTML attribute.
+    quoted_markup = _HTML_TEMPLATE_REF_RE.sub(lambda match: escape(match[0]), markup)
+    for double_quoted, single_quoted in _HTML_LOCAL_REF_RE.findall(quoted_markup):
+        ref = unescape(double_quoted or single_quoted).strip()
+        boundary = _HTML_REF_BOUNDARY_RE.search(ref)
+        if boundary:
+            if boundary[0] not in {"?", "#"}:
+                continue
+            ref = ref[:boundary.start()]
+        refs.append(ref)
+    return refs
 
 
 def _dangling_html_refs(root: Path) -> list[str]:
@@ -986,7 +1005,8 @@ def _dangling_html_refs(root: Path) -> list[str]:
 
     Only same-project relative targets are considered; absolute URLs, protocol-
     relative URLs, data: URIs and root-absolute paths (which a dev server may
-    map elsewhere) are all skipped. Pure and offline.
+    map elsewhere) and complete Liquid/Jinja expressions are skipped.
+    Literal targets in the same template are still checked. Pure and offline.
     """
     out: list[str] = []
     for f in _iter_files(root):
@@ -997,7 +1017,7 @@ def _dangling_html_refs(root: Path) -> list[str]:
         except OSError:
             continue
         rel_html = str(f.relative_to(root)).replace("\\", "/")
-        for ref in _HTML_LOCAL_REF_RE.findall(text):
+        for ref in _literal_html_asset_refs(text):
             target = ref.strip()
             if not target or target.startswith(("http://", "https://", "//", "data:", "/", "mailto:")):
                 continue

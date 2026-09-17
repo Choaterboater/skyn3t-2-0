@@ -471,6 +471,29 @@ def test_test_author_accepts_an_astro_page_as_source_and_entrypoint(tmp_path):
     assert generated_metadata not in namespace["_sources"]()
 
 
+def test_test_author_accepts_mcp_server_entrypoint(tmp_path, monkeypatch):
+    monkeypatch.delenv("SKYN3T_PROJECT_DIR", raising=False)
+    server = tmp_path / "server.py"
+    server.write_text(
+        "from mcp.server.fastmcp import FastMCP\n"
+        "mcp = FastMCP('example')\n"
+        "if __name__ == '__main__':\n"
+        "    mcp.run()\n"
+    )
+    generated = render_test_file(
+        ["project produces an MCP entrypoint"], "An MCP server", "mcp-app",
+    )
+    namespace = {"__file__": str(tmp_path / "tests" / "test_acceptance_mcp.py")}
+    exec(compile(generated, namespace["__file__"], "exec"), namespace)
+
+    # Structural acceptance must recognize the entry without importing the SDK
+    # or running the server; only the MCP protocol gate exercises its behavior.
+    namespace["test_project_has_entrypoint"]()
+    server.write_text("")
+    with pytest.raises(AssertionError, match="no recognizable entrypoint"):
+        namespace["test_project_has_entrypoint"]()
+
+
 def test_test_author_promotes_explicit_game_counts_to_real_checks():
     brief = "Code Islands is a 120-level journey with 12 islands and 4 phases."
     crit = derive_acceptance(brief, {})

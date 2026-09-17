@@ -216,3 +216,21 @@ def test_rescore_error_does_not_veto_a_reviewer_go(tmp_path, monkeypatch):
     # The structural gate was UNAVAILABLE, not failed: the brief-aware go stands.
     assert outcome.manifest["extra"]["rescore"]["verdict"] == "error"
     assert outcome.verdict == "go"
+
+
+def test_structural_pass_does_not_inflate_brief_quality(tmp_path, monkeypatch):
+    class _ModestReviewer(_BriefBlindReviewer):
+        async def execute(self, task: TaskRequest) -> TaskResult:
+            return TaskResult(
+                task_id=task.task_id, success=True,
+                output={"score": 60.0, "verdict": "go", "gaps": []},
+            )
+
+    monkeypatch.setattr(
+        StudioRunner, "_rescore_delivered",
+        lambda self, project_dir, stack="": ("go", 100.0, []),
+    )
+    outcome, _ = _build(tmp_path, _ModestReviewer)
+    # Even perfect proof contributes only 40 points; file structure cannot
+    # replace the reviewer's assessment of the requested functionality.
+    assert outcome.score <= 76.0

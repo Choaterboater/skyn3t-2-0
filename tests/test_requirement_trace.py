@@ -246,6 +246,38 @@ def test_contract_hash_is_canonical_and_ignores_non_requirement_product_state():
     assert requirement_contract_sha256(product) == requirement_contract_sha256(product_dict)
     assert requirement_contract_sha256(product) == requirement_contract_sha256(reordered)
 
+def test_legacy_pasted_whitespace_compiles_against_normalized_evidence_binding():
+    product = _product(_requirement("Read Mist sites and devices", "proof:build"))
+    legacy = product.to_dict()
+    legacy["requirements"][0]["text"] = "  Read Mist sites\r\n\tand devices  "
+    before = copy.deepcopy(legacy)
+    extra = {"proof": _proof(build="passed")}
+    binding = _binding(product, extra)
+
+    trace = _compile(legacy, extra, binding=binding)
+
+    assert trace["status"] == "passed"
+    assert trace["fresh"] is True
+    assert trace["requirements"][0]["text"] == product.requirements[0].text
+    assert trace["requirements"][0]["requirement_id"] == product.requirements[0].id
+    assert requirement_contract_sha256(legacy) == requirement_contract_sha256(product)
+    assert _binding(legacy, extra) == binding
+    assert legacy == before
+
+
+@pytest.mark.parametrize("control", ["\x00", "\x0b", "\x0c", "\x1b", "\x1c", "\x7f", "\x85", "\x9b"])
+def test_legacy_requirement_controls_fail_explicitly(control):
+    product = _product(_requirement("Read sites", "proof:build")).to_dict()
+    product["requirements"][0]["text"] = f"{control}Read sites{control}"
+
+    with pytest.raises(RequirementTraceValidationError, match=r"requirements\[0\]\.text.*control characters"):
+        _compile(product, {}, binding=None)
+    with pytest.raises(RequirementTraceValidationError, match="control characters"):
+        requirement_contract_sha256(product)
+    with pytest.raises(RequirementTraceValidationError, match="control characters"):
+        _binding(product, {})
+
+
 
 @pytest.mark.parametrize(
     ("field", "value"),

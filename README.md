@@ -255,6 +255,15 @@ The **Foundry** dashboard streams every build live: the Verify Ladder, the real
 stage plan with the agent, score, cost, and gaps per stage, a files-so-far view,
 and a live preview.
 
+An explicitly incomplete generator run cannot receive `GO`, including in Lab
+mode. Retained files remain available as `completed_no_go`; that is recovery
+material, not a verified delivery. MCP builds require a successful protocol
+check; missing SDK/runtime evidence is reported as unavailable and withholds
+`GO` without claiming that the application itself failed. Invalid requirement
+evidence also withholds delivery. Structural rescoring does not raise the
+brief-aware review score, and unsuccessful builds cannot trigger pattern
+promotion.
+
 ### Work on a project SkyN3t did not create
 
 Import a local project, then give **Improve** a specific repair, refactor,

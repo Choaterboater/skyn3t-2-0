@@ -4,6 +4,16 @@ _Last reviewed: 2026-09-17 (5,353 passed / 10 skipped; full suite green).
 Historical design trend: 7/15 → 11/15 → 14/15 → effectively 15/15 live codex,
 zero AI-look warnings with briefs threaded._
 
+**2026-09-17 — incomplete MCP delivery correction:** incomplete generation now
+blocks `GO` in Lab and release modes while retaining files as `completed_no_go`.
+MCP protocol verification must actually pass; unavailable checks remain explicit.
+Generated entrypoint acceptance recognizes `server.py`. Requirement prose
+normalizes pasted tabs/newlines while rejecting other control characters;
+invalid terminal traces withhold delivery. Structural rescoring no longer
+raises the brief-aware review score, and failed outcomes cannot trigger pattern
+promotion. Saved Mist evidence was replayed through the corrected gates without
+executing the generated project or modifying its historical manifest.
+
 **2026-09-17 — required-outcome verification, bounded advisors, trusted
 recovery, and a learning surface:** the browser QA gate now verifies
 **required workflows** derived from the product spec (primary, persistence,

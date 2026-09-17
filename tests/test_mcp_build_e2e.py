@@ -4,8 +4,8 @@ The mcp stack predates the seal pattern its siblings got (test_rag_build_e2e,
 test_workflow_build_e2e); this closes the set: an unpinned MCP brief routes to
 the mcp stack (the SYSTEM chooses), the offline stub backend delivers the
 runnable scaffold (server.py + tools.py, no npm fallback), the proof passes,
-and the mcp_check gate records a verdict — a REAL pass when the mcp SDK is
-importable, a clean degrade-open skip (reason names the SDK) when it is not.
+and the mcp_check gate records a protocol pass when the SDK is importable or
+unavailable verification when it is not. Neither makes the stub fulfill a brief.
 Offline + hermetic like its siblings.
 """
 
@@ -49,14 +49,14 @@ def test_offline_mcp_build_end_to_end(tmp_path):
         assert gate.get("triggered") is True
         assert "shipped the stub" in gate.get("reason", "")
 
-        # The gate always records a verdict: a REAL pass with the SDK installed,
-        # else a degrade-open skip whose reason names the SDK (never silence,
-        # never a false flag).
+        # Missing runtime evidence cannot masquerade as a successful protocol check.
         mc = (outcome.manifest.get("extra") or {}).get("mcp_check") or {}
         assert mc, "mcp_check gate never ran / never recorded its verdict"
         if mc.get("skipped"):
-            assert "mcp" in str(mc.get("reason", "")).lower(), mc
-            assert mc.get("gaps") == [], "a skipped gate must never emit gaps"
+            assert mc.get("status") == "unavailable", mc
+            assert mc.get("unavailable") is True
+            assert mc.get("ok") is False
+            assert mc.get("gaps") == [], "environment failures are not code-repair gaps"
         else:
             assert mc.get("ok") is True, mc.get("issues")
 

@@ -3,15 +3,15 @@
 The gate spawns the delivered ``server.py`` and speaks the MCP JSON-RPC protocol
 over stdio: ``initialize`` handshake → ``tools/list`` → ``tools/call`` each tool
 with schema-derived fixture args → one malformed call. It NEVER hangs a build
-(every read is time-bounded), NEVER raises, and soft-skips when the mcp SDK / a
-Python runtime is unavailable. It is ADVISORY (like seo_check): issues feed the
-fix-loop; it never flips the verdict.
+(every read is time-bounded), NEVER raises, and records unavailable verification
+when the mcp SDK / a Python runtime cannot run. Issues feed the fix-loop;
+unavailable evidence must not be counted as successful verification.
 
 The ``mcp`` package is NOT a test dependency, so these fixtures speak RAW
 newline-delimited JSON-RPC over stdio WITHOUT the SDK — the gate speaks the
 protocol, not the SDK, so it exercises every path on any machine. (The real
-scaffold uses the SDK; the gate soft-skips when the SDK can't boot — see the
-missing-lib fixture.)
+scaffold uses the SDK; the gate reports unavailable when the SDK can't boot —
+see the missing-lib fixture.)
 """
 
 from __future__ import annotations
@@ -190,6 +190,8 @@ def test_good_server_passes(tmp_path):
     assert v.issues == []
     assert set(v.tools) == {"add", "shout"}
     assert v.gaps() == []
+    assert v.to_dict()["status"] == "pass"
+    assert not v.to_dict()["unavailable"]
 
 
 def test_server_importing_a_sibling_module_boots(tmp_path):
@@ -212,6 +214,8 @@ def test_raising_tool_is_an_issue(tmp_path):
     assert any("boom" in i for i in v.issues), v.issues
     # Issues surface to the fix-loop as gaps.
     assert v.gaps()
+    assert v.to_dict()["status"] == "fail"
+    assert not v.to_dict()["unavailable"]
 
 
 def test_hanging_server_times_out_without_hanging_the_build(tmp_path):
@@ -229,14 +233,37 @@ def test_hanging_server_times_out_without_hanging_the_build(tmp_path):
     assert any("timeout" in i.lower() or "did not respond" in i.lower() for i in v.issues), v.issues
 
 
-def test_missing_mcp_lib_soft_skips(tmp_path):
+def test_missing_mcp_lib_reports_unavailable_verification(tmp_path):
     _write_server(tmp_path, _MISSING_LIB_SERVER)
     v = check_mcp(tmp_path, stack="mcp", python_exec=sys.executable)
-    # Could-not-run (SDK absent) → degrade open: skipped, ok=False, NO gaps/issues.
+    # Environment failure is not an implementation-repair gap or a protocol pass.
     assert v.skipped, v.to_dict()
     assert not v.ok
     assert v.gaps() == []
-    assert "mcp" in v.reason.lower()
+    assert v.issues == []
+    recorded = v.to_dict()
+    assert recorded["status"] == "unavailable"
+    assert recorded["unavailable"] is True
+    assert recorded["ok"] is False
+    assert recorded["checked"]["booted"] is False
+    assert recorded["checked"]["handshake"] == "unavailable"
+    assert recorded["checked"]["missing_dependency"] == "mcp"
+
+
+def test_incompatible_mcp_import_is_a_startup_defect(tmp_path):
+    _write_server(
+        tmp_path,
+        _MISSING_LIB_SERVER.replace(
+            "ModuleNotFoundError: No module named 'mcp'",
+            "ImportError: cannot import name 'FastMCP' from 'mcp.server.fastmcp'",
+        ),
+    )
+    v = check_mcp(tmp_path, stack="mcp", python_exec=sys.executable)
+    assert not v.skipped
+    assert v.to_dict()["status"] == "fail"
+    assert not v.to_dict()["unavailable"]
+    assert v.checked["booted"] is False
+    assert v.gaps()
 
 
 def test_non_mcp_stack_soft_skips(tmp_path):
@@ -244,11 +271,25 @@ def test_non_mcp_stack_soft_skips(tmp_path):
     v = check_mcp(tmp_path, stack="fastapi", python_exec=sys.executable)
     assert v.skipped
     assert v.gaps() == []
+    assert not v.ok
+    assert v.to_dict()["status"] == "skipped"
+    assert v.to_dict()["unavailable"] is False
 
 
-def test_no_server_file_soft_skips(tmp_path):
+def test_no_server_file_reports_unavailable_verification(tmp_path):
     v = check_mcp(tmp_path, stack="mcp", python_exec=sys.executable)
     assert v.skipped
+    assert v.gaps() == []
+    assert v.to_dict()["status"] == "unavailable"
+    assert v.to_dict()["ok"] is False
+
+
+def test_no_python_runtime_reports_unavailable_verification(tmp_path, monkeypatch):
+    _write_server(tmp_path, _GOOD_SERVER)
+    monkeypatch.setattr("skyn3t.studio.mcp_check._python_exec", lambda explicit: None)
+    v = check_mcp(tmp_path, stack="mcp")
+    assert v.to_dict()["status"] == "unavailable"
+    assert v.to_dict()["ok"] is False
     assert v.gaps() == []
 
 

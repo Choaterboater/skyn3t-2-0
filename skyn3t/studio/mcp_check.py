@@ -20,16 +20,15 @@ Design contract — mirrors :mod:`skyn3t.studio.seo_check`:
 * **Never hangs a build.** Every stdout read is time-bounded (a background reader
   thread + a deadline-bounded queue). A wedged server → a timeout ISSUE, never a
   blocked build.
-* **Never raises.** Any unexpected failure degrades to a soft-skip.
-* **Soft-skips (degrade open, no gaps) when it CANNOT run the check** — a non-mcp
-  stack, no ``server.py``, no Python runtime, or the ``mcp`` SDK not importable
-  (the delivered server crashes on boot with a ``No module named 'mcp'``). This
-  is the deliberate split the wave-2 brief calls for: the scaffold's runtime dep
-  is declared, and the gate soft-skips if it can't boot.
+* **Never raises.** Any unexpected failure records unavailable verification.
+* **Distinguishes not applicable from unavailable.** A non-mcp stack is skipped;
+  a missing server, Python runtime, or SDK means verification is unavailable,
+  not successful. Unavailable checks remain skipped with no code-repair gaps:
+  an environment failure must not trigger speculative implementation repairs.
 * **Records ISSUES (ok=False, gaps feed the fix-loop) when it RAN and found a real
   defect** — a broken handshake, an empty tool list, an invalid schema, a tool
-  that errors on valid input, or a crash/hang. ADVISORY: the runner records the
-  verdict and feeds gaps to ONE repair, but NEVER flips the build's verdict.
+  that errors on valid input, or a crash/hang. The runner owns release policy and
+  must not count unavailable verification as a pass.
 
 The gate speaks the PROTOCOL, not the SDK — so any MCP-compliant stdio server
 (FastMCP, the low-level ``Server`` API, or a hand-rolled JSON-RPC loop) is
@@ -64,12 +63,10 @@ _BOOT_GRACE = 6.0  # wait for a boot-crash to surface on stderr before classifyi
 _MAX_TOOLS = 24  # bound the tools we exercise so a pathological list can't stall
 _PROTOCOL_VERSION = "2024-11-05"
 
-# The delivered server crashed on boot because the mcp SDK is not importable —
-# a degrade-open SKIP signal, not a code defect (its dep is declared in
-# requirements.txt; the proof env just doesn't have it installed).
+# The delivered server cannot boot without its SDK: verification is unavailable,
+# not a protocol pass or evidence of an implementation defect.
 _MCP_MISSING_RE = re.compile(
-    r"No module named ['\"]mcp['\"]"
-    r"|(?:ModuleNotFoundError|ImportError)[^\n]*\bmcp\b",
+    r"No module named ['\"]mcp['\"]",
     re.I,
 )
 
@@ -78,11 +75,10 @@ _MCP_MISSING_RE = re.compile(
 class McpVerdict:
     """The outcome of the deterministic MCP gate.
 
-    ``ok`` is a property (not a gate): True when the gate RAN and found no issues.
-    ``skipped`` marks a degrade-open (non-mcp stack, no server, no runtime, or the
-    SDK not importable): a skipped verdict is ``ok=False`` yet produces NO gaps, so
-    it can never false-flag a build. Advisory only — the runner never flips the
-    verdict from this.
+    ``ok`` means the protocol check ran without issues, not that the tools satisfy
+    the product brief. ``unavailable`` distinguishes applicable checks that could
+    not run from not-applicable skips. Both remain ``ok=False`` with no repair
+    gaps; the runner must withhold verified status when evidence is unavailable.
     """
 
     skipped: bool = False
@@ -90,15 +86,26 @@ class McpVerdict:
     tools: list[str] = field(default_factory=list)
     checked: dict[str, Any] = field(default_factory=dict)
     reason: str = ""
+    unavailable: bool = False
 
     @property
     def ok(self) -> bool:
-        return (not self.skipped) and (not self.issues)
+        return (not self.skipped) and (not self.unavailable) and (not self.issues)
+
+    @property
+    def status(self) -> str:
+        if self.unavailable:
+            return "unavailable"
+        if self.skipped:
+            return "skipped"
+        return "pass" if self.ok else "fail"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
             "skipped": self.skipped,
+            "unavailable": self.unavailable,
+            "status": self.status,
             "issues": list(self.issues),
             "tools": list(self.tools),
             "checked": dict(self.checked),
@@ -107,10 +114,8 @@ class McpVerdict:
         }
 
     def gaps(self) -> list[str]:
-        """Actionable repair strings for the improve loop. Empty when the verdict is
-        ok or a soft-skip (a could-not-run gate must never false-flag). The issues
-        are authored to be directly actionable, so they ARE the gaps."""
-        if self.skipped or self.ok:
+        """Actionable code-repair strings; absent evidence is not a code defect."""
+        if self.skipped or self.unavailable or self.ok:
             return []
         return list(self.issues)
 
@@ -369,22 +374,22 @@ def check_mcp(
     list_timeout: float = _LIST_TIMEOUT,
     call_timeout: float = _CALL_TIMEOUT,
 ) -> McpVerdict:
-    """Drive the delivered MCP server over stdio and return an advisory
-    :class:`McpVerdict`. Never raises; never hangs a build (all reads are
-    time-bounded); soft-skips when it cannot run (see the module docstring)."""
+    """Drive the delivered MCP server over stdio and return a protocol verdict.
+    Never raises or hangs; records unavailable evidence when it cannot run.
+    A protocol pass does not verify brief-specific tool behavior."""
     try:
         s = (stack or "").strip().lower()
         if s and s != "mcp":
             return McpVerdict(skipped=True, reason=f"stack '{stack}' is not an mcp stack")
         root = Path(project_dir)
         if not root.is_dir():
-            return McpVerdict(skipped=True, reason="project dir is not a directory")
+            return McpVerdict(skipped=True, unavailable=True, reason="project dir is not a directory")
         server = root / server_rel
         if not server.is_file():
-            return McpVerdict(skipped=True, reason=f"no {server_rel} to run")
+            return McpVerdict(skipped=True, unavailable=True, reason=f"no {server_rel} to run")
         py = _python_exec(python_exec)
         if not py:
-            return McpVerdict(skipped=True, reason="no python interpreter available")
+            return McpVerdict(skipped=True, unavailable=True, reason="no python interpreter available")
         return _mask_verdict(_probe_server(
             root, server.name, py,
             handshake_timeout=handshake_timeout,
@@ -392,7 +397,7 @@ def check_mcp(
             call_timeout=call_timeout,
         ))
     except Exception as exc:  # noqa: BLE001 - a gate must never break a build
-        return McpVerdict(skipped=True, reason=_mask(f"mcp check error: {exc}"))
+        return McpVerdict(skipped=True, unavailable=True, reason=_mask(f"mcp check error: {exc}"))
 
 
 def _probe_server(
@@ -422,7 +427,7 @@ def _probe_server(
             env=env,
         )
     except Exception as exc:  # noqa: BLE001
-        return McpVerdict(skipped=True, reason=f"could not spawn server: {exc}")
+        return McpVerdict(skipped=True, unavailable=True, reason=f"could not spawn server: {exc}")
 
     client = _StdioClient(proc)
     checked: dict[str, Any] = {}
@@ -439,8 +444,12 @@ def _probe_server(
             client.wait_exit(_BOOT_GRACE)
             err = client.stderr_text()
             if _MCP_MISSING_RE.search(err):
-                return McpVerdict(skipped=True,
-                                  reason="mcp SDK not importable — gate soft-skipped (declared runtime dep)")
+                return McpVerdict(
+                    skipped=True,
+                    unavailable=True,
+                    reason="mcp SDK not importable — protocol verification unavailable",
+                    checked={"booted": False, "handshake": "unavailable", "missing_dependency": "mcp"},
+                )
             return McpVerdict(
                 issues=[f"server exited during startup without completing the MCP "
                         f"handshake (it crashed on boot): {_tail(err)}"],

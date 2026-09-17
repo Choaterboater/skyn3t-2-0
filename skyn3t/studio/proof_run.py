@@ -1091,8 +1091,8 @@ class ProofResult:
     score: float = 0.0  # 0..100 completeness signal
     detail: dict[str, Any] = field(default_factory=dict)
     # Failures that would have flipped ``passed`` under release posture but were
-    # demoted to findings under lab posture (failing LLM-authored tests, a ruff
-    # style failure, thin checklist coverage). ``detail`` is populated
+    # demoted to findings under lab posture (a ruff style failure or thin
+    # checklist coverage). Executed test failures always block. ``detail`` is populated
     # identically either way, so ``error_gaps()`` still feeds the fix loop the
     # same repair strings — advisory means "does not block", never "not
     # repaired". Empty by default, so every existing consumer is unaffected.
@@ -1585,10 +1585,11 @@ def extract_error_gaps(
     # Real pytest failures (500-char tail from _run_generated_tests).
     if d.get("tests") == "failed" and d.get("test_summary"):
         gaps.append(f"TESTS FAILED — make the code satisfy these failing tests:\n{d['test_summary']}")
-    for channel in ("swift_tests", "swift_ios_tests"):
+    for channel in ("node_tests", "swift_tests", "swift_ios_tests"):
+        label = "NODE TESTS" if channel == "node_tests" else channel.replace("_", " ").upper()
         summary = d.get(f"{channel}_summary")
         if d.get(channel) == "failed" and summary:
-            gaps.append(f"{channel.replace('_', ' ').upper()} FAILED — fix these failing tests:\n{summary}")
+            gaps.append(f"{label} FAILED — fix these failing tests:\n{summary}")
     # Opted-in Python quality check. The formatter repairs common generated
     # layout defects; anything that remains is a real source problem and should
     # reach the code-improver with Ruff's file/line diagnostics intact.
@@ -4169,12 +4170,12 @@ def proof_run(
 
     ``posture``: "lab" | "release" (None -> the ``build_posture`` setting). Under
     "lab", failures that are about QUALITY rather than whether the app RUNS —
-    failing LLM-authored tests, a ruff style failure, thin checklist coverage —
+    a ruff style failure or thin checklist coverage —
     are recorded in ``advisory_failures`` instead of flipping ``passed``.
     ``detail`` is populated identically, so ``error_gaps()`` still feeds the fix
     loop. Everything that proves the delivery is broken (syntax errors, no
     substantive files, a dead entrypoint, unresolved imports, a failed native
-    build) blocks in BOTH postures.
+    build or an executed test failure) blocks in BOTH postures.
     """
     pdir = Path(project_dir)
     checklist = checklist or []
@@ -4473,7 +4474,7 @@ def proof_run(
                         # The app COMPILES — `astro build` alone produced the
                         # pages — but a chained type-checker objected. That is a
                         # quality finding, not a broken delivery, so it is
-                        # treated exactly like ruff and the generated tests:
+                        # treated exactly like ruff:
                         # recorded, score-dampening, fed to the fix loop, and
                         # blocking only under release posture.
                         detail["type_check"] = "failed"
@@ -4510,14 +4511,9 @@ def proof_run(
                 detail["tests"] = "passed" if tests_passed else "failed"
                 detail["test_summary"] = summary
                 if not tests_passed:
-                    # LLM-authored tests are wrong far more often than the app
-                    # is. Under lab posture record and still feed the fix loop
-                    # (detail is unchanged, so error_gaps() is identical) rather
-                    # than failing a delivery over a bad generated assertion.
-                    if lab_posture:
-                        advisory_failures.append("tests")
-                    else:
-                        passed = False
+                    # Failed execution is negative evidence in every posture,
+                    # regardless of whether the assertion was generated.
+                    passed = False
                     if "<tests>" not in missing:
                         missing = [*missing, "<tests>"]
             else:
@@ -4569,16 +4565,13 @@ def proof_run(
                 detail["node_tests"] = "passed" if t_ok else "failed"
                 detail["node_tests_summary"] = t_sum
                 if not t_ok:
-                    # Same reasoning as the generated-test step above: a failing
-                    # LLM-authored test is a repair signal, not a failed delivery.
-                    if lab_posture:
-                        advisory_failures.append("node_tests")
-                    else:
-                        passed = False
+                    passed = False
                     if "<node-tests>" not in missing:
                         missing = [*missing, "<node-tests>"]
-            elif t_sum:
-                detail["node_tests_summary"] = t_sum
+            else:
+                detail["node_tests"] = "skipped"
+                if t_sum:
+                    detail["node_tests_summary"] = t_sum
     finally:
         try:
             if mock_seam is not None:

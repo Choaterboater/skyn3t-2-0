@@ -127,6 +127,21 @@ def _text(
     return clean
 
 
+def normalize_requirement_text(value: Any, *, path: str = "requirement.text") -> str:
+    """Canonicalize pasted prose without erasing unsafe control characters."""
+    if not isinstance(value, str):
+        raise ProductSpecValidationError(f"{path} must be a string")
+    # Tabs and line endings are ordinary pasted prose. Other C0/C1 controls
+    # (including whitespace-like separators) must fail before strip/sub.
+    if any(
+        (ord(character) < 32 and character not in "\t\r\n")
+        or 127 <= ord(character) <= 159
+        for character in value
+    ):
+        raise ProductSpecValidationError(f"{path} contains control characters")
+    return _text(_WHITESPACE_RE.sub(" ", value), path=path)
+
+
 def _positive_int(value: Any, *, path: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ProductSpecValidationError(f"{path} must be a positive integer")
@@ -224,7 +239,7 @@ class RequirementRecord:
     provenance: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.text = _text(self.text, path="requirement.text")
+        self.text = normalize_requirement_text(self.text)
         self.id = _text(
             self.id or deterministic_requirement_id(self.text),
             path="requirement.id",
@@ -272,7 +287,7 @@ class RequirementRecord:
             raise ProductSpecValidationError(f"{path} may not contain both text and statement")
         text = data.get("text", data.get("statement"))
         return cls(
-            text=_text(text, path=f"{path}.text"),
+            text=normalize_requirement_text(text, path=f"{path}.text"),
             id=_text(
                 data.get("id", ""),
                 path=f"{path}.id",

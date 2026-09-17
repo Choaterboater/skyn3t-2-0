@@ -71,6 +71,27 @@ def test_deterministic_ids_are_stable_and_normalized() -> None:
     assert backlog.id.startswith("backlog-")
 
 
+def test_multiline_requirement_text_normalizes_without_changing_identity() -> None:
+    brief = "  Read Mist sites\r\n\tand devices.\n Preserve write confirmations.  "
+    normalized = "Read Mist sites and devices. Preserve write confirmations."
+    requirement = RequirementRecord(text=brief)
+    restored = RequirementRecord.from_dict({"id": "saved-id", "text": brief})
+
+    assert requirement.text == normalized
+    assert requirement.id == deterministic_requirement_id(brief)
+    assert requirement.id == deterministic_requirement_id(normalized)
+    assert restored.id == "saved-id"
+    assert restored.to_dict()["text"] == normalized
+
+
+@pytest.mark.parametrize("control", ["\x00", "\x0b", "\x0c", "\x1b", "\x1c", "\x7f", "\x85", "\x9b"])
+def test_requirement_text_rejects_controls_before_stripping(control) -> None:
+    with pytest.raises(ProductSpecValidationError, match="text.*control characters"):
+        RequirementRecord(text=f"Read {control}sites")
+    with pytest.raises(ProductSpecValidationError, match="text.*control characters"):
+        RequirementRecord.from_dict({"text": f"{control}Read sites{control}"})
+
+
 def test_product_contract_prompt_block_is_bounded_and_labels_backlog_optional() -> None:
     from skyn3t.studio.product_spec import product_contract_prompt_block
 

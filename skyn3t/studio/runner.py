@@ -2023,6 +2023,17 @@ class StudioRunner:
     def _apply_ai_native_gates(
         self, manifest, verdict: str, *, posture: GatePosture | None = None
     ) -> str:
+        if str(getattr(manifest, "stack", "")).lower() == "mcp":
+            check = manifest.extra.get("mcp_check")
+            if not isinstance(check, dict) or check.get("skipped") is True or check.get("ok") is not True:
+                reason = (
+                    str(check.get("reason") or "MCP protocol verification did not pass")
+                    if isinstance(check, dict) else "MCP protocol verification is missing"
+                )
+                manifest.extra["verification_unavailable"] = reason
+                return self._gate_outcome(
+                    manifest, "mcp_verification", False, verdict, reason, posture=posture
+                )
         # ai_native_gates_verdict stays the does-the-aggregation-run switch;
         # the POSTURE decides whether a real finding blocks (release, or an
         # explicit blocking_gates="ai_native") or records + caps the score
@@ -3129,6 +3140,11 @@ class StudioRunner:
         """Invalidate a passing trace if the final delivered tree drifted."""
         trace = manifest.extra.get("requirement_trace")
         binding = manifest.extra.get("requirement_evidence_binding")
+        if isinstance(trace, dict) and trace.get("mode") == "invalid":
+            reason = str(manifest.extra.get("requirement_trace_error") or "invalid requirement evidence")
+            trace["blocks_delivery"] = True
+            manifest.extra["requirement_trace_gate"] = reason
+            return min(final_score, score_cap), "no_go"
         if (
             not isinstance(trace, dict)
             or trace.get("go_eligible") is not True
@@ -5512,7 +5528,7 @@ class StudioRunner:
                 # names so repeat uses still accumulate toward promotion.
                 shape = self._build_pattern_shape(plan)
                 rec = self.patterns.record(plan.stack, shape, float(manifest.score or 0.0))
-                if self.skills is not None and rec is not None:
+                if helpful and self.skills is not None and rec is not None:
                     self.skills.maybe_promote_pattern(rec)
             except Exception as exc:  # noqa: BLE001
                 log.warning("patterns.record_failed", error=str(exc))
@@ -6910,9 +6926,6 @@ class StudioRunner:
                 # structure looks fine now" alone must not promote it).
                 if verdict == "go" and re_verdict == "go":
                     verdict = "go"
-                    # Score may recover toward the structural reading only once
-                    # the brief-aware signal already passed.
-                    reviewer_score = max(reviewer_score, re_score)
                 else:
                     verdict = "no_go"
                     # Do not let a higher structural rescore inflate the final

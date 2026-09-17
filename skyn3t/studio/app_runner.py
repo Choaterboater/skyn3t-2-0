@@ -24,6 +24,11 @@ from pathlib import Path
 from typing import Any
 
 from skyn3t.agents.config_detector import detect_from_code
+from skyn3t.node_package_manager import (
+    NPM_LOCKFILES,
+    existing_node_install_args,
+    node_package_manager,
+)
 from skyn3t.npm_utils import (
     discard_foreign_node_modules,
     foreign_node_modules_reason,
@@ -92,6 +97,7 @@ class RunSpec:
     # and which the app needs but we couldn't find a value for (host env / store).
     injected: tuple[str, ...] = ()
     missing_secrets: tuple[str, ...] = ()
+    error: str = ""  # selected Node preview cannot be prepared; never fall through
 
 
 @dataclass(slots=True)
@@ -356,21 +362,42 @@ def build_run_spec(
     pkg = pdir / "package.json"
     if pkg.exists():
         try:
-            scripts = (json.loads(pkg.read_text(encoding="utf-8")) or {}).get("scripts") or {}
-        except (OSError, ValueError):
-            scripts = {}
+            package = json.loads(pkg.read_text(encoding="utf-8"))
+            if not isinstance(package, dict):
+                raise ValueError("package.json must be an object")
+            scripts = package.get("scripts") or {}
+            if not isinstance(scripts, dict):
+                raise ValueError("package.json scripts must be an object")
+        except (OSError, ValueError) as exc:
+            return RunSpec([], str(pdir), _serve_env(), "node", _port(),
+                           injected=injected, missing_secrets=missing_t,
+                           error=scrub_text(str(exc)))
         script = "dev" if "dev" in scripts else ("start" if "start" in scripts else None)
         if script:
             run_port = _port()
-            npm = shutil.which("npm") or "npm"
+            try:
+                manager = node_package_manager(pdir, strict=True)
+                # Docker also consumes specs and need not have the host CLI.
+                command = shutil.which(manager) or manager
+            except (OSError, ValueError) as exc:
+                return RunSpec([], str(pdir), _serve_env(), "node", run_port,
+                               injected=injected, missing_secrets=missing_t,
+                               error=scrub_text(str(exc)))
             # _serve_env: scrub host secrets (same trust boundary as sandboxed
             # agents) EXCEPT the ones this app declared it needs (narrow passthrough).
-            env = _serve_env({"PORT": str(run_port), "HOST": "127.0.0.1", "BROWSER": "none"})
+            env = _serve_env({
+                "PORT": str(run_port), "HOST": "127.0.0.1", "BROWSER": "none",
+                # An installed Corepack shim may honor the project's pin, but
+                # preview must not download a missing manager distribution.
+                "COREPACK_ENABLE_NETWORK": "0",
+            })
             # Next.js' CLI rejects the unknown `--host` flag (it uses `--hostname`)
             # and exits, which would kill the preview — use the right flag per server.
             host_flag = "--hostname" if "next" in (scripts.get(script) or "") else "--host"
-            return RunSpec([npm, "run", script, "--", "--port", str(run_port), host_flag, "127.0.0.1"],
-                           str(pdir), env, "node", run_port,
+            # npm consumes --; pnpm and Yarn forward script arguments directly.
+            cmd = [command, "run", script, *(["--"] if manager == "npm" else []),
+                   "--port", str(run_port), host_flag, "127.0.0.1"]
+            return RunSpec(cmd, str(pdir), env, "node", run_port,
                            injected=injected, missing_secrets=missing_t)
 
     entry = next((f for f in _PY_ENTRYPOINTS if (pdir / f).exists()), None)
@@ -423,7 +450,7 @@ def _npm_run_once(cmd: list[str], cwd: str, timeout: float) -> tuple[int | None,
             # propagate — stdout silently becomes None and the log tail below
             # goes empty, destroying the npm error the fix loop needs.
             encoding="utf-8", errors="replace",
-            env=npm_env(),
+            env=npm_env({"YARN_ENABLE_SCRIPTS": "false", "COREPACK_ENABLE_NETWORK": "0"}),
         )
     except subprocess.TimeoutExpired:
         return None, "", f"npm install timed out after {timeout:.0f}s"
@@ -470,26 +497,53 @@ def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tup
     return True, {"log_tail": tail}
 
 
-def ensure_node_deps(project_dir: str | Path, *, runner=None) -> tuple[bool, dict]:
-    """Prepare node dependencies so `npm run dev` finds current binaries.
+def _default_node_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tuple[bool, dict]:
+    """One frozen pnpm/Yarn preparation, with no npm retry or receipt policy."""
+    code, out, err = _npm_run_once(cmd, cwd, timeout)
+    if code is None:
+        return False, {"error": scrub_text(err.replace("npm install", "dependency install"))}
+    detail = {"log_tail": scrub_text(out[-2000:])}
+    if code != 0:
+        detail["error"] = f"{Path(cmd[0]).name} exited {code}"
+    return code == 0, detail
 
-    Idempotent: a host-compatible node_modules/ with a current install receipt
-    short-circuits (no npm call). Missing or stale receipts require preparation.
-    Prefers `npm ci` when a lockfile exists, else `npm install`.
+
+def ensure_node_deps(project_dir: str | Path, *, runner=None) -> tuple[bool, dict]:
+    """Prepare dependencies using the project's declared/locked manager.
+
+    Preserve current npm receipts and ci-to-install reconciliation. Non-npm
+    layouts deliberately prepare each time: npm receipts cannot certify them,
+    and Yarn PnP must not acquire a fabricated node_modules directory.
     `runner(cmd, cwd) -> (ok, detail)` is injectable for tests. Never raises."""
     pdir = Path(project_dir)
     if not (pdir / "package.json").exists():
         return True, {"skipped": "no package.json"}
+    try:
+        manager = node_package_manager(pdir, strict=True)
+    except (OSError, ValueError) as exc:
+        return False, {"error": scrub_text(str(exc))}
     foreign_deps = discard_foreign_node_modules(pdir)
     if foreign_node_modules_reason(pdir):
         return False, {"error": "could not remove host-incompatible node_modules"}
+    if manager != "npm":
+        command = shutil.which(manager)
+        if not command:
+            return False, {"error": f"{manager} not found on PATH"}
+        try:
+            args = existing_node_install_args(pdir, manager, command)
+            ok, detail = (runner or _default_node_run)(args, str(pdir))
+        except (OSError, ValueError) as exc:
+            return False, {"error": scrub_text(str(exc))}
+        if ok and foreign_deps:
+            detail = {**(detail or {}), "reinstalled_after": foreign_deps}
+        return ok, detail
     if npm_install_current(pdir):
         return True, {"skipped": "dependencies current"}
     npm = shutil.which("npm")
     if not npm:
         return False, {"error": "npm not found on PATH"}
     run = runner or _default_npm_run
-    if (pdir / "package-lock.json").exists():
+    if any((pdir / name).is_file() for name in NPM_LOCKFILES):
         ok, detail = run(npm_install_args(npm, "ci"), str(pdir))
         if ok:
             mark_npm_install_current(pdir, action="ci")
@@ -582,8 +636,18 @@ class AppRunner:
             return RunningApp(url="", port=0, pid=None, kind="none",
                               project_dir=str(pdir), status="no_preview",
                               detail={"reason": "no web entrypoint"})
+        if spec.error:
+            return RunningApp(url="", port=spec.port, pid=None, kind=spec.kind,
+                              project_dir=str(pdir), status="failed",
+                              detail={"error": spec.error})
         if spec.kind == "node":
-            # Install deps before `npm run dev` so the vite/react binary exists.
+            if not shutil.which(spec.cmd[0]):
+                return RunningApp(
+                    url="", port=spec.port, pid=None, kind=spec.kind,
+                    project_dir=str(pdir), status="failed",
+                    detail={"error": f"{Path(spec.cmd[0]).name} not found on PATH"},
+                )
+            # Install deps before launching so the project's server binary exists.
             # Thread-offloaded: a multi-second sync install must not block the loop.
             ok, info = await asyncio.to_thread(ensure_node_deps, pdir)
             if not ok:

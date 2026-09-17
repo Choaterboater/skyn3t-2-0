@@ -99,6 +99,7 @@ class TaskResult:
     # automatically by BaseAgent from its ``llm`` client so StudioRunner can
     # feed the ModelTournament from real build traffic (closes swarm #16).
     model_id: str | None = None
+    retryable: bool = True
 
 
 class BaseAgent(ABC):

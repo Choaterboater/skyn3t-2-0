@@ -50,6 +50,7 @@ _IGNORE_NAMES = frozenset(
         ".build",
         ".swiftpm",
         ".skyn3t-swift-module-cache",
+        ".skyn3t-recovery",
         _WORKTREE_MARKER,
     }
 )

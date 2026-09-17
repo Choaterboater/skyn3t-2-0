@@ -180,6 +180,81 @@ still marked `external_unreviewed`, and any resulting skill remains a
 quarantined candidate. Non-GitHub, malformed, deployment, credential, runtime,
 and other high-impact actions retain their normal gates.
 
+### Failed local repair receipts
+
+`LabAutopilot` records a failed repair as quarantined on both its run and its
+incident. Restarting or repeatedly reporting the same failure does not immediately
+queue another repair. Reports reuse the incident ID across open, quarantined, and
+resolved states rather than creating another record.
+
+Evidence is trimmed and bounded to 2,000 characters before storage and comparison.
+Empty or identical evidence leaves a quarantined incident closed to retries;
+changed nonempty evidence reopens it. A new report after successful resolution
+reopens the incident even when its evidence is unchanged. Unrelated queued research
+and skill experiments remain available, and disabling the controller still prevents
+dispatch.
+
+This is durable queue and retry behavior, not a standalone autonomous executor.
+The caller must run the repair through the existing isolated-worktree and proof
+paths before reporting its outcome.
+
+### Unverified partial improve candidates
+
+When an agentic improve returns failure or raises a provider exception after
+editing source, the improver attempts to retain useful text before restoring its
+worktree. Its failed result exposes `candidate_retention`, and the existing error
+diagnostic carries the saved path through `ImproveEngine` and the CLI. A raised
+exception with actual source changes counts as execution, so it cannot silently
+restart as a context-free per-file rewrite.
+
+Receipts live under `<data_dir>/.skyn3t-recovery/improve_candidates/`, separate
+from normal boot checkpoints and excluded from authored-source snapshots and
+delivery copies. Clean delivery preserves existing local recovery state.
+The atomic JSON checkpoint's `state` contains `status: unverified`,
+`delivered: false`, `proof_passed: false`, the canonical pre-generation source
+SHA-256, and retained UTF-8 file contents with hashes of their actual bytes.
+Line endings are preserved in the retained content. No prompt, goal, provider
+error body, or event-bus history is copied into the receipt.
+
+Each receipt retains at most 20 changed text files, each at most 1,000,000 bytes,
+within a 2 MiB serialized-JSON budget. Ten UUID-named receipts and a rolling
+`latest.json` copy are kept; unrelated files and normal recovery checkpoints are
+not pruned. Private paths, known credentials and recognized token patterns,
+binary/oversized files, aliases, and unstable reads are omitted with reason
+counts. Descriptor-relative, no-follow reads prevent ancestor symlink swaps from
+redirecting the archive outside its worktree. Unsupported safe-file-access
+primitives, invalid base snapshots, and storage errors are reported explicitly
+without replacing the provider failure or preventing restoration.
+
+This is a **partial diagnostic archive**, not a complete backup, proof receipt,
+or automatically applicable patch. Deletions, modes, unsupported file types,
+process crashes, and forced cancellation are not captured. Successful runs and
+failures without safe changed text do not create a candidate. There is no
+automatic resume, application, delivery, or learning credit from these records.
+
+### Learning from rejected improvements
+
+When an improve candidate fails proof, `ImproveEngine` captures up to three
+actual compiler, test, import, or syntax diagnostics through the existing
+`LearningLoop` and `MemoryStore`. Known credentials and recognizable token
+formats are redacted before the learning loop bounds and deduplicates the text.
+The records use the detected stack, the `improve` stage, and the run's correlation
+ID as provenance. Routing rejections and failures without actionable proof
+diagnostics do not become code lessons. Heuristic placeholder and scaffold
+warnings are excluded, so intentional fixture text does not become advice to
+remove tests.
+
+The next matching improve run receives at most three advisory lessons, bounded
+to 2,000 characters and redacted again before generation. One slot is reserved
+for the newest unused lesson so older high-scoring advice cannot hide fresh
+failure evidence. The same shared engine serves CLI, dashboard, liveness, and
+visual-quality improvements when a memory store is available.
+
+This does not promote the rejected candidate, bypass proof, launch another
+repair, or award helpfulness credit. Source preservation and rollback behavior
+are unchanged. Missing or unavailable learning storage does not replace the real
+improve outcome; storage and recall failures are logged.
+
 ## Curated local skill hubs
 
 Set `SKYN3T_SKILLS_HUB_PATHS` to one or more comma-separated **local** skill

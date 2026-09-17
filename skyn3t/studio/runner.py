@@ -2412,6 +2412,7 @@ class StudioRunner:
                 app_runner=PreviewSupervisor(),
                 improve_engine=ImproveEngine(self.event_bus, self.orchestrator,
                                              settings=self.settings,
+                                             memory=self.memory,
                                              record_history=False),
                 vision_fn=make_vision_fn(self.settings),
                 stack=plan.stack,

@@ -509,10 +509,18 @@ class LearningLoop:
 
     # ---- inject --------------------------------------------------------
     async def inject_for_build(
-        self, stack: str, stage: str = "", limit: int = 5
+        self, stack: str, stage: str = "", limit: int = 5, *,
+        include_recent: bool = False,
     ) -> InjectedLessons:
-        """Fetch the most relevant lessons for the next matching build."""
+        """Fetch matching lessons, optionally reserving one slot for new evidence."""
         rows = await self._relevant(stack, stage, limit)
+        if include_recent and self.store is not None and limit > 0:
+            try:
+                recent = list(await self.store.recent_lessons(stack, stage=stage, limit=1))
+                recent_ids = {row["id"] for row in recent}
+                rows = (recent + [row for row in rows if row.get("id") not in recent_ids])[:limit]
+            except Exception as exc:  # noqa: BLE001 - retain ranked advice on recall failure
+                _info("learning.recent_failed", error=type(exc).__name__)
         injected = InjectedLessons(stack=stack, stage=stage)
         for row in rows:
             lid = row.get("id")

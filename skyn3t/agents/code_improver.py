@@ -33,9 +33,11 @@ from skyn3t.agents.code_agent import (
     _explicit_stub_fences_cli_slot,
     _lock_agentic_route_to_slot,
 )
+from skyn3t.config.settings import Settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier, parse_task_model_slot
+from skyn3t.persistence.candidate_archive import CandidateArchive
 from skyn3t.security.project_files import is_private_project_path
 from skyn3t.studio.layout_profiles import (
     LayoutProfile,
@@ -368,8 +370,9 @@ class CodeImproverAgent(BaseAgent):
             # Whole-project agentic improve: the model explores the tree itself
             # and can CREATE files, so a feature goal isn't squeezed into one
             # entrypoint rewrite. Falls through to the classic per-file path
-            # whenever the session is unavailable, fails, or lands nothing —
-            # this branch can only ever ADD capability, never remove it.
+            # when the backend never executes or succeeds without changes.
+            # An executed failure retains its diagnosis instead of changing strategy.
+            candidate_retention: dict[str, Any] = {}
             agentic_improved, agentic_skipped, ran, agentic_error = await self._agentic_improve(
                 worktree,
                 brief,
@@ -379,6 +382,7 @@ class CodeImproverAgent(BaseAgent):
                 knowledge,
                 agentic_repo_map,
                 layout_profile,
+                candidate_retention=candidate_retention,
             )
             if ran and agentic_improved:
                 return TaskResult(task_id=task.task_id, success=True,
@@ -392,6 +396,22 @@ class CodeImproverAgent(BaseAgent):
                                               f"{routing_provider}_cli"
                                               if routing_provider else self.llm.backend
                                           )})
+            if ran and agentic_error and not routing_provider:
+                _log.warning("code_improver.agentic_fallback_blocked", error=agentic_error)
+                return TaskResult(
+                    task_id=task.task_id,
+                    success=False,
+                    output={
+                        "files_improved": 0, "files": [], "skipped": agentic_skipped,
+                        "worktree_dir": str(worktree), "agentic": True,
+                        "backend": self.llm.backend, **context_detail,
+                        "fallback_blocked": "agentic_execution_failed",
+                        **({"candidate_retention": candidate_retention}
+                           if candidate_retention else {}),
+                    },
+                    error=agentic_error,
+                    retryable=False,
+                )
             if routing_provider:
                 reason = agentic_error or (
                     f"{routing_provider} CLI completed improve without any valid file "
@@ -411,6 +431,8 @@ class CodeImproverAgent(BaseAgent):
                         "routing_locked": True,
                         "routing_lock_provider": routing_provider,
                         "routing_lock_reason": reason,
+                        **({"candidate_retention": candidate_retention}
+                           if candidate_retention else {}),
                     },
                     error=reason,
                 )
@@ -659,8 +681,10 @@ class CodeImproverAgent(BaseAgent):
             f"Goal(s):\n{goals}\n\n"
             f"{layout_context}"
             f"{navigation}"
-            "Then implement the goal(s) COMPLETELY: call write_file for every "
-            "file you change AND for any NEW files the goal needs (pages, "
+            "Then implement the goal(s) COMPLETELY: prefer edit_file with a unique "
+            "exact old_text/new_text replacement for existing files. Use read_file "
+            "search or line ranges to find definitions without repeated broad reads. "
+            "Call write_file for any NEW files the goal needs (pages, "
             "routes, components, styles, wiring). Rules:\n"
             "- Change only what the goal requires; never rewrite unrelated files.\n"
             "- write_file takes the COMPLETE file contents — never elide with "
@@ -677,15 +701,42 @@ class CodeImproverAgent(BaseAgent):
                                knowledge: str = "",
                                repo_map: str = "",
                                profile: LayoutProfile | None = None,
+                               *,
+                               candidate_retention: dict[str, Any] | None = None,
                                ) -> tuple[list[str], dict[str, str], bool, str]:
         """Run one whole-project agentic session toward the goal. Returns
-        (improved_rels, skipped_reasons, ran, error). ran=False means the
-        session never usably executed (unsupported backend / hard failure).
-        The caller may use the classic path only when no explicit CLI lock is
-        present."""
+        (improved_rels, skipped_reasons, ran, error). A failed session with
+        execution evidence must not discard its context for per-file rewriting.
+        Unavailable backends without execution evidence retain the classic path."""
         from skyn3t.agents.validate import validate_source
 
         before = self._snapshot(worktree)
+        settings = getattr(self.llm, "settings", None)
+        archive = CandidateArchive(worktree, settings) if isinstance(settings, Settings) else None
+
+        def retain_and_restore() -> tuple[bool, str]:
+            changed = False
+            detail: dict[str, Any] = {}
+            try:
+                after_failure = self._snapshot(worktree)
+                changed = before != after_failure
+                if archive is not None:
+                    detail = archive.save(before, after_failure)
+                elif changed:
+                    detail = {"status": "unavailable", "reason": "settings_unavailable"}
+            except Exception as exc:  # noqa: BLE001 - archival must never prevent rollback
+                detail = {"status": "unavailable", "reason": type(exc).__name__}
+                _log.warning("code_improver.candidate_retention_failed", error=type(exc).__name__)
+            finally:
+                self._restore_snapshot(worktree, before)
+            if candidate_retention is not None:
+                candidate_retention.update(detail)
+            if detail.get("status") == "unverified":
+                return changed, f"; unverified edits retained at {detail['path']} (not delivered)"
+            if detail.get("status") == "unavailable":
+                return changed, f"; candidate retention unavailable: {detail['reason']}"
+            return changed, ""
+
         # The bounded text snapshot cannot identify pre-existing binary/large assets.
         existing_paths = {
             path.relative_to(worktree).as_posix()
@@ -709,12 +760,15 @@ class CodeImproverAgent(BaseAgent):
                 stack=stack)
         except Exception as exc:  # noqa: BLE001 - agentic must never sink improve
             _log.warning("code_improver.agentic_failed", error=str(exc))
-            self._restore_snapshot(worktree, before)
-            return [], {}, False, f"agentic improve failed: {exc}"
+            changed, diagnostic = retain_and_restore()
+            return [], {}, changed, f"agentic improve failed: {exc}{diagnostic}"
         if not (res or {}).get("ok"):
-            self._restore_snapshot(worktree, before)
+            changed, diagnostic = retain_and_restore()
             error = str((res or {}).get("error") or "agentic improve was not completed")
-            return [], {}, False, error
+            ran = changed or any(
+                (res or {}).get(key) for key in ("provider_requests", "turns", "files_written")
+            )
+            return [], {}, ran, error + diagnostic
         untrusted_paths = self._prune_untrusted_agentic_new_paths(
             worktree, before, existing_project=payload.get("existing_project") is True,
             existing_paths=existing_paths,

@@ -105,6 +105,94 @@ tests that need them set explicit fixtures or constructor arguments. This also
 prevents a self-improvement run's mock credentials or model routing from changing
 the suite's defaults without disabling production proof gates.
 
+## OpenRouter Progress Recovery
+
+OpenRouter agentic builds switch to the next healthy, policy-allowed fallback
+after eight consecutive turns without a changed file write. Set
+`SKYN3T_OPENROUTER_AGENTIC_NO_WRITE_TURNS` to change this early threshold; `0`
+disables it, but the existing no-write turn limit still attempts recovery.
+Repeated identical tool calls also try a fallback after corrective feedback fails.
+Reading files or rewriting identical content does not reset write progress.
+
+Recovery preserves files, conversation history, and the provider session. It
+does not extend the overall no-write time window. Exhausted models cannot cycle
+back into the same session, and positive `llm_max_fallbacks` values cap progress
+switches (`0` disables that numeric cap). Disabled or exhausted fallbacks fail
+explicitly. Activity reports the new model with reason `no_write_progress`;
+results include `progress_fallbacks`, the original model, and the effective model.
+
+Before the no-write threshold, the agent receives corrective feedback directing
+it to make a targeted change rather than repeatedly reread the project. This
+feedback leaves navigation available so missing context and failed exact matches
+can be investigated. A forced write-or-finish checkpoint is not used. The feedback
+does not reset the no-progress deadline or disable model-failover limits.
+
+`SKYN3T_OPENROUTER_AGENTIC_REASONING_EFFORT` controls reasoning on the actual
+OpenRouter build/improve requests, including retries and model fallbacks.
+The default empty value preserves provider defaults. `none` sends
+`{"reasoning": {"enabled": false}}`; `low`, `medium`, and `high` request that
+effort. The choice is frozen with the build's routing snapshot. Use `none` for
+small repairs when a reasoning-capable provider spends its time thinking rather
+than editing; this does not change model eligibility, proof, or timeout limits.
+Readiness checks should use the same setting as the native run.
+
+OpenRouter now supports `edit_file` for one unique exact-text replacement in an
+existing file. It preserves the rest of the file and rejects stale or ambiguous
+matches, escaped paths, binary media, and writes outside an assigned slice.
+Small default reads still return the complete file; larger reads return bounded,
+numbered excerpts with `next_start_line`. Use `read_file` with `search` (a literal
+substring) or `start_line`/`end_line` to find definitions without flooding context.
+Very long individual lines are explicitly marked when shortened; `search` focuses
+the excerpt around the matching text. Line-number prefixes are not source code.
+
+If an agentic improve actually made provider requests and then failed, SkyN3t
+restores the candidate and reports that failure instead of silently launching
+context-free per-file rewrites. Unsupported backends that never executed, and
+successful no-change sessions, retain their existing classic fallback behavior.
+
+Useful failed text edits are first retained as bounded **unverified** recovery
+receipts outside the worktree, when safe storage is available. The failure
+diagnostic includes their path; they are never treated as delivered or proven.
+See [partial candidate retention](EVIDENCE_LEARNING.md#unverified-partial-improve-candidates)
+for limits and exclusions.
+
+An executed hosted improve failure also sets `TaskResult.retryable=False`.
+The provider loop already owns its bounded retries and model failover, so the
+orchestrator must not restart the entire exhausted session just because its error
+contains `429`, `timeout`, or `503`. Other task results retain the default retry
+permission and the existing transient/permanent classifier. This does not disable
+provider recovery or block a later explicit submission with new evidence.
+
+`openrouter/free` is a supported free-router model ID, distinct from
+`openrouter/auto`; the underlying free model can vary between requests. Explicit
+named free fallbacks still use the existing bounded recovery policy. Free routing
+does not disable `SKYN3T_DAILY_TOKEN_CAP`: daily token accounting rolls over with
+the host's local calendar date, even when the requests cost zero dollars.
+
+For silent requests, `SKYN3T_AGENTIC_IDLE_TIMEOUT` controls the existing
+wall-clock watchdog: `120` gives fast free models two minutes before immediate
+model failover. Known slow reasoning families retain their timeout floors.
+This is separate from the read-only-turn threshold; it is not a token limit or
+a cap on productive builds. Free-only routing and proof gates remain enforced.
+
 ## Offline Defaults
 
 SkyN3t is designed to start without cloud credentials. Missing keys degrade to deterministic local behavior rather than crashing. A signed-in local CLI enables real generation without an API key; add hosted keys later only when you explicitly want OpenRouter, paid imagery, or remote deploys.
+
+## First Run Timeout Bounding
+`SKYN3T_IMPROVE_AGENTIC_TIMEOUT` (default 900 seconds) now bounds the entire improver submission through `asyncio.timeout`, including time spent waiting before a model request is reached and any per-file fallback completion. This is a cooperative async timeout; proof execution retains its own independent budgets. Free-only routing, all existing code paths, and proof gates remain unchanged.
+
+## SKYN3T_IMPROVE_AGENTIC_TIMEOUT
+
+`SKYN3T_IMPROVE_AGENTIC_TIMEOUT` (positive integer, default `900` seconds) is a
+SHARED preflight budget for the two preflight locks acquired by the improve
+engine: the in-process thread lock and the cross-process file lock. It is
+independent of the existing improver-submission budget.
+
+When the budget elapses while waiting for a lock, the engine reports failure and
+leaves the current owner's lock and the original project untouched
+(`project_preserved=True`, `proof_passed=False`). Proof runs under its own
+budget and is not governed by this timeout.
+
+This is cooperative async protection, not a process supervisor, and it does not
+resolve synchronous filesystem stalls.

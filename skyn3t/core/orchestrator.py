@@ -181,7 +181,7 @@ class Orchestrator:
             if result.success:
                 return result
             last = result
-            if classify_error(result.error) == "permanent":
+            if not result.retryable or classify_error(result.error) == "permanent":
                 return result
             if attempt <= task.max_retries:
                 await self.event_bus.emit(

@@ -81,12 +81,14 @@ def _user_texts(bodies):
 # ---------------------------------------------------------------------------
 
 
-def test_doom_loop_corrective_nudge_then_abort(tmp_path, monkeypatch):
+def test_doom_loop_corrective_nudge_then_abort_without_fallback(tmp_path, monkeypatch):
     same = _tool_turn("write_file", {"path": "same.js", "content": "x"})
     fake = _RecordingClient([same] * 12)  # never varies, never finishes
     monkeypatch.setattr(llm.httpx, "AsyncClient", lambda *a, **k: fake)
 
-    res = asyncio.run(_client()._openrouter_agentic("build", str(tmp_path), "m", stack="phaser"))
+    res = asyncio.run(_client(llm_fallback_enabled=False)._openrouter_agentic(
+        "build", str(tmp_path), "m", stack="phaser"
+    ))
 
     # 3 identical calls -> one corrective nudge; 3 more -> abort. 6 POSTs, not 12/60.
     assert fake.i == 6, f"expected abort after 6 turns, got {fake.i}"

@@ -4,7 +4,7 @@ from pathlib import Path
 
 PRIVATE_PROJECT_NAMES = frozenset({
     ".aws", ".azure", ".docker", ".git", ".git-credentials", ".kube",
-    ".netlify", ".netrc", ".npmrc", ".pypirc", ".railway", ".skyn3t",
+    ".netlify", ".netrc", ".npmrc", ".pypirc", ".railway", ".skyn3t", ".skyn3t-recovery",
     ".ssh", ".terraform", ".terraformrc", ".venv", ".vercel", ".vault-token",
     ".wrangler", "__pycache__", "application_default_credentials.json",
     "credentials.json", "id_ed25519", "id_rsa", "node_modules", "pip.conf",

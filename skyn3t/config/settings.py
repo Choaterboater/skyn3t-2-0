@@ -283,6 +283,9 @@ class Settings(BaseSettings):
     # models build coherent full apps. Max tool-call turns bounds it.
     openrouter_agentic: bool = True
     openrouter_agentic_max_turns: int = 60
+    openrouter_agentic_no_write_turns: int = Field(default=8, ge=0)
+    # Empty inherits provider defaults; "none" explicitly disables reasoning.
+    openrouter_agentic_reasoning_effort: Literal["", "none", "low", "medium", "high"] = ""
     # Verify-on-stop (research item 19, degrade-open): when the agentic model
     # calls `finish`, run a cheap static scan (unresolved local imports + Python
     # syntax) and DENY the finish with the real defect list — at most twice,
@@ -323,8 +326,8 @@ class Settings(BaseSettings):
     # Route dashboard Improve goals through the whole-project agentic tool-loop
     # (same machinery as builds) so a feature goal can CREATE new pages and touch
     # multiple files, instead of one entrypoint rewrite. The classic per-file
-    # improver remains the automatic fallback when agentic is unavailable, fails,
-    # or lands no changes — turning this on can't do worse than before it existed.
+    # improver remains the fallback when agentic is unavailable or succeeds without
+    # changes. Executed failures report their cause rather than retrying per-file.
     improve_agentic: bool = True
     # Wall-clock budget (seconds) for one agentic improve session. Improves are
     # scoped changes to an existing app — far smaller than a full build (1800s).

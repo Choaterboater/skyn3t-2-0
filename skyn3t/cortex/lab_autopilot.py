@@ -94,11 +94,19 @@ class LabAutopilot:
         safe_scope = str(scope or "skyn3t").strip()[:120]
         safe_category = str(category or "unknown").strip()[:120]
         safe_summary = str(summary or "Autopilot detected a failure").strip()[:1000]
+        safe_evidence = str(evidence or "").strip()[:2000].rstrip()
         incident_id = self._id("incident", safe_scope, safe_category, safe_summary)
         for item in self.incidents:
-            if item.incident_id == incident_id and item.status == "open":
+            if item.incident_id == incident_id:
+                previous_evidence = str(item.evidence or "").strip()[:2000].rstrip()
+                if item.status == "resolved" or (
+                    item.status == "quarantined"
+                    and safe_evidence
+                    and safe_evidence != previous_evidence
+                ):
+                    item.status = "open"
                 item.occurrences += 1
-                item.evidence = str(evidence or item.evidence)[:2000]
+                item.evidence = safe_evidence or previous_evidence
                 item.updated_at = time.time()
                 self._save()
                 return item
@@ -107,7 +115,7 @@ class LabAutopilot:
             scope=safe_scope,
             category=safe_category,
             summary=safe_summary,
-            evidence=str(evidence or "")[:2000],
+            evidence=safe_evidence,
         )
         self.incidents.append(item)
         self._save()
@@ -137,10 +145,10 @@ class LabAutopilot:
         run.status = "succeeded" if succeeded else "quarantined"
         run.proof_summary = str(proof_summary)[:2000]
         run.updated_at = time.time()
-        if run.incident_id and succeeded:
+        if run.incident_id:
             for incident in self.incidents:
                 if incident.incident_id == run.incident_id:
-                    incident.status = "resolved"
+                    incident.status = "resolved" if succeeded else "quarantined"
                     incident.updated_at = run.updated_at
         self._save()
         return run

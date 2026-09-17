@@ -3,9 +3,9 @@
 agentic tool-loop (the same `agentic_build` machinery builds use), so a goal
 like "add an SEO audit tool" can CREATE new pages/components instead of being
 squeezed into a single-entrypoint rewrite. Without an explicit CLI lock, the
-classic per-file path remains the fallback whenever agentic is unavailable,
-fails, or lands nothing. An explicit CLI lock fails closed instead of silently
-spending through the global backend.
+classic per-file path remains the fallback when agentic is unavailable or succeeds
+without changes. Executed failures and explicit CLI locks fail closed instead of
+discarding context or silently spending through another strategy.
 
 Do-no-harm invariants pinned here:
 - every file the agentic session changed/created is re-validated; a broken
@@ -28,6 +28,7 @@ from skyn3t.agents.code_improver import (
 )
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus
+from skyn3t.core.orchestrator import Orchestrator
 
 _PAGE = "export default function Page() {\n  return <main>home</main>;\n}\n"
 _PAGE_IMPROVED = (
@@ -213,6 +214,63 @@ def test_agentic_unavailable_falls_back_to_classic_path(tmp_path):
     assert result.output["files"] == ["app/page.jsx"]
     assert len(llm.complete_calls) >= 1  # classic path ran
     assert (tmp_path / "app" / "page.jsx").read_text() == _VALID_REWRITE_FOR_FALLBACK
+
+
+def test_executed_hosted_stall_does_not_discard_context_for_per_file_fallback(tmp_path):
+    _seed(tmp_path)
+    llm = _AgenticLLM(completions=[_VALID_REWRITE_FOR_FALLBACK])
+
+    async def stalled(_prompt, workdir, **_kwargs):
+        Path(workdir, "app/page.jsx").write_text(_PAGE_IMPROVED)
+        return {
+            "ok": False, "backend": "openrouter", "provider_requests": 8,
+            "files_written": 1, "error": "agentic stalled after 8 nonproductive turns",
+        }
+
+    llm.agentic_build = stalled
+    result = _run(
+        tmp_path, llm,
+        extra={"files": ["app/page.jsx"], "existing_project": True},
+    )
+    assert not result.success
+    assert "stalled" in result.error
+    assert result.output["fallback_blocked"] == "agentic_execution_failed"
+    assert llm.complete_calls == []
+    assert (tmp_path / "app" / "page.jsx").read_text() == _PAGE
+
+
+@pytest.mark.parametrize("error", ["429 rate limit after provider retries", "provider timeout", "503 unavailable"])
+async def test_executed_agentic_failure_is_not_replayed_by_orchestrator(tmp_path, error):
+    _seed(tmp_path)
+    llm = _AgenticLLM()
+
+    async def exhausted(prompt, workdir, **kwargs):
+        llm.agentic_calls.append({"prompt": prompt, "workdir": workdir, **kwargs})
+        Path(workdir, "app/page.jsx").write_text(_PAGE_IMPROVED)
+        return {
+            "ok": False, "backend": "openrouter", "provider_requests": 8,
+            "files_written": 1, "error": error,
+        }
+
+    llm.agentic_build = exhausted
+    bus = EventBus()
+    orchestrator = Orchestrator(bus)
+    await orchestrator.register(CodeImproverAgent(event_bus=bus, llm=llm))
+    result = await orchestrator.submit(TaskRequest(
+        type="code_improve",
+        payload={
+            "brief": "add an audit tool", "worktree_dir": str(tmp_path),
+            "gaps": ["add an audit tool"], "agentic": True,
+            "files": ["app/page.jsx"], "existing_project": True,
+        },
+        max_retries=2,
+    ))
+
+    assert not result.success
+    assert result.attempts == 1
+    assert len(llm.agentic_calls) == 1
+    assert llm.complete_calls == []
+    assert (tmp_path / "app/page.jsx").read_text() == _PAGE
 
 
 def test_agentic_landed_nothing_falls_back_to_classic_path(tmp_path):

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from copy import deepcopy
 
 import pytest
 
@@ -56,6 +57,16 @@ class _DelayedClient(_FakeClient):
         return await super().post(url, json=json, headers=headers, timeout=timeout)
 
 
+class _RecordingClient(_FakeClient):
+    def __init__(self, turns):
+        super().__init__(turns)
+        self.requests = []
+
+    async def post(self, url, json=None, **kwargs):
+        self.requests.append(deepcopy(json))
+        return await super().post(url, json=json, **kwargs)
+
+
 class _StallPrimaryThenFallbackClient:
     """Primary model stalls once; fallback model then writes and finishes."""
 
@@ -92,6 +103,216 @@ def _tool_turn(name, args, tcid="t1"):
 
 def _client():
     return LLMClient(Settings(llm_backend="openrouter", openrouter_api_key="x"))
+
+
+def test_existing_large_file_can_be_located_and_edited_without_rewriting(tmp_path, monkeypatch):
+    original = "".join(f"item_{i} = {i}\n" for i in range(3000))
+    path = tmp_path / "large.py"
+    path.write_text(original)
+    provider = _RecordingClient([
+        _tool_turn("read_file", {"path": "large.py"}),
+        _tool_turn("read_file", {"path": "large.py", "search": "item_2500 ="}),
+        _tool_turn("edit_file", {
+            "path": "large.py", "old_text": "item_2500 = 2500\n",
+            "new_text": "item_2500 = 42\n",
+        }),
+        _tool_turn("finish", {}),
+    ])
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kwargs: provider)
+    result = asyncio.run(_client()._openrouter_agentic(
+        "Change only item_2500 to 42", str(tmp_path), "m",
+        enforce_antistub=False, verify_on_stop=False,
+    ))
+    first_read = provider.requests[1]["messages"][-1]["content"]
+    located_read = provider.requests[2]["messages"][-1]["content"]
+    assert len(first_read) < 16_500
+    assert "next_start_line=201" in first_read
+    assert "2501: item_2500 = 2500" in located_read
+    assert result["ok"]
+    assert result["files_written"] == result["write_tool_calls"] == 1
+    assert path.read_text() == original.replace("item_2500 = 2500\n", "item_2500 = 42\n")
+
+
+@pytest.mark.parametrize("old,new,error", [
+    ("missing", "changed", "not found"),
+    ("value", "changed", "ambiguous"),
+    ("value = 1", "value = 1", "unchanged"),
+])
+def test_exact_edit_rejects_stale_or_ambiguous_text_without_false_progress(
+    tmp_path, monkeypatch, old, new, error,
+):
+    original = "value = 1\nother_value = 2\n"
+    (tmp_path / "app.py").write_text(original)
+    provider = _RecordingClient([
+        _tool_turn("edit_file", {"path": "app.py", "old_text": old, "new_text": new}),
+        _tool_turn("finish", {}),
+    ])
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kwargs: provider)
+    result = asyncio.run(_client()._openrouter_agentic(
+        "repair", str(tmp_path), "m", enforce_antistub=False, verify_on_stop=False,
+    ))
+    assert error in provider.requests[1]["messages"][-1]["content"].lower()
+    assert result["files_written"] == 0
+    assert (tmp_path / "app.py").read_text() == original
+
+
+@pytest.mark.parametrize("arguments", [
+    {"path": "app.py", "old_text": "", "new_text": "x"},
+    {"path": "app.py", "old_text": "x", "new_text": None},
+])
+def test_edit_tool_arguments_are_validated_before_execution(arguments):
+    calls = _tool_turn("edit_file", arguments)["choices"][0]["message"]["tool_calls"]
+    ok, reason, _ = llm._validate_tool_batch(calls)
+    assert not ok
+    assert "edit_file" in reason
+
+
+def test_read_line_range_is_bounded_and_search_miss_is_explicit(tmp_path, monkeypatch):
+    (tmp_path / "app.py").write_text("".join(f"value_{i} = {i}\n" for i in range(500)))
+    provider = _RecordingClient([
+        _tool_turn("read_file", {"path": "app.py", "start_line": 301, "end_line": 305}),
+        _tool_turn("read_file", {"path": "app.py", "search": "no_such_symbol"}),
+        _tool_turn("finish", {}),
+    ])
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kwargs: provider)
+    asyncio.run(_client()._openrouter_agentic(
+        "inspect", str(tmp_path), "m", enforce_antistub=False, verify_on_stop=False,
+    ))
+    excerpt = provider.requests[1]["messages"][-1]["content"]
+    assert "301: value_300 = 300" in excerpt
+    assert "305: value_304 = 304" in excerpt
+    assert "value_305" not in excerpt
+    assert "not found" in provider.requests[2]["messages"][-1]["content"].lower()
+
+
+def test_read_only_loop_gets_actionable_feedback_before_abort(tmp_path, monkeypatch):
+    for i in range(5):
+        (tmp_path / f"context_{i}.py").write_text(f"value = {i}\n")
+    provider = _RecordingClient([
+        *[_tool_turn("read_file", {"path": f"context_{i}.py"}) for i in range(5)],
+        _tool_turn("edit_file", {
+            "path": "context_0.py", "old_text": "value = 0", "new_text": "value = 42",
+        }),
+        _tool_turn("finish", {}),
+    ])
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kwargs: provider)
+    result = asyncio.run(_client()._openrouter_agentic(
+        "repair", str(tmp_path), "m", enforce_antistub=False, verify_on_stop=False,
+    ))
+    feedback = [
+        m["content"] for m in provider.requests[4]["messages"] if m["role"] == "user"
+    ]
+    assert any("READ-ONLY PROGRESS" in text and "edit_file" in text for text in feedback)
+    checkpoint = provider.requests[4]
+    assert checkpoint["tool_choice"] == "auto"
+    assert "read_file" in {tool["function"]["name"] for tool in checkpoint["tools"]}
+    assert provider.requests[5]["tool_choice"] == "auto"
+    assert "read_file" in {
+        tool["function"]["name"] for tool in provider.requests[5]["tools"]
+    }
+    assert result["ok"]
+
+
+@pytest.mark.parametrize("effort, expected", [
+    ("", None), ("none", {"enabled": False}), ("low", {"effort": "low"}),
+])
+def test_native_agentic_request_honors_reasoning_policy(tmp_path, monkeypatch, effort, expected):
+    provider = _RecordingClient([
+        _tool_turn("write_file", {"path": "app.py", "content": "value = 1\n"}),
+        _tool_turn("finish", {}),
+    ])
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kwargs: provider)
+    settings = Settings(
+        llm_backend="openrouter", openrouter_api_key="x",
+        openrouter_agentic_reasoning_effort=effort,
+    )
+    client = LLMClient(settings)
+    result = asyncio.run(client._openrouter_agentic(
+        "repair", str(tmp_path), "m", enforce_antistub=False, verify_on_stop=False,
+    ))
+    assert result["ok"]
+    assert all(request.get("reasoning") == expected for request in provider.requests)
+
+
+def test_agentic_reasoning_policy_is_frozen_for_inflight_build(tmp_path, monkeypatch):
+    settings = Settings(
+        llm_backend="openrouter", openrouter_api_key="x",
+        openrouter_agentic_reasoning_effort="none",
+    )
+    client = LLMClient(settings)
+    snapshot = client.build_routing_snapshot()
+    settings.openrouter_agentic_reasoning_effort = "high"
+    provider = _RecordingClient([
+        _tool_turn("write_file", {"path": "app.py", "content": "value = 1\n"}),
+        _tool_turn("finish", {}),
+    ])
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kwargs: provider)
+    with client.build_routing_scope(snapshot):
+        result = asyncio.run(client._openrouter_agentic(
+            "repair", str(tmp_path), "m", enforce_antistub=False, verify_on_stop=False,
+        ))
+    assert result["ok"]
+    assert all(request.get("reasoning") == {"enabled": False} for request in provider.requests)
+
+
+@pytest.mark.parametrize("case", ["outside", "symlink", "unowned", "binary"])
+def test_exact_edits_preserve_path_and_slice_boundaries(tmp_path, monkeypatch, case):
+    root = tmp_path / "project"
+    root.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("value = 1\n")
+    target = root / ("image.png" if case == "binary" else "app.py")
+    if case == "symlink":
+        try:
+            target.symlink_to(outside)
+        except OSError:
+            pytest.skip("symlink creation is unavailable")
+    else:
+        target.write_text("value = 1\n")
+    rel = "../outside.py" if case == "outside" else target.name
+    provider = _RecordingClient([
+        _tool_turn("edit_file", {"path": rel, "old_text": "value = 1", "new_text": "value = 2"}),
+        _tool_turn("finish", {}),
+    ])
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kwargs: provider)
+    result = asyncio.run(_client()._openrouter_agentic(
+        "repair", str(root), "m", enforce_antistub=False, verify_on_stop=False,
+        allowed_paths=["owned.py"] if case == "unowned" else None,
+    ))
+    assert result["files_written"] == 0
+    assert "ERROR" in provider.requests[1]["messages"][-1]["content"]
+    assert outside.read_text() == target.read_text() == "value = 1\n"
+
+
+def test_exact_edit_preserves_crlf_and_executable_mode(tmp_path, monkeypatch):
+    path = tmp_path / "app.py"
+    path.write_bytes(b"value = 1\r\nother = 2\r\n")
+    path.chmod(0o755)
+    mode = path.stat().st_mode & 0o777
+    provider = _RecordingClient([
+        _tool_turn("edit_file", {
+            "path": "app.py", "old_text": "value = 1", "new_text": "value = 42",
+        }),
+        _tool_turn("finish", {}),
+    ])
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kwargs: provider)
+    result = asyncio.run(_client()._openrouter_agentic(
+        "repair", str(tmp_path), "m", enforce_antistub=False, verify_on_stop=False,
+    ))
+    assert result["ok"]
+    assert path.read_bytes() == b"value = 42\r\nother = 2\r\n"
+    assert path.stat().st_mode & 0o777 == mode
+
+
+@pytest.mark.parametrize("options", [
+    {"start_line": 0}, {"start_line": True}, {"end_line": -1},
+    {"start_line": 4, "end_line": 2}, {"search": ""}, {"search": []},
+])
+def test_read_ranges_reject_invalid_arguments(options):
+    calls = _tool_turn("read_file", {"path": "app.py", **options})["choices"][0]["message"]["tool_calls"]
+    ok, reason, _ = llm._validate_tool_batch(calls)
+    assert not ok
+    assert "read_file" in reason
 
 
 def test_agentic_loop_writes_files(tmp_path, monkeypatch):

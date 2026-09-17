@@ -30,7 +30,9 @@ import structlog
 from skyn3t.config.settings import get_settings
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
+from skyn3t.intelligence.learning_loop import LearningLoop
 from skyn3t.rag.repo_map import build_repo_context_pack
+from skyn3t.security.secrets import SecretsStore, scrub_text
 from skyn3t.studio.design_tokens import read_design_md
 from skyn3t.studio.grounding_check import check_grounding
 from skyn3t.studio.layout_profiles import (
@@ -583,6 +585,10 @@ class ImproveEngine:
         self.orchestrator = orchestrator
         self.settings = settings or get_settings()
         self.memory = memory
+        self._learning = (
+            LearningLoop(store=memory, event_bus=event_bus)
+            if memory is not None else None
+        )
         self.skills = skills
         self.rag = rag
         self.llm_client = llm_client
@@ -782,7 +788,7 @@ class ImproveEngine:
             return outcome
 
         project_lock = _project_lock(project_dir)
-        await _acquire_thread_lock(project_lock)
+        project_lock_acquired = False
         process_lock: _InterprocessProjectLock | None = None
         wt = None
         delivery_stage_root: Path | None = None
@@ -793,10 +799,18 @@ class ImproveEngine:
         preserve_recovery_artifacts = False
         context_pack_summary: dict[str, object] = {}
         try:
-            process_lock = await _acquire_interprocess_lock(
-                project_dir,
-                Path(self.settings.projects_dir).resolve(),
-            )
+            try:
+                async with asyncio.timeout(improve_agentic_timeout) as _project_lock_timeout:
+                    await _acquire_thread_lock(project_lock)
+                    project_lock_acquired = True
+                    process_lock = await _acquire_interprocess_lock(
+                        project_dir,
+                        Path(self.settings.projects_dir).resolve(),
+                    )
+            except TimeoutError:
+                if _project_lock_timeout.expired():
+                    raise TimeoutError("project lock timeout") from None
+                raise
             # A prior Improve may have delivered while this call waited. Reload
             # all state only after acquiring process and cross-process locks.
             manifest = BuildManifest.load(project_dir)
@@ -922,6 +936,21 @@ class ImproveEngine:
                     "failures):\n- " + "\n- ".join(grounding_hints)
                     + f"\n\n{repo_ctx}"
                 )
+            if self._learning is not None:
+                try:
+                    injected = await self._learning.inject_for_build(
+                        stack, stage="improve", limit=3, include_recent=True
+                    )
+                    advice = scrub_text(
+                        injected.as_advice(), SecretsStore(self.settings)
+                    )[:2000]
+                    if advice:
+                        repo_ctx += "\n\n" + advice
+                except Exception as exc:  # noqa: BLE001 - advisory recall only
+                    _log.warning(
+                        "improve.learning_recall_failed",
+                        error=scrub_text(str(exc), SecretsStore(self.settings)),
+                    )
             context_pack_summary = context_pack.summary()
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "localize",
@@ -1103,6 +1132,31 @@ class ImproveEngine:
             )
             proof_payload = proof.to_dict()
             if not proof.passed:
+                if self._learning is not None:
+                    try:
+                        secrets = SecretsStore(self.settings)
+                        errors = [
+                            scrub_text(error, secrets)
+                            for error in proof.error_gaps()
+                            if error.startswith((
+                                "BUILD FAILED", "TESTS FAILED", "SWIFT TESTS FAILED",
+                                "SWIFT IOS TESTS FAILED", "RUFF FAILED", "BOOT/IMPORT ERROR",
+                                "UNRESOLVED IMPORT", "NAMED EXPORT MISMATCH", "SYNTAX ERROR",
+                            ))
+                        ][:3]
+                        if errors:
+                            await self._learning.capture_from_build({
+                                "stack": stack,
+                                "stage": "improve",
+                                "status": "failed",
+                                "proof_errors": errors,
+                                "build_id": cid,
+                            })
+                    except Exception as exc:  # noqa: BLE001 - preserve proof outcome
+                        _log.warning(
+                            "improve.learning_capture_failed",
+                            error=scrub_text(str(exc), SecretsStore(self.settings)),
+                        )
                 # The original project has not been touched yet. Record the
                 # rejected attempt without replacing its still-valid GO/proof
                 # evidence, then return an honest failed outcome.
@@ -1764,7 +1818,8 @@ class ImproveEngine:
                         if process_lock is not None:
                             process_lock.release()
                     finally:
-                        project_lock.release()
+                        if project_lock_acquired:
+                            project_lock.release()
 
     async def _run_improver(
         self,
@@ -1804,7 +1859,13 @@ class ImproveEngine:
             correlation_id=cid,
             metadata={"routing_snapshot": deepcopy(routing_summary)},
         )
-        result = await self.orchestrator.submit(task)
+        try:
+            async with asyncio.timeout(improve_agentic_timeout) as timeout_ctx:
+                result = await self.orchestrator.submit(task)
+        except TimeoutError:
+            if timeout_ctx.expired():
+                raise TimeoutError("generation timeout") from None
+            raise
         ok = bool(result and getattr(result, "success", False))
         output = (getattr(result, "output", None) or {}) if result else {}
         files = list(output.get("files", [])) if ok else []

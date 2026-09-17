@@ -69,7 +69,7 @@ from skyn3t.adapters.stall import (
     stall_report,
 )
 from skyn3t.agents._common import confined_path
-from skyn3t.atomic_io import atomic_write_text
+from skyn3t.atomic_io import atomic_write_bytes, atomic_write_text
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.model_router import ModelRouter, Tier
 from skyn3t.core.model_router import is_free_model_id as router_is_free_model_id
@@ -137,6 +137,7 @@ _BUILD_MODEL_POLICY_FIELDS = (
     "llm_retry_max_delay",
     "vision_model",
     "openrouter_agentic",
+    "openrouter_agentic_reasoning_effort",
     "slice_tier_models",
     "tournament_model_pool",
     "best_of_n_across_models",
@@ -440,8 +441,13 @@ def openrouter_key(settings: Settings) -> str:
 # is what dragged a game build into building a website. See `_agentic_system_for`.
 _AGENTIC_SYSTEM_CORE = (
     "You are an expert full-stack engineer building a COMPLETE, runnable project. "
-    "Author the WHOLE app yourself using the tools: call write_file for EVERY file "
-    "with real, production-quality code (no placeholders, no TODOs); use read_file / "
+    "Implement the requested project or change using the tools: call write_file "
+    "for new files with real, production-quality code (no placeholders, no TODOs). "
+    "For existing code, change only what the request requires; prefer edit_file "
+    "with a unique exact old_text match instead of rewriting a large file. "
+    "Use read_file with search or line ranges to inspect relevant definitions, not "
+    "repeated whole-file reads. Line-number prefixes are metadata, not file content. "
+    "Use read_file / "
     "list_files to stay coherent across files (imports must resolve, exports must "
     "exist); call finish only when the app is complete and builds/runs with its "
     "standard command. Build exactly the kind of app the brief and the pinned stack "
@@ -881,6 +887,15 @@ _EMPTY_RESPONSE_NUDGE = (
     "write_file/write_files to continue, or read_file to re-orient."
 )
 
+_READ_ONLY_PROGRESS_NUDGE = (
+    "READ-ONLY PROGRESS: several turns have passed without a changed file. "
+    "Use the context already gathered to make the smallest complete edit now: "
+    "edit_file replaces one exact old_text match without rewriting the whole file. "
+    "Use write_file/write_files for new files. If a definition is still missing, "
+    "use read_file search or a targeted line range, not another broad reread. "
+    "Do not claim completion until the requested change is actually implemented."
+)
+
 
 def _agentic_verify_problems(root: Path) -> list[str]:
     """Cheap verify-on-stop scan (research item 19): unresolved local JS/Python
@@ -914,7 +929,19 @@ def _agentic_verify_problems(root: Path) -> list[str]:
     return problems[:8]
 
 
-_AGENTIC_TOOLS = [
+_AGENTIC_TOOLS: list[dict[str, Any]] = [
+    {"type": "function", "function": {
+        "name": "edit_file",
+        "description": (
+            "Edit an existing project file by replacing one unique exact text match. "
+            "Prefer this over rewriting large files. Preserve all other content; "
+            "read the relevant lines first. Ambiguous or stale matches fail without writing."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"},
+            "old_text": {"type": "string", "minLength": 1},
+            "new_text": {"type": "string"}},
+            "required": ["path", "old_text", "new_text"]}}},
     {"type": "function", "function": {
         "name": "write_file", "description": "Create or overwrite a project file with its full content.",
         "parameters": {"type": "object", "properties": {
@@ -935,8 +962,18 @@ _AGENTIC_TOOLS = [
                           "required": ["path", "content"]}}},
             "required": ["files"]}}},
     {"type": "function", "function": {
-        "name": "read_file", "description": "Read a file you have written, to stay coherent.",
-        "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
+        "name": "read_file",
+        "description": (
+            "Read a small file in full, or at most 200 numbered source lines. Use search to jump to a literal "
+            "substring at or after start_line, or use start_line/end_line to page. "
+            "The response identifies the next unread line; do not reread the whole file."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "path": {"type": "string"},
+            "start_line": {"type": "integer", "minimum": 1},
+            "end_line": {"type": "integer", "minimum": 1},
+            "search": {"type": "string", "minLength": 1}},
+            "required": ["path"]}}},
     {"type": "function", "function": {
         "name": "list_files", "description": "List the project files written so far.",
         "parameters": {"type": "object", "properties": {}}}},
@@ -1363,7 +1400,7 @@ def _validate_tool_batch(
     if not isinstance(tcs, list) or not tcs:
         return False, "tool_calls must be a non-empty list", []
     parsed_calls: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
-    known_tools = {"write_file", "write_files", "read_file", "list_files", "finish"}
+    known_tools = {"edit_file", "write_file", "write_files", "read_file", "list_files", "finish"}
     identifiers: set[str] = set()
 
     for tc in tcs:
@@ -1403,7 +1440,14 @@ def _validate_tool_batch(
         if not isinstance(args, dict):
             return False, f"arguments for tool {name} must parse to a JSON object (got {type(args).__name__})", []
 
-        if name == "write_file":
+        if name == "edit_file":
+            if not isinstance(args.get("path"), str) or not args["path"].strip():
+                return False, "edit_file requires a non-empty string path", []
+            if not isinstance(args.get("old_text"), str) or not args["old_text"]:
+                return False, "edit_file requires non-empty string old_text", []
+            if not isinstance(args.get("new_text"), str):
+                return False, "edit_file requires string new_text", []
+        elif name == "write_file":
             path_val = args.get("path")
             if not isinstance(path_val, str) or not path_val.strip():
                 return False, "write_file arguments require a non-empty string path", []
@@ -1425,6 +1469,15 @@ def _validate_tool_batch(
             path_val = args.get("path")
             if not isinstance(path_val, str) or not path_val.strip():
                 return False, "read_file arguments require a non-empty string path", []
+            for key in ("start_line", "end_line"):
+                if key in args and (type(args[key]) is not int or args[key] < 1):
+                    return False, f"read_file {key} must be a positive integer", []
+            if args.get("end_line", args.get("start_line", 1)) < args.get("start_line", 1):
+                return False, "read_file end_line must not precede start_line", []
+            if "search" in args and (
+                not isinstance(args["search"], str) or not args["search"]
+            ):
+                return False, "read_file search must be a non-empty string", []
 
         tc_copy = dict(tc)
         tc_copy["function"] = dict(fn)
@@ -1451,12 +1504,16 @@ class _AgenticTurnStall(TimeoutError):
     """A single agentic OpenRouter turn exceeded the no-progress watchdog."""
 
 
+class _SessionModelExhausted(Exception):
+    """A model already exhausted earlier in this agentic session was reused."""
+
+
 def classify_llm_error(exc: BaseException) -> str:
     """Pure recovery-strategy classifier for a failed LLM call.
 
     Returns ``"transient"`` (retry same model), ``"model"`` (fail over to the next
     candidate), or ``"fatal"`` (fail fast)."""
-    if isinstance(exc, _AgenticTurnStall):
+    if isinstance(exc, (_AgenticTurnStall, _SessionModelExhausted)):
         return "model"
     # Connection resets / timeouts / read errors (all httpx.TransportError) are
     # transient by nature; a bounded retry usually clears them.
@@ -3718,6 +3775,37 @@ class LLMClient:
             The progress watchdog advances only for new content. Repeating a
             successful no-op write is activity, but it is not build progress.
             """
+            if name == "edit_file":
+                rel = args["path"].strip()
+                p = _safe(rel)
+                if not p or p == root:
+                    return "ERROR: path escapes the project", 0, True
+                if not _owned(p):
+                    return f"ERROR: path is outside this slice's owned files: {rel}", 0, True
+                if p.suffix.lower() in _AGENTIC_BINARY_WRITE_EXTS:
+                    return "ERROR: binary media cannot be edited by a text tool", 0, True
+                if not p.is_file():
+                    return "ERROR: existing file not found; use write_file for a new file", 0, True
+                if _is_persisted_write_receipt(args) or _is_persisted_write_receipt_body(
+                    args["new_text"]
+                ):
+                    return "ERROR: persisted write receipt is not source text", 0, True
+                try:
+                    body = p.read_bytes().decode("utf-8")
+                    old, new = args["old_text"], args["new_text"]
+                    matches = body.count(old)
+                    if matches == 0:
+                        return "ERROR: old_text not found; read the current relevant lines", 0, True
+                    if matches != 1:
+                        return "ERROR: old_text is ambiguous; include more surrounding context", 0, True
+                    if old == new:
+                        return f"OK unchanged {rel}", 0, False
+                    mode = p.stat().st_mode & 0o777
+                    atomic_write_bytes(p, body.replace(old, new, 1).encode("utf-8"))
+                    p.chmod(mode)
+                    return f"OK edited {rel} (one exact match)", 1, False
+                except (OSError, UnicodeError) as exc:
+                    return f"ERROR: {exc}", 0, True
             if name == "write_file":
                 if _is_persisted_write_receipt(args):
                     return (
@@ -3848,7 +3936,47 @@ class LLMClient:
                 if not p or not p.is_file():
                     return "ERROR: not found", 0, True
                 try:
-                    return p.read_text(encoding="utf-8", errors="replace"), 0, False
+                    content = p.read_text(encoding="utf-8", errors="replace")
+                    lines = content.splitlines()
+                    if (
+                        len(content) <= 16_000 and len(lines) <= 200
+                        and not {"start_line", "end_line", "search"} & args.keys()
+                    ):
+                        return content, 0, False
+                    start = args.get("start_line", 1) - 1
+                    search = args.get("search")
+                    if search:
+                        match = next(
+                            (i for i in range(start, len(lines)) if search in lines[i]), None
+                        )
+                        if match is None:
+                            return "ERROR: search text not found at or after start_line", 0, True
+                        start = max(start, match - 10)
+                    if start >= len(lines):
+                        if not lines and start == 0:
+                            return "(empty file)", 0, False
+                        return f"ERROR: start_line exceeds {len(lines)} lines", 0, True
+                    end = min(len(lines), args.get("end_line", len(lines)), start + 200)
+                    if end <= start:
+                        return "ERROR: search match is beyond end_line", 0, True
+                    excerpt: list[str] = []
+                    size = 0
+                    next_line = start + 1
+                    for i in range(start, end):
+                        line = lines[i]
+                        if len(line) > 12_000:
+                            offset = max(0, line.find(search) - 1000) if search else 0
+                            line = line[offset:offset + 12_000] + " [line truncated; use search to focus]"
+                        rendered = f"{i + 1}: {line}"
+                        if size + len(rendered) > 16_000:
+                            break
+                        excerpt.append(rendered)
+                        size += len(rendered) + 1
+                        next_line = i + 2
+                    header = f"Lines {start + 1}-{next_line - 1} of {len(lines)}"
+                    if next_line <= len(lines):
+                        header += f"; next_start_line={next_line}"
+                    return header + "\n" + "\n".join(excerpt), 0, False
                 except OSError as e:
                     return f"ERROR: {e}", 0, True
             if name == "list_files":
@@ -3933,16 +4061,60 @@ class LLMClient:
             return _agentic_project_looks_stub(root, stack)
         turn = 0
         no_progress_turns = 0
+        no_write_threshold = int(getattr(self.settings, "openrouter_agentic_no_write_turns", 8))
+        read_progress_nudged = False
+        feedback_turns = min(4, max(1, (no_write_threshold or max_turns) // 2))
         length_recovery_count = 0
         protocol_recovery_count = 0
+        session_exhausted: set[str] = set()
+        progress_fallbacks = 0
+
+        async def _switch_to_fallback() -> bool:
+            nonlocal model, fallback_model, no_progress_turns, doom_recent, doom_warned, stall_reason, progress_fallbacks
+            nonlocal read_progress_nudged
+            settings = self._routing_settings()
+            if not getattr(settings, "llm_fallback_enabled", True):
+                return False
+            max_fallbacks = int(getattr(settings, "llm_max_fallbacks", 0))
+            if max_fallbacks > 0 and progress_fallbacks >= max_fallbacks:
+                return False
+            candidates = await asyncio.to_thread(self._healthy_fallback_models, model, Tier.BACKEND)
+
+            chosen = None
+            for cand in candidates:
+                if cand == model or cand in session_exhausted:
+                    continue
+                chosen = cand
+                break
+            if chosen is None:
+                return False
+            self._mark_model_unhealthy(model, None)
+            session_exhausted.add(model)
+            fallback_model = chosen
+            model = chosen
+            no_progress_turns = 0
+            read_progress_nudged = False
+            doom_recent = []
+            doom_warned = False
+            stall_reason = f"progress_fallback: switched to {chosen}"
+            progress_fallbacks += 1
+            await self._report_retry_decision(model=chosen, attempt=1, reason="no_write_progress", delay=0.0, outcome="model_failover")
+            return True
+
         try:
             async with httpx.AsyncClient(timeout=180) as client:
-                while no_progress_turns < max_turns:
+                while True:
                     remaining = progress_deadline - _t.monotonic()
                     if remaining <= 0:
                         log.warning("llm.or_agentic_timeout", turns=turn, wrote=wrote)
                         timed_out = True
                         loop_error = f"agentic made no file-write progress for {budget}s"
+                        break
+                    if (no_progress_turns >= max_turns
+                            or (no_write_threshold > 0 and no_progress_turns >= no_write_threshold)):
+                        if await _switch_to_fallback():
+                            continue
+                        loop_error = loop_error or f"agentic stalled after {no_progress_turns} nonproductive turns"
                         break
                     # Context editing: send a shrunk COPY when the history blows the
                     # byte budget (stub OLD read-dumps, keep the last K) — the
@@ -3973,6 +4145,8 @@ class LLMClient:
                             max(idle_timeout, float(floor)) if floor else idle_timeout
                         )
 
+                        if m in session_exhausted:
+                            raise _SessionModelExhausted(f"session exhausted for model {m}")
                         async def _post():
                             nonlocal provider_requests, context_bytes_sent
                             nonlocal max_context_bytes_sent
@@ -3981,8 +4155,17 @@ class LLMClient:
                             max_context_bytes_sent = max(
                                 max_context_bytes_sent, _sent_context_bytes
                             )
-                            body = {"model": m, "messages": _sent, "tools": _AGENTIC_TOOLS,
-                                    "tool_choice": "auto", "session_id": session_id}
+                            body = {
+                                "model": m, "messages": _sent,
+                                "tools": _AGENTIC_TOOLS,
+                                "tool_choice": "auto",
+                                "session_id": session_id,
+                            }
+                            effort = self._routing_settings().openrouter_agentic_reasoning_effort
+                            if effort:
+                                body["reasoning"] = (
+                                    {"enabled": False} if effort == "none" else {"effort": effort}
+                                )
                             resp = await client.post(
                                 OPENROUTER_URL,
                                 json=body,
@@ -4173,7 +4356,7 @@ class LLMClient:
                             if name == "finish":
                                 finished, result = True, "OK"
                             else:
-                                if name == "write_file":
+                                if name in {"edit_file", "write_file"}:
                                     write_tool_calls += 1
                                     single_write_calls += 1
                                 elif name == "write_files":
@@ -4188,7 +4371,7 @@ class LLMClient:
                                 if changed_files:
                                     wrote += changed_files
                                     changed_paths: list[str] = []
-                                    if name == "write_file":
+                                    if name in {"edit_file", "write_file"}:
                                         changed_paths = [str(args.get("path") or "")]
                                     elif name == "write_files":
                                         changed_paths = [
@@ -4269,13 +4452,20 @@ class LLMClient:
                     if wrote > wrote_before:
                         progress_deadline = _t.monotonic() + budget
                         no_progress_turns = 0
+                        read_progress_nudged = False
                     else:
                         no_progress_turns += 1
                     turn += 1
+                    if not finished and not read_progress_nudged and no_progress_turns >= feedback_turns:
+                        messages.append({"role": "user", "content": _READ_ONLY_PROGRESS_NUDGE})
+                        read_progress_nudged = True
+                        log.info("llm.or_agentic_read_progress_nudge", turns=turn, wrote=wrote)
                     if (not finished and len(doom_recent) == 3
                             and len(set(doom_recent)) == 1):
                         # Item 49: the model repeated one identical call 3x — stuck.
                         if doom_warned:
+                            if await _switch_to_fallback():
+                                continue
                             log.warning("llm.or_agentic_doom_abort", wrote=wrote, turns=turn)
                             loop_error = (
                                 "agentic aborted after repeating an identical tool call "
@@ -4546,11 +4736,13 @@ class LLMClient:
                 f"agentic stopped after {max_turns} consecutive turns without a file write"
             )
         error = budget_error or loop_error or ("" if wrote > 0 else "agentic loop wrote no files")
+        stalled = bool(turn_timeouts) or progress_fallbacks > 0
         return {"ok": finished and wrote > 0 and not error, "completed": finished,
                  "timed_out": timed_out, "files_written": wrote, "backend": "openrouter",
                  "model": model, "attempted_model": attempted_model,
-                 "fallback_model": fallback_model, "stalled": bool(turn_timeouts),
+                 "fallback_model": fallback_model, "stalled": stalled,
                  "stall_reason": stall_reason, "turn_timeouts": turn_timeouts,
+                 "progress_fallbacks": progress_fallbacks,
                  "auto_converged": auto_converged,
                  "turns": turn, "provider_requests": provider_requests,
                  "context_bytes_sent": context_bytes_sent,

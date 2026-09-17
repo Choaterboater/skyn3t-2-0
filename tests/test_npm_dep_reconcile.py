@@ -83,6 +83,15 @@ def _node_proj(tmp_path):
     return tmp_path
 
 
+def _production_next_output(root):
+    output = root / ".next"
+    (output / "server" / "app").mkdir(parents=True, exist_ok=True)
+    (output / "static" / "chunks").mkdir(parents=True, exist_ok=True)
+    (output / "BUILD_ID").write_text("production-build-1", encoding="utf-8")
+    (output / "server" / "app" / "index.html").write_text("<h1>Built</h1>", encoding="utf-8")
+    (output / "static" / "chunks" / "app.js").write_text("console.log('built')", encoding="utf-8")
+
+
 def _fake_proof_exec(monkeypatch, rc, out):
     """Fake the Popen seam of proof_run._run_proof_command.
 
@@ -140,6 +149,7 @@ def test_run_node_build_skips_build_when_build_stamp_current(tmp_path, monkeypat
     (tmp_path / "node_modules").mkdir()
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "App.jsx").write_text("export default function App(){return null}\n", encoding="utf-8")
+    _production_next_output(tmp_path)
     mark_npm_install_current(tmp_path)
     mark_npm_build_current(tmp_path, "build")
     monkeypatch.setattr(shutil, "which", lambda n: "/usr/bin/npm" if n == "npm" else None)
@@ -163,6 +173,7 @@ def test_run_node_build_runs_declared_check_after_current_build(tmp_path, monkey
     package["scripts"]["check"] = "astro check"
     (tmp_path / "package.json").write_text(json.dumps(package), encoding="utf-8")
     (tmp_path / "node_modules").mkdir()
+    _production_next_output(tmp_path)
     mark_npm_install_current(tmp_path)
     mark_npm_build_current(tmp_path, "build")
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/npm")
@@ -181,6 +192,117 @@ def test_run_node_build_runs_declared_check_after_current_build(tmp_path, monkey
     assert "strict type error" in summary
 
 
+@pytest.mark.parametrize("invalidate", ["asset", "output"])
+def test_run_node_build_rebuilds_after_invalidation(tmp_path, monkeypatch, invalidate):
+    import subprocess
+    import sys
+
+    import skyn3t.studio.proof_run as pr
+    from skyn3t.npm_utils import mark_npm_install_current, npm_build_current
+
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"build": "vite build"}}))
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "public").mkdir()
+    asset = tmp_path / "public" / "image.png"
+    asset.write_bytes(b"\x89PNG\r\n\x1a\n\x00\xff")
+    mark_npm_install_current(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    calls = []
+
+    def build(_ctx, command, **kwargs):
+        # Exercise a real local subprocess producing artifacts, not a fake
+        # success receipt. npm/network are deliberately unnecessary in this test.
+        calls.append(command)
+        assert command == ["/usr/bin/npm", "run", "build"]
+        result = subprocess.run([
+            sys.executable, "-c",
+            "from pathlib import Path; "
+            "Path('dist').mkdir(exist_ok=True); "
+            "Path('dist/index.html').write_text('<h1>Production</h1>'); "
+            "Path('dist/image.png').write_bytes(Path('public/image.png').read_bytes())",
+        ], cwd=kwargs["cwd"], capture_output=True, text=True, timeout=30, check=False)
+        return pr._ProofCommandResult(result.returncode, result.stdout, result.stderr)
+
+    monkeypatch.setattr(pr, "_run_proof_command", build)
+    assert pr._run_node_build(tmp_path, "react", 120)[:2] == (True, True)
+    assert len(calls) == 1
+    assert npm_build_current(tmp_path, "build")
+    for _ in range(3):
+        assert pr._run_node_build(tmp_path, "react", 120)[:2] == (True, True)
+    assert len(calls) == 1, "valid unchanged reuse must run zero new builds"
+    if invalidate == "asset":
+        asset.write_bytes(b"\x89PNG\r\n\x1a\n\x01\xff")
+    else:
+        (tmp_path / "dist" / "index.html").unlink()
+    assert not npm_build_current(tmp_path, "build")
+    assert pr._run_node_build(tmp_path, "react", 120)[:2] == (True, True)
+    assert len(calls) == 2
+    assert (tmp_path / "dist" / "index.html").is_file()
+    assert (tmp_path / "dist" / "image.png").read_bytes() == asset.read_bytes()
+    assert npm_build_current(tmp_path, "build")
+    assert pr._run_node_build(tmp_path, "react", 120)[:2] == (True, True)
+    assert len(calls) == 2
+
+
+def test_run_node_build_blocks_when_old_receipt_cannot_be_invalidated(tmp_path, monkeypatch):
+    import skyn3t.studio.proof_run as pr
+    from skyn3t.npm_utils import mark_npm_install_current
+
+    _node_proj(tmp_path)
+    (tmp_path / "node_modules").mkdir()
+    mark_npm_install_current(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/npm")
+    monkeypatch.setattr(pr, "invalidate_npm_build", lambda root: False)
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        return pr._ProofCommandResult(0, "ok", "")
+
+    monkeypatch.setattr(pr, "_run_proof_command", run)
+    ran, passed, summary = pr._run_node_build(tmp_path, "nextjs", 120)
+    assert ran and not passed
+    assert "invalidate" in summary
+    assert calls == []
+
+
+@pytest.mark.parametrize("build_script,returncode", [
+    ("vite build", 1),
+    ("tsc --noEmit && vite build", 1),
+    ("tsc --noEmit", 0),
+])
+def test_failed_partial_and_check_builds_never_mint_receipts(
+    tmp_path, monkeypatch, build_script, returncode,
+):
+    import skyn3t.studio.proof_run as pr
+    from skyn3t.npm_utils import mark_npm_install_current, npm_build_stamp_path
+
+    (tmp_path / "package.json").write_text(json.dumps({"scripts": {"build": build_script}}))
+    (tmp_path / "node_modules").mkdir()
+    mark_npm_install_current(tmp_path)
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/npm" if name == "npm" else None)
+    calls = []
+
+    def build(_ctx, command, **_kwargs):
+        calls.append(command)
+        (tmp_path / "dist").mkdir(exist_ok=True)
+        (tmp_path / "dist" / "index.html").write_text("<h1>Output exists</h1>")
+        if "exec" in command:
+            return pr._ProofCommandResult(0, "compiled", "")
+        return pr._ProofCommandResult(returncode, "error TS2322: Type mismatch", "")
+
+    monkeypatch.setattr(pr, "_run_proof_command", build)
+    for _ in range(2):
+        findings = {}
+        ran, ok, _summary = pr._run_node_build(tmp_path, "react", 120, findings=findings)
+        assert ran
+        assert ok == ("&&" in build_script or returncode == 0)
+        if "&&" in build_script:
+            assert "type_check" in findings
+        assert not npm_build_stamp_path(tmp_path).exists()
+    assert len(calls) == (4 if "&&" in build_script else 2)
+
+
 def test_run_node_build_rejects_checker_install_prompt(tmp_path, monkeypatch):
     import skyn3t.studio.proof_run as pr
     from skyn3t.npm_utils import mark_npm_build_current, mark_npm_install_current
@@ -190,6 +312,7 @@ def test_run_node_build_rejects_checker_install_prompt(tmp_path, monkeypatch):
     package["scripts"]["check"] = "astro check"
     (tmp_path / "package.json").write_text(json.dumps(package), encoding="utf-8")
     (tmp_path / "node_modules").mkdir()
+    _production_next_output(tmp_path)
     mark_npm_install_current(tmp_path)
     mark_npm_build_current(tmp_path, "build")
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/npm")

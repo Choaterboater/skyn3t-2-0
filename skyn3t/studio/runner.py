@@ -6151,7 +6151,16 @@ class StudioRunner:
                     if key in routing_snapshot["codegen"]
                 }
             manifest.extra["routing_snapshot"] = routing_snapshot
-        manifest.extra["requested_model_override"] = model_override
+        submission_routing = (
+            routing_snapshot.get("submission")
+            if isinstance(routing_snapshot, dict)
+            else None
+        )
+        manifest.extra["requested_model_override"] = str(
+            (submission_routing or {}).get("model_override", model_override)
+            if isinstance(submission_routing, dict)
+            else model_override
+        ).strip()
         raw_codegen_routing = (
             routing_snapshot.get("codegen")
             if isinstance(routing_snapshot, dict)

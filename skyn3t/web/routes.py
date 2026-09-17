@@ -1174,7 +1174,13 @@ async def submit_build(state: AppState, brief: str, stack: str = "", slug: str =
         stack=stack,
         slug=slug,
     )
-    model = requested_model
+    model = requested_model or (
+        _normalize_model_override(
+            getattr(state.settings, "openrouter_codegen_model", "") or ""
+        )
+        if routing.get("codegen", {}).get("effective_backend") == "openrouter"
+        else ""
+    )
     full_app_requested = bool(full_app) or profile == "full_app"
     routing_trace: dict[str, Any] = {
         key: deepcopy(routing[key])

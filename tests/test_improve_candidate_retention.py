@@ -279,6 +279,61 @@ async def test_engine_surfaces_unverified_bytes_after_real_worktree_cleanup(cand
     assert state["files"]["main.py"]["sha256"] == hashlib.sha256(candidate).hexdigest()
 
 
+@pytest.mark.parametrize("storage_failed", [False, True])
+async def test_engine_retains_completed_generation_when_proof_rejects_it(
+    candidate_project, monkeypatch, storage_failed,
+):
+    settings, project = candidate_project
+    settings.llm_backend = "stub"
+    settings.run_generated_tests = False
+    settings.run_generated_build = False
+    settings.web_interact_check_enabled = False
+    original = (project / "main.py").read_bytes()
+    base_hash = source_tree_snapshot(project)["sha256"]
+    worktrees = []
+
+    class UnverifiedWriter(_FailingWriter):
+        async def agentic_build(self, prompt, workdir, **kwargs):
+            worktrees.append(Path(workdir))
+            Path(workdir, "main.py").write_text("value = 2\n")
+            return {"ok": True, "backend": "openrouter", "files_written": 1}
+
+    bus = EventBus()
+    orchestrator = Orchestrator(bus)
+    await orchestrator.register(CodeImproverAgent(event_bus=bus, llm=UnverifiedWriter(settings)))
+    engine = ImproveEngine(bus, orchestrator, settings=settings)
+
+    from unittest.mock import patch
+
+    from skyn3t.persistence.candidate_archive import CandidateArchive
+    from skyn3t.studio.proof_run import ProofResult
+
+    if storage_failed:
+        def fail_storage(*args):
+            raise OSError("storage unavailable")
+
+        monkeypatch.setattr(CandidateArchive, "save", fail_storage)
+    with patch("skyn3t.studio.improve.proof_run", return_value=ProofResult(
+        passed=False, mode="inline",
+        detail={"tests": "failed", "tests_summary": "one failing assertion"},
+    )):
+        outcome = await engine.improve(str(project), "Improve the value")
+
+    assert outcome.status == "failed"
+    assert outcome.detail["delivery_blocked"] == "proof_failed"
+    assert (project / "main.py").read_bytes() == original
+    assert len(worktrees) == 1 and not worktrees[0].exists()
+    retained = outcome.detail["candidate_retention"]
+    if storage_failed:
+        assert retained == {"status": "unavailable", "reason": "OSError"}
+        return
+    state = json.loads(Path(retained["path"]).read_text())["state"]
+    assert retained["status"] == "unverified"
+    assert state["base_source_sha256"] == base_hash
+    assert state["files"]["main.py"]["content"] == "value = 2\n"
+    assert state["delivered"] is False and state["proof_passed"] is False
+
+
 async def test_candidate_directory_swap_cannot_open_outside_files(candidate_project, monkeypatch):
     settings, project = candidate_project
     source = b"value = 3\n"

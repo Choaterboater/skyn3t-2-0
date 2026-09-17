@@ -26,9 +26,11 @@ from typing import Any
 from skyn3t.agents.config_detector import detect_from_code
 from skyn3t.npm_utils import (
     discard_foreign_node_modules,
+    foreign_node_modules_reason,
     mark_npm_install_current,
     npm_env,
     npm_install_args,
+    npm_install_current,
 )
 from skyn3t.security.secrets import SecretsStore, filter_env, is_secret_name, scrub_text
 
@@ -469,17 +471,20 @@ def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tup
 
 
 def ensure_node_deps(project_dir: str | Path, *, runner=None) -> tuple[bool, dict]:
-    """Install node dependencies when missing so `npm run dev` finds its binaries.
+    """Prepare node dependencies so `npm run dev` finds current binaries.
 
-    Idempotent: a present node_modules/ short-circuits (no npm call). Prefers
-    `npm ci` when a lockfile exists, else `npm install`. `runner(cmd, cwd) ->
-    (ok, detail)` is injectable for tests. Never raises."""
+    Idempotent: a host-compatible node_modules/ with a current install receipt
+    short-circuits (no npm call). Missing or stale receipts require preparation.
+    Prefers `npm ci` when a lockfile exists, else `npm install`.
+    `runner(cmd, cwd) -> (ok, detail)` is injectable for tests. Never raises."""
     pdir = Path(project_dir)
     if not (pdir / "package.json").exists():
         return True, {"skipped": "no package.json"}
     foreign_deps = discard_foreign_node_modules(pdir)
-    if (pdir / "node_modules").is_dir():
-        return True, {"skipped": "node_modules present"}
+    if foreign_node_modules_reason(pdir):
+        return False, {"error": "could not remove host-incompatible node_modules"}
+    if npm_install_current(pdir):
+        return True, {"skipped": "dependencies current"}
     npm = shutil.which("npm")
     if not npm:
         return False, {"error": "npm not found on PATH"}

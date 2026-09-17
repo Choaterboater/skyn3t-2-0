@@ -62,9 +62,29 @@ integrity checks, not an audit of every filesystem mutation between polls.
 
 Activity bursts show at most one ordinary activity line per 1.5 seconds, with
 the latest pending line retained and flushed. Stage/model/provider changes,
-warnings, and terminal records bypass throttling; pending activity is flushed
-before them. Heartbeats alone do not produce progress claims. Quiet periods
-produce at most one ephemeral, explicitly uncertain liveness line per minute.
+the end of editing, warnings, and terminal records bypass throttling; pending activity is flushed
+before them. Successful tool acknowledgements (such as `Finished read_file`) are
+not repeated in the timeline; read/edit actions still follow the ordinary activity
+rate limit. A context change on an acknowledgement shows a short status update
+instead. Only exact known acknowledgements are hidden, never warnings or messages
+with additional details. Model details appear when they change, not alongside every
+file operation, even when the producer repeats those fields. Structured
+status fields and the original JSONL records retain their technical details.
+
+The timeline translates known messages into plain language: `http_429` retries
+say the AI service is busy and when it will try again; a failed edit says the edit
+could not be applied, not that the whole run failed. Verification says
+"Checking that the changes work." The finish action says "The AI has finished
+editing; checks come next." It does not mark the run complete. Unknown warnings
+remain visible unchanged, and translated tool failures retain any reported reason.
+
+Heartbeats alone do not produce progress claims. Quiet periods produce at most
+one ephemeral liveness line per minute. A recent check-in says SkyN3t is still
+checking in, with its last reported step, but never claims tests are progressing
+or passing. If contact itself is stale, the line says how long there has been no
+update and explicitly says the feed cannot tell whether SkyN3t is still working.
+Contact is stale at 30 seconds without an accepted event; liveness wording uses
+that contact age separately from the age of the last work detail.
 Producer-reported terminal outcomes stay distinct from monitor errors and manual
 feed stops. Complete queued records are drained before terminal auto-stop;
 an incomplete trailing fragment is rejected without being interpreted.

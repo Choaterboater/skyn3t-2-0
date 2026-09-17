@@ -148,19 +148,93 @@ export function duration(seconds) {
     return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
 }
 
-export function eventLine(monitorId, record, latest) {
+const STAGE_LABELS = Object.freeze({
+    initializing: "starting up",
+    localize: "reading the project",
+    generating: "updating files",
+    prepare_dependencies: "preparing required packages",
+    proof: "checking the changes",
+    verifying: "checking the changes",
+    repairing: "fixing problems",
+    finalizing: "getting changes ready for checks",
+    delivering: "saving checked changes",
+});
+
+export function stageLabel(stage) {
+    return Object.hasOwn(STAGE_LABELS, stage) ? STAGE_LABELS[stage] : stage;
+}
+
+export function isToolAcknowledgement(record) {
+    const tool = record.tool?.split(".").at(-1).toLowerCase();
+    return record.event === "activity"
+        && ["read", "read_file", "view", "edit", "edit_file", "apply_patch",
+            "write", "write_file", "write_files", "create", "create_file",
+            "list_files", "search_files", "find_files", "finish"].includes(tool)
+        && (record.message === `Finished ${record.tool}` || record.message === `Finished ${tool}`);
+}
+
+export function isEditingFinished(record) {
+    return record.event === "activity" && record.tool?.split(".").at(-1).toLowerCase() === "finish"
+        && (record.message === `Using ${record.tool}` || record.message === "Using finish");
+}
+
+function friendlyMessage(record) {
+    const retry = /^Retry decision: .+ \(([^)]+)\), attempt (\d+), delay (\d+(?:\.\d+)?s), outcome (\w+)$/u.exec(record.message);
+    if (record.event === "warning" && retry) {
+        const [, reason, attempt, delay, outcome] = retry;
+        const cause = reason === "http_429" ? "The AI service is busy (request limit reached)"
+            : reason === "no_write_progress" ? "The AI has not made file changes" : null;
+        if (!cause) return record.message;
+        if (outcome === "waiting") return `${cause}; trying again in ${delay} (attempt ${attempt}).`;
+        if (outcome === "exhausted") return `${cause}. Automatic retries stopped; waiting for SkyN3t's next step.`;
+        if (outcome === "fatal") return `${cause}. This request cannot be retried; waiting for the final result.`;
+        if (outcome === "model_failover") return `${cause}. SkyN3t is trying another AI model.`;
+    }
+    const failure = /^Tool failed: ([\w.]+)(?:: (.+))?$/u.exec(record.message);
+    if (record.event === "warning" && failure) {
+        const tool = (record.tool ?? failure[1]).split(".").at(-1).toLowerCase();
+        const action = ["edit", "edit_file", "apply_patch"].includes(tool) ? "apply an edit"
+            : ["read", "read_file", "view"].includes(tool) ? "read a file"
+            : ["write", "write_file", "write_files", "create", "create_file"].includes(tool) ? "save a file"
+            : "complete this step";
+        return `Could not ${action}${record.path ? `: ${record.path}` : ""}. The overall result is not known from this step alone.`
+            + (failure[2] ? ` Details: ${failure[2]}` : "");
+    }
+    if (record.event === "warning") return record.message;
+    if (isEditingFinished(record)) {
+        return "The AI has finished editing; checks come next.";
+    }
+    if (record.message.startsWith("Agent started: ")) return "The AI is starting work.";
+    if (record.message === "Reported stage/model/provider changed.") return "Work status updated.";
+    const messages = {
+        "Reading project context": "Reading the project to understand what needs changing.",
+        "Codegen route selected": "AI model selected.",
+        "Generating changes": "The AI is updating files.",
+        "Preparing dependencies": "Preparing the packages the project needs.",
+        "Verifying the candidate": "Checking that the changes work.",
+        "Repairing the candidate": "Fixing problems found in the changes.",
+        "Finalizing generated changes": "Getting the changes ready to check.",
+        "Delivering verified files": "Saving the checked changes.",
+        "Waiting for operator approval": "Waiting for your approval before continuing.",
+        "SkyN3t run completed": "SkyN3t reports the work is complete.",
+        "SkyN3t run failed; see the CLI outcome": "SkyN3t could not finish. The command result has the reason.",
+    };
+    return Object.hasOwn(messages, record.message) ? messages[record.message] : record.message;
+}
+
+export function eventLine(monitorId, record, latest, { showModel = record.event === "model" } = {}) {
     const prefix = `[SkyN3t ${monitorId.slice(0, 4)} | ${duration(record.elapsed_s)}]`;
-    const stage = latest.stage
+    const stage = stageLabel(latest.stage)
         ?? (latest.operation === "improve" ? "Improving" : latest.operation === "build" ? "Building" : null);
-    const model = latest.model
+    const model = showModel && latest.model
         ? `${latest.model}${latest.provider ? ` (${latest.provider})` : ""}`
-        : latest.provider;
+        : showModel ? latest.provider : null;
     const kind = TERMINAL_EVENTS.has(record.event) || record.event === "warning"
         ? `${record.event[0].toUpperCase()}${record.event.slice(1)}: `
         : "";
     const details = [];
-    if (record.changed_files !== undefined) details.push(`changed files: ${record.changed_files}`);
-    if (record.proof_passed !== undefined) details.push(`proof: ${record.proof_passed ? "passed" : "failed"}`);
-    return [prefix, ...[stage, model].filter(Boolean)].join(" | ")
-        + ` | ${kind}${record.message}${details.length ? ` (${details.join(", ")})` : ""}`;
+    if (record.changed_files !== undefined) details.push(`files changed: ${record.changed_files}`);
+    if (record.proof_passed !== undefined) details.push(`checks: ${record.proof_passed ? "passed" : "failed"}`);
+    return `${prefix} ${[stage, model].filter(Boolean).join(" - ")}${stage || model ? ": " : ""}`
+        + `${kind}${friendlyMessage(record)}${details.length ? ` (${details.join(", ")})` : ""}`;
 }

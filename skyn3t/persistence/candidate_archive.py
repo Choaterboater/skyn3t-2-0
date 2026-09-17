@@ -8,6 +8,7 @@ import os
 import re
 import stat
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +48,10 @@ class CandidateArchive:
         except OSError as exc:
             _log.warning("candidate_archive.base_unavailable", error=type(exc).__name__)
 
-    def save(self, before: dict[str, str], after: dict[str, str]) -> dict[str, Any]:
+    def save(
+        self, before: Mapping[str, str], after: Mapping[str, str | None],
+    ) -> dict[str, Any]:
+        """Retain changed text; a None value selects safely read on-disk content."""
         if not self.base_sha256:
             return {"status": "unavailable", "reason": "invalid_base_snapshot"}
         if (
@@ -66,7 +70,7 @@ class CandidateArchive:
             "files": files, "omitted": omitted,
         }
         for rel, expected in sorted(after.items()):
-            if before.get(rel) == expected:
+            if rel in before and before[rel] == expected:
                 continue
             reason = ""
             relative = Path(rel)
@@ -111,7 +115,10 @@ class CandidateArchive:
                                     text = raw.decode("utf-8")
                                     if "\x00" in text:
                                         reason = "binary_file"
-                                    elif text.replace("\r\n", "\n").replace("\r", "\n") != expected:
+                                    elif (
+                                        expected is not None
+                                        and text.replace("\r\n", "\n").replace("\r", "\n") != expected
+                                    ):
                                         reason = "unstable_file"
                                     elif scrub_text(text, secrets) != text:
                                         reason = "secret_content"

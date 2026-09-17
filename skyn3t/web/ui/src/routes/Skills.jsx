@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, apiPost, queryFn } from "../api.js";
-import { PageHeader, Panel, PanelHead, Stat, Pill, Empty } from "../components/ui.jsx";
+import { PageHeader, Panel, PanelHead, Stat, Pill, Empty, ErrorText } from "../components/ui.jsx";
 
 function SummaryChips({ title, items }) {
   const entries = Object.entries(items || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
@@ -34,13 +34,174 @@ function countOrFallback(value, fallback) {
   const count = Number(value);
   return Number.isFinite(count) && count >= 0 ? count : fallback;
 }
+const CAPABILITY_STATUS_LABELS = {
+  active: "active",
+  inactive: "not active",
+  rolled_back: "rolled back",
+  unknown: "capability state not recorded",
+};
+
+function capabilityStatusTone(status) {
+  if (status === "active") return "plasma";
+  if (status === "rolled_back") return "ember";
+  return "ash";
+}
+
+function EvaluationRow({ evaluation }) {
+  const created = evaluation.created_at || evaluation.timestamp;
+  const parsed = created ? new Date(created) : null;
+  const effect = String(evaluation.effectiveness || "not_checked");
+  const compatibility = String(evaluation.compatibility || "not_checked");
+  return (
+    <li className="border-b border-hairline/60 py-2 last:border-b-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <Pill tone={effect === "passed" ? "plasma" : effect === "failed" ? "ember" : "ash"}>
+          effectiveness · {effect.replaceAll("_", " ")}
+        </Pill>
+        <Pill tone={compatibility === "compatible" ? "plasma" : compatibility === "incompatible" ? "ember" : "ash"}>
+          compatibility · {compatibility.replaceAll("_", " ")}
+        </Pill>
+        <span className="font-mono text-[10px] text-ash/70">
+          {parsed && !Number.isNaN(parsed.getTime()) ? parsed.toLocaleString() : "date not recorded"}
+        </span>
+      </div>
+      {evaluation.reason ? <p className="mt-1 text-xs text-ash">{evaluation.reason}</p> : null}
+      {evaluation.receipt ? (
+        <p className="mt-1 break-words font-mono text-[10px] text-ash/70">receipt: {JSON.stringify(evaluation.receipt)}</p>
+      ) : null}
+    </li>
+  );
+}
+
+function SkillLifecyclePanel({
+  slug,
+  skillName,
+  capabilityStatus,
+  expanded,
+  onToggle,
+  evaluations,
+  evaluationsLoading,
+  evaluationsError,
+  evaluate,
+  activate,
+  rollback,
+  activationReason,
+  setActivationReason,
+  rollbackReason,
+  setRollbackReason,
+}) {
+  const normalizedStatus = String(capabilityStatus || "unknown");
+  return (
+    <div className="border-t border-hairline pt-2">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className="font-mono text-[11px] text-ash underline decoration-dotted underline-offset-4 hover:text-bone"
+      >
+        {expanded ? "Hide capability controls" : "Evaluate / activate / rollback"}
+      </button>
+      {expanded ? (
+        <div className="mt-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Pill tone={capabilityStatusTone(normalizedStatus)}>
+              capability · {CAPABILITY_STATUS_LABELS[normalizedStatus] || normalizedStatus}
+            </Pill>
+            <button
+              type="button"
+              className="btn-ghost py-0.5 text-[10px]"
+              disabled={evaluate.isPending || !slug}
+              onClick={() => evaluate.mutate(slug)}
+              title="Run an isolated dry-run receipt for this skill; does not activate anything"
+            >
+              {evaluate.isPending ? "Evaluating…" : "Evaluate"}
+            </button>
+          </div>
+          {evaluate.isError ? <ErrorText className="max-h-20 text-[10px]">{String(evaluate.error?.message || evaluate.error)}</ErrorText> : null}
+          {evaluationsLoading ? (
+            <p className="font-mono text-[10px] text-ash/70">loading evaluation history…</p>
+          ) : evaluationsError ? (
+            <ErrorText className="max-h-20 text-[10px]">{String(evaluationsError.message || evaluationsError)}</ErrorText>
+          ) : Array.isArray(evaluations) && evaluations.length ? (
+            <div>
+              <p className="font-mono text-[10px] text-ash/70">Evaluation history ({evaluations.length})</p>
+              <ul>
+                {evaluations.map((evaluation, index) => (
+                  <EvaluationRow key={evaluation.id || index} evaluation={evaluation} />
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <p className="font-mono text-[10px] text-ash/70">No evaluation history recorded.</p>
+          )}
+          <label className="block text-xs text-ash">
+            <span className="mb-1 block font-mono text-[10px] uppercase">Activation reason (optional)</span>
+            <input
+              type="text"
+              className="field"
+              value={activationReason}
+              onChange={(event) => setActivationReason(event.target.value)}
+              aria-label={`Activation reason for ${skillName}`}
+            />
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-ember py-0.5 text-[10px]"
+              disabled={activate.isPending || !slug}
+              onClick={() => activate.mutate({ slug, reason: activationReason.trim() })}
+            >
+              {activate.isPending ? "Activating…" : "Activate"}
+            </button>
+            {activate.isError ? <ErrorText className="max-h-16 text-[10px]">{String(activate.error?.message || activate.error)}</ErrorText> : null}
+          </div>
+          <label className="block text-xs text-ash">
+            <span className="mb-1 block font-mono text-[10px] uppercase">Rollback reason (required)</span>
+            <input
+              type="text"
+              className="field"
+              value={rollbackReason}
+              onChange={(event) => setRollbackReason(event.target.value)}
+              aria-label={`Rollback reason for ${skillName}`}
+            />
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-ghost py-0.5 text-[10px]"
+              disabled={rollback.isPending || !slug || !rollbackReason.trim()}
+              title={rollbackReason.trim() ? "Deactivate this capability" : "A rollback reason is required"}
+              onClick={() => rollback.mutate({ slug, reason: rollbackReason.trim() })}
+            >
+              {rollback.isPending ? "Rolling back…" : "Roll back"}
+            </button>
+            {rollback.isError ? <ErrorText className="max-h-20 text-[10px]">{String(rollback.error?.message || rollback.error)}</ErrorText> : null}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function Skills() {
   const queryClient = useQueryClient();
   const [catalogPath, setCatalogPath] = useState("");
   const [catalogResult, setCatalogResult] = useState(null);
   const [catalogError, setCatalogError] = useState("");
   const [promotionResult, setPromotionResult] = useState(null);
+  const [expandedSkill, setExpandedSkill] = useState(null);
+  const [rollbackReason, setRollbackReason] = useState("");
+  const [activationReason, setActivationReason] = useState("");
 
+  const evaluationsQuery = useQuery({
+    queryKey: ["skill-evaluations", expandedSkill],
+    queryFn: () => apiFetch(`/skills/${encodeURIComponent(expandedSkill)}/evaluations`),
+    enabled: Boolean(expandedSkill),
+    retry: 0,
+  });
+  const evaluations = expandedSkill ? (Array.isArray(evaluationsQuery.data?.evaluations) ? evaluationsQuery.data.evaluations : []) : [];
+  const evaluationsLoading = evaluationsQuery.isLoading || evaluationsQuery.isFetching;
+  const evaluationsError = evaluationsQuery.isError ? evaluationsQuery.error : null;
   const { data, isLoading, error } = useQuery({
     queryKey: ["skills"],
     queryFn: queryFn("/skills"),
@@ -90,6 +251,31 @@ export default function Skills() {
       setPromotionResult({ promoted: false, message: String(err.message || err) });
     },
   });
+  const evaluateSkill = useMutation({
+    mutationFn: (slug) => apiPost(`/skills/${encodeURIComponent(slug)}/evaluate`, {}),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["skill-evaluations", expandedSkill] }),
+  });
+  const activateSkill = useMutation({
+    mutationFn: ({ slug, reason }) => apiPost(`/skills/${encodeURIComponent(slug)}/activate`, reason ? { reason } : {}),
+    onSuccess: () => {
+      setActivationReason("");
+      queryClient.invalidateQueries({ queryKey: ["skill-evaluations", expandedSkill] });
+      queryClient.invalidateQueries({ queryKey: ["skills"] });
+    },
+  });
+  const rollbackSkill = useMutation({
+    mutationFn: ({ slug, reason }) => apiPost(`/skills/${encodeURIComponent(slug)}/rollback`, { reason }),
+    onSuccess: () => {
+      setRollbackReason("");
+      queryClient.invalidateQueries({ queryKey: ["skill-evaluations", expandedSkill] });
+      queryClient.invalidateQueries({ queryKey: ["skills"] });
+    },
+  });
+  const toggleSkillDetail = (slug) => {
+    setExpandedSkill((current) => (current === slug ? null : slug));
+    setRollbackReason("");
+    setActivationReason("");
+  };
   const acceptAllReady = useMutation({
     mutationFn: () => apiPost("/skills/promote-ready", {}),
     onSuccess: async (res) => {
@@ -330,6 +516,24 @@ export default function Skills() {
                       </Pill>
                     ))}
                   </div>
+
+                  <SkillLifecyclePanel
+                    slug={s.slug || s.name || s.id}
+                    skillName={skillName}
+                    capabilityStatus={s.capability_status}
+                    expanded={expandedSkill === (s.slug || s.name || s.id)}
+                    onToggle={() => toggleSkillDetail(s.slug || s.name || s.id)}
+                    evaluations={evaluations}
+                    evaluationsLoading={evaluationsLoading}
+                    evaluationsError={evaluationsError}
+                    evaluate={evaluateSkill}
+                    activate={activateSkill}
+                    rollback={rollbackSkill}
+                    activationReason={activationReason}
+                    setActivationReason={setActivationReason}
+                    rollbackReason={rollbackReason}
+                    setRollbackReason={setRollbackReason}
+                  />
 
                   {s.promotion_ready ? (
                     <button

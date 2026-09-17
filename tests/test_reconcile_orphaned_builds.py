@@ -5,6 +5,7 @@ lingers as a phantom 'running' build forever (observed: abfe... ran 3.5h)."""
 from __future__ import annotations
 
 import json
+import pytest
 
 from skyn3t.config.settings import Settings
 from skyn3t.memory.store import MemoryStore
@@ -188,6 +189,38 @@ async def test_recent_builds_exposes_manifest_classification(tmp_path):
     assert row["quality_scorecard"]["proof_passed"] is True
     assert row["quality_scorecard"]["skills_count"] == 1
     assert row["skills_used"] == ["react-ui"]
+
+
+@pytest.mark.asyncio
+async def test_recent_builds_exposes_web_interact_verdict(tmp_path):
+    """The dashboard's outcome pill reads web_interact from the build row."""
+    store = MemoryStore(Settings(data_dir=tmp_path / "d", logs_dir=tmp_path / "l"))
+    await store.init_db()
+    await store.save_build(
+        build_id="b2",
+        slug="wi",
+        brief="a notes app",
+        stack="react",
+        status="completed",
+        manifest={"extra": {"web_interact": {"status": "failed", "ok": False,
+                                             "skipped": False, "reason": "broken"}}},
+        verdict="go",
+    )
+
+    row = (await store.recent_builds(limit=1))[0]
+
+    assert row["quality_scorecard"]["web_interact"]["status"] == "failed"
+    assert row["quality_scorecard"]["web_interact"]["reason"] == "broken"
+
+    legacy = {"ok": True, "skipped": True, "reason": "no playwright"}
+    await store.save_build(
+        build_id="b3", slug="wi2", brief="x", stack="react", status="completed",
+        manifest={"extra": {"web_interact": legacy}}, verdict="go",
+    )
+    row = (await store.get_build("b3")) or {}
+    assert (row.get("quality_scorecard") or {}).get("web_interact", {}).get(
+        "status", "not_checked"
+    ) in {"not_checked", None}
 
 
 async def test_recent_builds_prefers_repaired_disk_manifest(tmp_path):

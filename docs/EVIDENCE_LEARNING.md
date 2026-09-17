@@ -240,6 +240,25 @@ process crashes, and forced cancellation are not captured. Successful runs and
 failures without safe changed text do not create a candidate. There is no
 automatic resume, application, delivery, or learning credit from these records.
 
+Workspace → **Saved work** lists at most ten project-associated archives. Select
+**Inspect saved text** to view the retained content, omission counts and expected
+versus current source digests. A trusted outcome producer associates the archive
+receipt with the canonical managed project; matching source bytes alone never
+exposes another project's archive. New receipts bind the entire archive hash as
+well as its base digest. Legacy receipts without that integrity binding are
+inspection-only; orphan archives without a trusted project association stay hidden.
+
+Recovery requires an explicit acknowledgement and a new managed workspace name.
+It validates archive size, per-file and whole-archive hashes, private-file policy,
+path collisions and the live source digest, then copies safe current source plus
+retained text into a separate **imported, unverified** project. A changed original
+is refused with expected/current digest evidence; reconcile the saved text manually
+in a separate copy instead. Existing destination names are never overwritten,
+including duplicate requests. The original project and archive remain intact.
+Omitted archive edits and excluded private/generated base files remain visible in
+the result. No recovered code is executed, no task resumes, and no model budgets
+reset. Preview and deployment still require separate proof-backed delivery.
+
 ### Learning from rejected improvements
 
 When an improve candidate fails proof, `ImproveEngine` captures up to three

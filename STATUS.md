@@ -1,9 +1,45 @@
 # SkyN3t 2.0 — Status
 
-_Last reviewed: 2026-08-01 (4,234 passed / 12 skipped; full suite green.
-Design trend: 7/15 → 11/15 → 14/15 → effectively 15/15 live codex, zero
-AI-look warnings with briefs threaded)._
+_Last reviewed: 2026-09-17 (5,353 passed / 10 skipped; full suite green).
+Historical design trend: 7/15 → 11/15 → 14/15 → effectively 15/15 live codex,
+zero AI-look warnings with briefs threaded._
 
+**2026-09-17 — required-outcome verification, bounded advisors, trusted
+recovery, and a learning surface:** the browser QA gate now verifies
+**required workflows** derived from the product spec (primary, persistence,
+and invalid-input outcomes), reports a bounded
+`summary {required, passed, failed, not_checked}` with `fresh` source-identity
+evidence, and serves stored evidence as `not_checked` when the source has
+changed — no browser rerun, no paid calls. Reliable executed required failures
+block release-posture delivery (lab posture stays advisory). The MoA council
+gained a measured execution policy: `fast` profiles make zero advisor calls,
+`cheap_learned`/`balanced` run a bounded 2-slot fan-out under a
+`moa_council_timeout` deadline (default 15 s, request evidence recorded,
+never advisor prose), and `best_quality`/`full_app` keep the full council;
+an explicit per-build advisor selection always overrides the policy. Failed
+improvements now register retained unverified edits with a trusted
+canonical-project registry (`CandidateRecovery.register`); the dashboard can
+inspect bounded saved work and recover it into a **separate, unverified
+imported workspace** — hashes validated, originals and archives never
+modified, never executed, never resumed as verified. Learning: user
+corrections (scoped, bounded, retireable) persist across restarts and reach
+generation/improve prompts through scrubbed advisory blocks. A separate
+fixed-enum communication persona changes assistant-to-user explanations,
+not generated product code or proof requirements. Authenticated API routes expose
+(`/api/learning/corrections`, `/api/persona`,
+`/api/skills/{slug}/evaluate|evaluations|activate|rollback`, project
+candidate recovery). Capability growth is honest: a passing static evaluation
+(effectiveness `not_checked`) is required before activation, with audited
+rollback; outcome-only successes can no longer mint actionable lessons.
+Obsolete outcome-only tests were removed and legacy promotion fixtures were
+migrated to the evaluation gate. Final verification: **5,353 passed, 10 skipped**;
+the dashboard production build also completed successfully.
+
+
+Package verification: `dist/skyn3t-2.0.0-py3-none-any.whl` passed the
+repository wheel-integrity check (277 members, 40 dashboard files).
+No matched live-model timing comparison is recorded for this change;
+the advisor bounds do not establish an end-to-end build speedup.
 **2026-09-14 — native dashboard facelift:** SkyN3t's Improve pipeline delivered
 a shared light/dark workspace design, grouped navigation, an accessible mobile
 drawer, and a keyboard page switcher. Overview prioritizes starting or continuing

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, queryFn, apiPost, saveAuthToken } from "../api.js";
 import {
   DEPLOY_PROVIDERS,
@@ -29,6 +29,7 @@ import {
   Pill,
   Empty,
   SignalGrid,
+  ErrorText,
 } from "../components/ui.jsx";
 
 function Row({ label, value }) {
@@ -57,6 +58,8 @@ const SETTINGS_SECTIONS = [
   ["visual", "Visual"],
   ["improve", "Improve"],
   ["gates", "Gates"],
+  ["persona", "Assistant persona"],
+  ["corrections", "Learning corrections"],
   ["lab", "Lab"],
   ["messaging", "Messaging"],
   ["auth", "Auth"],
@@ -140,6 +143,76 @@ export default function Settings() {
 
   const [ghToken, setGhToken] = useState("");
   const [ghMsg, setGhMsg] = useState("");
+
+  const [personaMsg, setPersonaMsg] = useState("");
+  const [correctionText, setCorrectionText] = useState("");
+  const [correctionProject, setCorrectionProject] = useState("");
+  const [correctionStack, setCorrectionStack] = useState("");
+  const [correctionStage, setCorrectionStage] = useState("");
+  const [correctionMsg, setCorrectionMsg] = useState("");
+
+  const persona = useQuery({
+    queryKey: ["persona"],
+    queryFn: queryFn("/persona"),
+    retry: 0,
+  });
+  const personaBody = persona.data?.persona && typeof persona.data.persona === "object"
+    ? persona.data.persona
+    : persona.data && typeof persona.data === "object" && ("tone" in persona.data || "verbosity" in persona.data)
+      ? persona.data
+      : null;
+  const personaValue = (key, allowed) => {
+    const current = String(personaBody?.[key] || "");
+    return allowed.includes(current) ? current : allowed[0];
+  };
+  const personaSave = useMutation({
+    mutationFn: (next) =>
+      apiFetch("/persona", { method: "PUT", body: JSON.stringify({ persona: next }) }),
+    onSuccess: (result) => {
+      setPersonaMsg(result?.message || "Saved. Applies to this assistant's communication only — not builds, proofs, or tools.");
+      queryClient.invalidateQueries({ queryKey: ["persona"] });
+    },
+    onError: (err) => setPersonaMsg(`Save failed: ${String(err.message || err)}`),
+  });
+  const personaReset = useMutation({
+    mutationFn: () => apiFetch("/persona", { method: "DELETE" }),
+    onSuccess: (result) => {
+      setPersonaMsg(result?.message || "Reset to defaults.");
+      queryClient.invalidateQueries({ queryKey: ["persona"] });
+    },
+    onError: (err) => setPersonaMsg(`Reset failed: ${String(err.message || err)}`),
+  });
+  const corrections = useQuery({
+    queryKey: ["learning-corrections"],
+    queryFn: queryFn("/learning/corrections"),
+    retry: 0,
+  });
+  const correctionRows = Array.isArray(corrections.data?.corrections) ? corrections.data.corrections : [];
+  const correctionAdd = useMutation({
+    mutationFn: () => {
+      const body = {};
+      const project = correctionProject.trim();
+      const stack = correctionStack.trim();
+      const stage = correctionStage.trim();
+      if (project) body.project = project;
+      if (stack) body.stack = stack;
+      if (stage) body.stage = stage;
+      return apiPost("/learning/corrections", body);
+    },
+    onSuccess: (result) => {
+      setCorrectionMsg(result?.message || (result?.correction ? "Correction recorded." : "Correction response received."));
+      setCorrectionText("");
+      setCorrectionProject("");
+      setCorrectionStack("");
+      setCorrectionStage("");
+      queryClient.invalidateQueries({ queryKey: ["learning-corrections"] });
+    },
+    onError: (err) => setCorrectionMsg(String(err.message || err)),
+  });
+  const correctionRetire = useMutation({
+    mutationFn: (id) => apiPost(`/learning/corrections/${encodeURIComponent(id)}/retire`, {}),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["learning-corrections"] }),
+  });
 
   const [deployProvider, setDeployProvider] = useState("fly");
   const [deployToken, setDeployToken] = useState("");
@@ -1794,6 +1867,178 @@ export default function Settings() {
             {labMsg ? (
               <p className="mt-3 font-mono text-[11px] text-plasma">{labMsg}</p>
             ) : null}
+          </div>
+        </Panel>
+
+        <Panel id="persona">
+          <PanelHead
+            label="Assistant persona"
+            right={<span className="font-mono text-[11px] text-ash">assistant replies only</span>}
+          />
+          <div className="space-y-3 p-4 text-sm text-ash">
+            <p className="text-[11px] text-ash/80">
+              These choices change how the assistant words its replies. They never change build
+              behavior, proof requirements, or available tools. {persona.isLoading ? "Loading…" : persona.isError ? "Persona settings could not be loaded." : ""}
+            </p>
+            {personaBody ? (
+              <div className="grid gap-3 sm:grid-cols-3">
+                <label className="block">
+                  <span className="mb-1 block font-mono text-[10px] uppercase text-ash">Tone</span>
+                  <select
+                    aria-label="Persona tone"
+                    className="field"
+                    value={personaValue("tone", ["neutral", "warm", "direct"])}
+                    onChange={(event) => personaSave.mutate({ ...personaBody, tone: event.target.value })}
+                    disabled={personaSave.isPending || personaReset.isPending}
+                  >
+                    <option value="neutral">neutral</option>
+                    <option value="warm">warm</option>
+                    <option value="direct">direct</option>
+                  </select>
+                </label>
+                <label className="block text-xs text-ash">
+                  <span className="mb-1 block font-mono text-[10px] uppercase">Verbosity</span>
+                  <select
+                    aria-label="Persona verbosity"
+                    className="field"
+                    value={personaValue("verbosity", ["concise", "balanced", "detailed"])}
+                    onChange={(event) => personaSave.mutate({ ...personaBody, verbosity: event.target.value })}
+                    disabled={personaSave.isPending || personaReset.isPending}
+                  >
+                    <option value="concise">concise</option>
+                    <option value="balanced">balanced</option>
+                    <option value="detailed">detailed</option>
+                  </select>
+                </label>
+                <label className="block text-xs text-ash">
+                  <span className="mb-1 block font-mono text-[10px] uppercase">Structure</span>
+                  <select
+                    aria-label="Persona structure"
+                    className="field"
+                    value={personaValue("structure", ["prose", "bullets"])}
+                    onChange={(event) => personaSave.mutate({ ...personaBody, structure: event.target.value })}
+                    disabled={personaSave.isPending || personaReset.isPending}
+                  >
+                    <option value="prose">prose</option>
+                    <option value="bullets">bullets</option>
+                  </select>
+                </label>
+              </div>
+            ) : !persona.isLoading ? (
+              <Empty icon="◇">Persona settings unavailable.</Empty>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="btn-ember py-1 text-[11px]"
+                disabled={personaSave.isPending || personaReset.isPending || !personaBody}
+                onClick={() => personaSave.mutate({ ...personaBody, tone: personaValue("tone", ["neutral", "warm", "direct"]) })}
+              >
+                {personaSave.isPending ? "Saving…" : "Save persona"}
+              </button>
+              <button
+                type="button"
+                className="btn-ghost py-1 text-[11px]"
+                disabled={personaReset.isPending}
+                onClick={() => personaReset.mutate()}
+              >
+                {personaReset.isPending ? "Resetting…" : "Reset to defaults"}
+              </button>
+              {personaMsg ? <span aria-live="polite" className="font-mono text-[11px] whitespace-pre-line text-plasma">{personaMsg}</span> : null}
+            </div>
+          </div>
+        </Panel>
+
+        <Panel id="corrections">
+          <PanelHead
+            label="Learning corrections"
+            right={<span className="font-mono text-[11px] text-ash">{correctionRows.length} recorded</span>}
+          />
+          <div className="space-y-3 p-4">
+            <p className="text-xs text-ash">
+              Record a specific correction the build assistant should remember. Scope it to at least
+              one of project, stack, or stage — unscoped corrections are rejected. Corrections are
+              advisory text; retiring one removes it from future prompts without deleting history.
+            </p>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="block text-xs text-ash md:col-span-2">
+                <span className="mb-1 block font-mono text-[10px] uppercase">Correction text (max 600 chars)</span>
+                <textarea
+                  className="field min-h-[64px] w-full resize-y"
+                  aria-label="Correction text"
+                  maxLength={600}
+                  value={correctionText}
+                  onChange={(event) => setCorrectionText(event.target.value)}
+                  placeholder="e.g. For FastAPI projects, prefer lifespan handlers over deprecated on_event startup hooks."
+                />
+              </label>
+              <label className="block text-xs text-ash">
+                <span className="mb-1 block font-mono text-[10px] uppercase">Project scope (optional)</span>
+                <input className="field" aria-label="Correction project scope" value={correctionProject} onChange={(event) => setCorrectionProject(event.target.value)} />
+              </label>
+              <label className="block text-xs text-ash">
+                <span className="mb-1 block font-mono text-[10px] uppercase">Stack scope (optional)</span>
+                <input className="field" aria-label="Correction stack scope" value={correctionStack} onChange={(event) => setCorrectionStack(event.target.value)} />
+              </label>
+              <label className="block text-xs text-ash">
+                <span className="mb-1 block font-mono text-[10px] uppercase">Stage scope (optional)</span>
+                <input className="field" aria-label="Correction stage scope" value={correctionStage} onChange={(event) => setCorrectionStage(event.target.value)} />
+              </label>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  className="btn-ember"
+                  disabled={correctionAdd.isPending || !correctionText.trim() || (!correctionProject.trim() && !correctionStack.trim() && !correctionStage.trim())}
+                  title={!correctionText.trim() ? "Enter the correction text first" : !correctionProject.trim() && !correctionStack.trim() && !correctionStage.trim() ? "Give at least one scope: project, stack, or stage" : "Record this correction"}
+                  onClick={() => correctionAdd.mutate()}
+                >
+                  {correctionAdd.isPending ? "Recording…" : "Record correction"}
+                </button>
+              </div>
+            </div>
+            {correctionMsg ? (
+              <p aria-live="polite" className="font-mono text-[11px] text-ash">{correctionMsg}</p>
+            ) : null}
+            {corrections.isError ? (
+              <ErrorText className="max-h-20 text-[11px]">{String(corrections.error?.message || corrections.error)}</ErrorText>
+            ) : null}
+            {correctionRetire.isError ? (
+              <ErrorText className="max-h-20 text-[11px]">{String(correctionRetire.error?.message || correctionRetire.error)}</ErrorText>
+            ) : null}
+            <div className="border-t border-hairline/60 pt-3">
+              {corrections.isLoading ? (
+                <Empty icon="≋">Loading corrections…</Empty>
+              ) : correctionRows.length === 0 ? (
+                <Empty icon="◇">No corrections recorded yet.</Empty>
+              ) : (
+                <ul className="divide-y divide-hairline/60">
+                  {correctionRows.map((row) => (
+                    <li key={row.id} className="py-2 text-xs text-ash">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="break-words text-bone">{row.text}</span>
+                        <button
+                          type="button"
+                          className="btn-ghost py-0.5 text-[10px]"
+                          disabled={correctionRetire.isPending || row.retired === true}
+                          onClick={() => correctionRetire.mutate(row.id)}
+                          title={row.retired === true ? "Already retired" : "Retire this correction from future prompts"}
+                        >
+                          {row.retired === true ? "retired" : correctionRetire.isPending ? "retiring…" : "Retire"}
+                        </button>
+                      </div>
+                      <p className="mt-1 font-mono text-[10px] text-ash/70">
+                        {[
+                          row.project ? `project: ${row.project}` : null,
+                          row.stack ? `stack: ${row.stack}` : null,
+                          row.stage ? `stage: ${row.stage}` : null,
+                          row.source_build ? `source build: ${row.source_build}` : null,
+                        ].filter(Boolean).join(" · ") || "scope not recorded"}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           </div>
         </Panel>
 

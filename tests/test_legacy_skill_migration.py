@@ -76,6 +76,7 @@ def test_legacy_migration_retains_byte_evidence_and_creates_quarantined_successo
     evidence = skills_dir / str(result["evidence_path"])
     assert evidence.read_bytes() == args["evidence"]
     assert library.relevant("python") == []
+    assert library.evaluate_candidate(candidate.slug)["status"] == "passed"
     assert library.can_promote_external(candidate.slug) is True
 
     promoted = library.promote_external(candidate.slug)
@@ -93,6 +94,7 @@ def test_migrated_candidate_cannot_promote_after_evidence_tampering_or_deletion(
     candidate = library.get(str(result["candidate_slug"]))
     assert candidate is not None and candidate.provenance is not None
     evidence = tmp_path / "skills" / str(candidate.provenance.evidence_path)
+    assert library.evaluate_candidate(candidate.slug)["status"] == "passed"
 
     original_body = candidate.body
     candidate.body += "\nTampered candidate body."

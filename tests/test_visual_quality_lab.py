@@ -51,9 +51,11 @@ def test_bulk_skill_accept_promotes_only_existing_evidence_ready_candidates(tmp_
             source_url="https://github.com/acme/ready",
             pinned_revision="a" * 40,
             content_hash=content_sha256("ready"),
+            evidence_path=library.retain_source_evidence("ready"),
             source_path="README.md",
         ),
     )
+    library.evaluate_candidate(ready.slug)
 
     outcome = asyncio.run(promote_all_ready_skills(SimpleNamespace(skills=library)))
 

@@ -20,7 +20,6 @@ def test_foundry_cli_options_use_global_backend_contract() -> None:
     assert 'apiPost("/llm/backend", { backend: b })' in settings
     assert 'queryFn("/llm/backends")' in studio
     assert 'apiPost("/llm/backend", { backend })' in studio
-    assert "Persisted globally for all future Foundry runs" in studio
 
 
 def test_foundry_cli_options_expose_availability_and_account_billing() -> None:

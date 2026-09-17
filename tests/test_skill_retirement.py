@@ -489,6 +489,10 @@ def test_can_promote_external_refuses_retired_slug_reaching_memory(tmp_path):
     # proves the fixture itself is otherwise valid.
     control = SkillLibrary(skills_dir=tmp_path / "control")
     control._skills["gh-candidate"] = _github_candidate_skill("gh-candidate", body)
+    candidate = control.get("gh-candidate")
+    candidate.provenance.evidence_path = control.retain_source_evidence(body)
+    control._persist(candidate)
+    assert control.evaluate_candidate(candidate.slug)["status"] == "passed"
     assert control.can_promote_external("gh-candidate") is True
 
     # The excluded ID reaches memory anyway (direct dict injection stands in
@@ -520,6 +524,8 @@ def _catalog_candidate_skill(slug: str) -> Skill:
 def test_activate_catalog_candidate_refuses_retired_slug_reaching_memory(tmp_path):
     control = SkillLibrary(skills_dir=tmp_path / "control")
     control._skills["catalog-role"] = _catalog_candidate_skill("catalog-role")
+    control._persist(control.get("catalog-role"))
+    assert control.evaluate_candidate("catalog-role")["status"] == "passed"
     assert control.activate_catalog_candidate("catalog-role") is not None
 
     lib_dir = tmp_path / "lib"

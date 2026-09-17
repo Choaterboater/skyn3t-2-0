@@ -807,8 +807,8 @@ def cortex_promote_skill(
     """Explicitly approve a provenance-pinned external skill for advisory use.
 
     GitHub-derived skills are deliberately inert until an operator runs this
-    command. The library verifies its immutable revision, content hash, and
-    HTTPS source URL before removing the quarantine tag.
+    command. A separate ``evaluate-skill`` action must first verify the current
+    local advisory, immutable provenance, and retained source evidence.
     """
     from skyn3t.config.settings import get_settings
     from skyn3t.intelligence.skill_library import SkillLibrary
@@ -820,13 +820,51 @@ def cortex_promote_skill(
         console.print(
             "[red]Not promoted[/red] — the skill must be a quarantined GitHub "
             "candidate with an HTTPS source URL, immutable revision, content hash, "
-            "and source path."
+            "source path, retained source bytes, and a current passed evaluation. "
+            "Run cortex evaluate-skill first."
         )
         raise typer.Exit(code=1)
     console.print(
         f"[green]Promoted[/green] [cyan]{skill.slug}[/cyan] for advisory use. "
         "It remains non-binding build guidance."
     )
+
+
+@cortex_app.command("evaluate-skill")
+def cortex_evaluate_skill(slug: str = typer.Argument(...)) -> None:
+    """Evaluate local advisory compatibility without claiming effectiveness."""
+    from skyn3t.config.settings import get_settings
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    library = SkillLibrary(get_settings().data_dir / "skills")
+    try:
+        result = library.evaluate_candidate(slug)
+    except (ValueError, OSError) as exc:
+        _console().print(f"[red]Not evaluated[/red] — {exc}")
+        raise typer.Exit(code=1) from exc
+    _console().print(result)
+    if result["status"] != "passed":
+        raise typer.Exit(code=1)
+
+
+@cortex_app.command("rollback-skill")
+def cortex_rollback_skill(
+    slug: str = typer.Argument(...),
+    reason: str = typer.Option("operator rollback", "--reason"),
+) -> None:
+    """Quarantine one capability durably, preserving all evaluation history."""
+    from skyn3t.config.settings import get_settings
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    library = SkillLibrary(get_settings().data_dir / "skills")
+    try:
+        result = library.rollback_candidate(slug, reason=reason)
+    except (ValueError, OSError) as exc:
+        _console().print(f"[red]Not rolled back[/red] — {exc}")
+        raise typer.Exit(code=1) from exc
+    if result is None:
+        raise typer.Exit(code=1)
+    _console().print(f"Quarantined {result.slug}; evaluation history retained.")
 
 
 _LEGACY_SKILL_EVIDENCE_OPTION = typer.Option(

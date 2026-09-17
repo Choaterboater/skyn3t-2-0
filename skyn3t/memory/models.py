@@ -96,3 +96,23 @@ class KnowledgeDocRow(Base):
     content: Mapped[str] = mapped_column(Text)
     tags: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class UserCorrectionRow(Base):
+    """Explicit user preferences, separate from inferred build lessons."""
+    __tablename__ = "user_corrections"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    text: Mapped[str] = mapped_column(Text)
+    project: Mapped[str] = mapped_column(String(128), default="", index=True)
+    stack: Mapped[str] = mapped_column(String(64), default="", index=True)
+    stage: Mapped[str] = mapped_column(String(64), default="", index=True)
+    source_build: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    retired: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+
+
+class CommunicationPersonaRow(Base):
+    """Singleton user-edited communication settings, never product instructions."""
+    __tablename__ = "communication_persona"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    preferences: Mapped[dict] = mapped_column(JSON, default=dict)

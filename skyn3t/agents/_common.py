@@ -440,6 +440,9 @@ def knowledge_block(payload: Any) -> str:
     raw_extra = payload.get("extra")
     extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
     parts: list[str] = []
+    corrections = extra.get("user_corrections")
+    if isinstance(corrections, str) and corrections:
+        parts.append(corrections[:4500])
 
     if extra.get("full_app_contract"):
         parts.append(_full_app_contract(payload, extra))

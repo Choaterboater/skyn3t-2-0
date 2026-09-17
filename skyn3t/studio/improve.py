@@ -54,6 +54,7 @@ from skyn3t.studio.proof_run import (
     stabilize_node_dependencies,
 )
 from skyn3t.studio.web_interact_check import check_web_interact
+from skyn3t.studio.gate_posture import GatePosture
 from skyn3t.worktree import (
     cleanup_worktree,
     create_worktree,
@@ -758,6 +759,16 @@ class ImproveEngine:
 
         async def _emit_failed_outcome(outcome: ImproveOutcome) -> None:
             outcome.detail.setdefault("layout_profile", dict(layout_profile))
+            retention = outcome.detail.get("candidate_retention")
+            if isinstance(retention, dict) and retention.get("status") == "unverified":
+                try:
+                    from skyn3t.persistence.candidate_archive import CandidateRecovery
+
+                    await asyncio.to_thread(
+                        CandidateRecovery.register, self.settings, project_dir, retention
+                    )
+                except (OSError, ValueError) as exc:
+                    _log.warning("improve.recovery_registration_failed", error=type(exc).__name__)
             await self._emit(EventType.IMPROVE_FAILED, outcome.to_dict(), cid)
 
         from skyn3t.adapters.llm import RoutingLockError, enforce_explicit_routing_lock
@@ -960,6 +971,20 @@ class ImproveEngine:
                         "improve.learning_recall_failed",
                         error=scrub_text(str(exc), SecretsStore(self.settings)),
                     )
+            correction_recall = getattr(
+                getattr(self._learning, "store", None), "relevant_corrections", None
+            )
+            if callable(correction_recall):
+                try:
+                    from skyn3t.intelligence.human_feedback import render_corrections
+
+                    corrections = render_corrections(
+                        await correction_recall(project=slug, stack=stack, stage="improve")
+                    )
+                    if corrections:
+                        repo_ctx += "\n\n" + corrections
+                except Exception as exc:  # noqa: BLE001 - preferences are advisory
+                    _log.warning("improve.correction_recall_failed", error=type(exc).__name__)
             context_pack_summary = context_pack.summary()
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "localize",
@@ -968,7 +993,7 @@ class ImproveEngine:
 
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "generating"}, cid)
-            files_changed, improver_ok, improver_err, skipped = await self._run_improver(
+            files_changed, improver_ok, improver_err, skipped, retention = await self._run_improver(
                 wt.dir,
                 slug,
                 stack,
@@ -1008,6 +1033,7 @@ class ImproveEngine:
                         "routing_snapshot": routing_summary,
                         "layout_profile": layout_profile,
                         **({"skipped": skipped} if skipped else {}),
+                        **({"candidate_retention": retention} if retention else {}),
                     },
                 )
                 await _emit_failed_outcome(outcome)
@@ -1248,6 +1274,21 @@ class ImproveEngine:
                     settings=self.settings,
                     brief="\n\n".join(part for part in (original_brief, goal) if part),
                 )
+                if (web_interact.get("fresh") is True
+                        and web_interact.get("blocks_delivery") is True
+                        and GatePosture.from_settings(self.settings).blocks("product_quality")):
+                    outcome = ImproveOutcome(
+                        project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,
+                        files_changed=sorted(files_changed), proof_passed=True,
+                        score=float(proof.score), status="failed",
+                        detail={
+                            "delivered": 0, "proof": proof_payload,
+                            "delivery_blocked": "required_browser_outcome_failed",
+                            "project_preserved": True, "web_interact": web_interact,
+                        },
+                    )
+                    await _emit_failed_outcome(outcome)
+                    return outcome
                 if manifest is not None:
                     manifest.extra["web_interact"] = web_interact
             elif manifest is not None:
@@ -1863,7 +1904,7 @@ class ImproveEngine:
         layout_profile: dict[str, str | int | bool],
         layout_profile_is_stored: bool,
         existing_project: bool = False,
-    ) -> tuple[list[str], bool, str, dict[str, str]]:
+    ) -> tuple[list[str], bool, str, dict[str, str], dict[str, Any]]:
         task = TaskRequest(
             type="code_improver",
             payload={"worktree_dir": worktree_dir, "brief": goal, "slug": slug,
@@ -1903,7 +1944,8 @@ class ImproveEngine:
             or output.get("routing_lock_reason")
             or "improver did not succeed"
         )
-        return files, ok, err, skipped
+        retention = output.get("candidate_retention")
+        return files, ok, err, skipped, retention if isinstance(retention, dict) else {}
 
     async def _surface_config(self, project_dir: Path, goal: str, stack: str,
                               slug: str, cid: str) -> dict[str, Any]:

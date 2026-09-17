@@ -259,8 +259,8 @@ def import_catalog_as_skills(
     """Import local catalog roles as evidence-bound, non-executable advice.
 
     Default imports remain quarantined candidates. ``activate=True`` is the
-    explicit local trust action: it promotes each newly imported role only after
-    its compact advisory body and relative source-path receipt validate.
+    explicit local trust action: it evaluates each newly imported role's local
+    advisory compatibility before activation. This does not measure effectiveness.
     """
     if not isinstance(activate, bool):
         raise ValueError("catalog activate must be a boolean")
@@ -293,8 +293,10 @@ def import_catalog_as_skills(
                 source_path=entry.source_path,
             ),
         )
-        if activate and library.activate_catalog_candidate(skill.slug) is None:
-            raise ValueError(f"catalog activation evidence was invalid for {entry.source_path!r}")
+        if activate:
+            evaluation = library.evaluate_candidate(skill.slug)
+            if evaluation["status"] != "passed" or library.activate_catalog_candidate(skill.slug) is None:
+                raise ValueError(f"catalog activation evidence was invalid for {entry.source_path!r}")
         count += 1
     return count
 

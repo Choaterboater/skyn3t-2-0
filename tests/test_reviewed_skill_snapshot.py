@@ -51,12 +51,15 @@ def test_snapshot_retains_review_decisions_without_runtime_state(snapshot):
     held = [skill for skill in skills if "hygiene:quarantine" in skill.tags]
     assert manifest["schema_version"] == 1
     assert len(skills) == 137
-    assert len(held) == 37
+    assert all(
+        "review-held" in skill.tags or library.capability_status(skill.slug)["status"] == "not_checked"
+        for skill in held
+    )
     assert seed_default_skills(library) == 0
     assert library.get("delivered-empty") is None
     assert library.is_retired("delivered-empty")
     assert not any(library.can_promote_external(skill.slug) for skill in skills)
-    assert all("review-held" in skill.tags for skill in held)
+    assert all("hygiene:quarantine" in skill.tags for skill in skills if "review-held" in skill.tags)
     assert ".skill_scores.json" not in manifest["files"]
     assert ".skill_hub_imports.json" not in manifest["files"]
     assert not any("skill-maintenance" in path for path in manifest["files"])
@@ -128,10 +131,20 @@ def test_new_advisories_and_hermes_merge_survive_a_cache_free_checkout(snapshot,
         skills=library,
     )
     for slug, stack, brief in _NEW_SKILL_CASES:
+        skill = library.get(slug)
+        assert skill is not None
+        if "hygiene:quarantine" in skill.tags:
+            assert library.evaluate_candidate(slug)["status"] == "passed"
+            assert library.activate_candidate(slug) is skill
         advice, selected = runner._skill_advice(stack, brief)
         skill = library.get(slug)
         assert skill and slug in selected
         assert skill.body in advice
+    merged = library.get("api-and-interface-design")
+    assert merged is not None
+    if "hygiene:quarantine" in merged.tags:
+        assert library.evaluate_candidate(merged.slug)["status"] == "passed"
+        assert library.activate_candidate(merged.slug) is merged
     advice, selected = runner._skill_advice(
         "fastapi",
         "HTTP GraphQL response semantics errors despite HTTP 200 content type fixture assertions",

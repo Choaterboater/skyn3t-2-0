@@ -20,7 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.agent import TaskRequest, TaskResult
-from skyn3t.memory.models import Base, BuildRow, LessonRow, MessageRow, TaskRow
+from skyn3t.memory.models import (
+    Base, BuildRow, CommunicationPersonaRow, LessonRow, MessageRow, TaskRow,
+    UserCorrectionRow,
+)
 from skyn3t.process_utils import is_process_alive
 from skyn3t.studio.build_summary import build_summary
 from skyn3t.studio.manifest import MANIFEST_FILENAME
@@ -831,6 +834,110 @@ class MemoryStore:
             await s.commit()
             return n
 
+    # Explicit corrections do not compete with automatically graded lessons.
+    @staticmethod
+    def _correction_dict(row: UserCorrectionRow) -> dict[str, Any]:
+        return {
+            "id": row.id, "text": row.text, "project": row.project,
+            "stack": row.stack, "stage": row.stage, "source_build": row.source_build,
+            "retired": row.retired, "created_at": row.created_at.isoformat(),
+        }
+
+    async def add_correction(
+        self, text: str, *, project: str = "", stack: str = "", stage: str = "",
+        source_build: str | None = None,
+    ) -> dict[str, Any]:
+        from skyn3t.intelligence.human_feedback import validate_correction
+
+        values = validate_correction(text, project=project, stack=stack, stage=stage, source_build=source_build)
+        async with self._session() as s:
+            same = (await s.execute(select(UserCorrectionRow).where(
+                UserCorrectionRow.text == values["text"],
+                UserCorrectionRow.project == values["project"],
+                UserCorrectionRow.stack == values["stack"],
+                UserCorrectionRow.stage == values["stage"],
+                UserCorrectionRow.retired.is_(False),
+            ))).scalars().first()
+            if same is not None:
+                return self._correction_dict(same)
+            # Never silently evict an explicit correction: user retires old ones.
+            count = await s.scalar(select(func.count()).select_from(UserCorrectionRow).where(
+                UserCorrectionRow.retired.is_(False)
+            ))
+            if (count or 0) >= 200:
+                raise ValueError("active correction limit reached; retire an older correction")
+            row = UserCorrectionRow(**values)
+            s.add(row)
+            await s.commit()
+            return self._correction_dict(row)
+
+    async def list_corrections(
+        self, *, include_retired: bool = False, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        query = select(UserCorrectionRow)
+        if not include_retired:
+            query = query.where(UserCorrectionRow.retired.is_(False))
+        query = query.order_by(UserCorrectionRow.id.desc()).limit(max(0, min(limit, 200)))
+        async with self._session() as s:
+            return [self._correction_dict(row) for row in (await s.execute(query)).scalars()]
+
+    async def retire_correction(self, correction_id: int) -> bool:
+        async with self._session() as s:
+            row = await s.get(UserCorrectionRow, correction_id)
+            if row is None:
+                return False
+            row.retired = True
+            await s.commit()
+            return True
+
+    async def relevant_corrections(
+        self, *, project: str = "", stack: str = "", stage: str = "", limit: int = 6,
+    ) -> list[dict[str, Any]]:
+        # Every populated scope must match; absent context never broadens recall.
+        query = select(UserCorrectionRow).where(
+            UserCorrectionRow.retired.is_(False),
+            UserCorrectionRow.project.in_(("", project)),
+            UserCorrectionRow.stack.in_(("", stack)),
+            UserCorrectionRow.stage.in_(("", stage)),
+        ).order_by(
+            (UserCorrectionRow.project != "").desc(),
+            (UserCorrectionRow.stack != "").desc(),
+            (UserCorrectionRow.stage != "").desc(),
+            UserCorrectionRow.id.desc(),
+        ).limit(max(0, min(limit, 6)))
+        async with self._session() as s:
+            return [self._correction_dict(row) for row in (await s.execute(query)).scalars()]
+
+    async def get_persona(self) -> dict[str, str]:
+        from skyn3t.intelligence.human_feedback import validate_persona
+
+        async with self._session() as s:
+            row = await s.get(CommunicationPersonaRow, 1)
+            return validate_persona(row.preferences if row else {})
+
+    async def set_persona(self, preferences: dict[str, str]) -> dict[str, str]:
+        from skyn3t.intelligence.human_feedback import validate_persona
+
+        values = validate_persona(preferences)
+        async with self._session() as s:
+            row = await s.get(CommunicationPersonaRow, 1)
+            if row is None:
+                s.add(CommunicationPersonaRow(id=1, preferences=values))
+            else:
+                row.preferences = values
+            await s.commit()
+        return values
+
+    async def reset_persona(self) -> dict[str, str]:
+        return await self.set_persona({})
+
+    async def operation_message(
+        self, *, summary: str, details: tuple[str, ...] = (),
+    ) -> str:
+        from skyn3t.intelligence.human_feedback import format_operation_message
+
+        return format_operation_message(await self.get_persona(), summary=summary, details=details)
+
     # ---- lessons (graded learning loop) ----------------------------------
     async def add_lesson(self, stack: str, stage: str, text: str, source_build: str | None = None) -> int:
         async with self._session() as s:
@@ -865,7 +972,7 @@ class MemoryStore:
         rows, which a score-DESC ordering would push past ``limit``.
         """
         async with self._session() as s:
-            stmt = select(LessonRow).where(LessonRow.stack == stack)
+            stmt = self._actionable_lessons_query(stack)
             if stage:
                 stmt = stmt.where(LessonRow.stage.in_(self._injectable_stages(stage)))
             order = LessonRow.score.asc() if ascending else LessonRow.score.desc()
@@ -886,14 +993,26 @@ class MemoryStore:
         gives fresh avoid/gap rules a path into injection → grading → score.
         """
         async with self._session() as s:
-            stmt = select(LessonRow).where(
-                LessonRow.stack == stack, LessonRow.times_used == 0
-            )
+            stmt = self._actionable_lessons_query(stack).where(LessonRow.times_used == 0)
             if stage:
                 stmt = stmt.where(LessonRow.stage.in_(self._injectable_stages(stage)))
             stmt = stmt.order_by(LessonRow.id.desc()).limit(limit)
             rows = (await s.execute(stmt)).scalars().all()
             return [self._lesson_row_dict(r) for r in rows]
+
+    @staticmethod
+    def _actionable_lessons_query(stack: str) -> Any:
+        # Keep historic rows and grading intact, but don't spend recall slots on
+        # outcome-only boilerplate captured by earlier versions.
+        query = select(LessonRow).where(LessonRow.stack == stack)
+        for pattern in (
+            "%: this build shape scored %; keep its approach.",
+            "%: build scored %; the chosen approach underperformed.",
+            "%: build succeeded with this pipeline shape; keep its approach.",
+            "%: build failed verification — re-check the plan.",
+        ):
+            query = query.where(LessonRow.text.not_like(pattern))
+        return query
 
     @staticmethod
     def _injectable_stages(stage: str) -> tuple[str, ...]:

@@ -1,0 +1,376 @@
+{
+  "scope": "live council only; not end-to-end delivery or quality comparison",
+  "configured_advisors": "openrouter:nvidia/nemotron-3.5-lightning:free,openrouter:dots-studio/dots-3-note-preview:free",
+  "records": [
+    {
+      "trial": 1,
+      "policy": "full",
+      "elapsed_seconds": 30.002669833018444,
+      "advisors": [
+        {
+          "label": "openrouter:nvidia/nemotron-3.5-lightning:free",
+          "provider": "openrouter",
+          "model": "nvidia/nemotron-3.5-lightning:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 30002.3,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        },
+        {
+          "label": "openrouter:dots-studio/dots-3-note-preview:free",
+          "provider": "openrouter",
+          "model": "dots-studio/dots-3-note-preview:free",
+          "ok": true,
+          "chars": 138,
+          "cost_usd": 0.0,
+          "duration_ms": 17212.4,
+          "error": "",
+          "request_started": true,
+          "cancelled": false,
+          "cancellation_pending": false,
+          "cost_source": "free"
+        }
+      ],
+      "degraded": true,
+      "guidance_chars": 784
+    },
+    {
+      "trial": 1,
+      "policy": "bounded",
+      "elapsed_seconds": 15.001793749979697,
+      "advisors": [
+        {
+          "label": "openrouter:nvidia/nemotron-3.5-lightning:free",
+          "provider": "openrouter",
+          "model": "nvidia/nemotron-3.5-lightning:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 15001.5,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        },
+        {
+          "label": "openrouter:dots-studio/dots-3-note-preview:free",
+          "provider": "openrouter",
+          "model": "dots-studio/dots-3-note-preview:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 15001.5,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        }
+      ],
+      "degraded": true,
+      "guidance_chars": 0
+    },
+    {
+      "trial": 2,
+      "policy": "bounded",
+      "elapsed_seconds": 15.001720042026136,
+      "advisors": [
+        {
+          "label": "openrouter:nvidia/nemotron-3.5-lightning:free",
+          "provider": "openrouter",
+          "model": "nvidia/nemotron-3.5-lightning:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 15001.5,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        },
+        {
+          "label": "openrouter:dots-studio/dots-3-note-preview:free",
+          "provider": "openrouter",
+          "model": "dots-studio/dots-3-note-preview:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 15001.5,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        }
+      ],
+      "degraded": true,
+      "guidance_chars": 0
+    },
+    {
+      "trial": 2,
+      "policy": "full",
+      "elapsed_seconds": 30.002179083996452,
+      "advisors": [
+        {
+          "label": "openrouter:nvidia/nemotron-3.5-lightning:free",
+          "provider": "openrouter",
+          "model": "nvidia/nemotron-3.5-lightning:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 30002.0,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        },
+        {
+          "label": "openrouter:dots-studio/dots-3-note-preview:free",
+          "provider": "openrouter",
+          "model": "dots-studio/dots-3-note-preview:free",
+          "ok": true,
+          "chars": 1326,
+          "cost_usd": 0.0,
+          "duration_ms": 16638.7,
+          "error": "",
+          "request_started": true,
+          "cancelled": false,
+          "cancellation_pending": false,
+          "cost_source": "free"
+        }
+      ],
+      "degraded": true,
+      "guidance_chars": 1972
+    },
+    {
+      "trial": 3,
+      "policy": "full",
+      "elapsed_seconds": 15.184412957984023,
+      "advisors": [
+        {
+          "label": "openrouter:nvidia/nemotron-3.5-lightning:free",
+          "provider": "openrouter",
+          "model": "nvidia/nemotron-3.5-lightning:free",
+          "ok": true,
+          "chars": 2363,
+          "cost_usd": 0.0,
+          "duration_ms": 15184.2,
+          "error": "",
+          "request_started": true,
+          "cancelled": false,
+          "cancellation_pending": false,
+          "cost_source": "free"
+        },
+        {
+          "label": "openrouter:dots-studio/dots-3-note-preview:free",
+          "provider": "openrouter",
+          "model": "dots-studio/dots-3-note-preview:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 15068.6,
+          "error": "empty response",
+          "request_started": true,
+          "cancelled": false,
+          "cancellation_pending": false,
+          "cost_source": "free"
+        }
+      ],
+      "degraded": true,
+      "guidance_chars": 3005
+    },
+    {
+      "trial": 3,
+      "policy": "bounded",
+      "elapsed_seconds": 15.00306829100009,
+      "advisors": [
+        {
+          "label": "openrouter:nvidia/nemotron-3.5-lightning:free",
+          "provider": "openrouter",
+          "model": "nvidia/nemotron-3.5-lightning:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 15002.7,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        },
+        {
+          "label": "openrouter:dots-studio/dots-3-note-preview:free",
+          "provider": "openrouter",
+          "model": "dots-studio/dots-3-note-preview:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 15002.7,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        }
+      ],
+      "degraded": true,
+      "guidance_chars": 0
+    },
+    {
+      "trial": 4,
+      "policy": "bounded",
+      "elapsed_seconds": 15.002672499977052,
+      "advisors": [
+        {
+          "label": "openrouter:nvidia/nemotron-3.5-lightning:free",
+          "provider": "openrouter",
+          "model": "nvidia/nemotron-3.5-lightning:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 15002.3,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        },
+        {
+          "label": "openrouter:dots-studio/dots-3-note-preview:free",
+          "provider": "openrouter",
+          "model": "dots-studio/dots-3-note-preview:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 14644.2,
+          "error": "empty response",
+          "request_started": true,
+          "cancelled": false,
+          "cancellation_pending": false,
+          "cost_source": "free"
+        }
+      ],
+      "degraded": true,
+      "guidance_chars": 0
+    },
+    {
+      "trial": 4,
+      "policy": "full",
+      "elapsed_seconds": 30.002353999996558,
+      "advisors": [
+        {
+          "label": "openrouter:nvidia/nemotron-3.5-lightning:free",
+          "provider": "openrouter",
+          "model": "nvidia/nemotron-3.5-lightning:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 30002.0,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        },
+        {
+          "label": "openrouter:dots-studio/dots-3-note-preview:free",
+          "provider": "openrouter",
+          "model": "dots-studio/dots-3-note-preview:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 16608.8,
+          "error": "empty response",
+          "request_started": true,
+          "cancelled": false,
+          "cancellation_pending": false,
+          "cost_source": "free"
+        }
+      ],
+      "degraded": true,
+      "guidance_chars": 0
+    },
+    {
+      "trial": 5,
+      "policy": "full",
+      "elapsed_seconds": 30.002005624992307,
+      "advisors": [
+        {
+          "label": "openrouter:nvidia/nemotron-3.5-lightning:free",
+          "provider": "openrouter",
+          "model": "nvidia/nemotron-3.5-lightning:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 30001.8,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        },
+        {
+          "label": "openrouter:dots-studio/dots-3-note-preview:free",
+          "provider": "openrouter",
+          "model": "dots-studio/dots-3-note-preview:free",
+          "ok": true,
+          "chars": 1394,
+          "cost_usd": 0.0,
+          "duration_ms": 15716.7,
+          "error": "",
+          "request_started": true,
+          "cancelled": false,
+          "cancellation_pending": false,
+          "cost_source": "free"
+        }
+      ],
+      "degraded": true,
+      "guidance_chars": 2040
+    },
+    {
+      "trial": 5,
+      "policy": "bounded",
+      "elapsed_seconds": 15.002792999963276,
+      "advisors": [
+        {
+          "label": "openrouter:nvidia/nemotron-3.5-lightning:free",
+          "provider": "openrouter",
+          "model": "nvidia/nemotron-3.5-lightning:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 15002.3,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        },
+        {
+          "label": "openrouter:dots-studio/dots-3-note-preview:free",
+          "provider": "openrouter",
+          "model": "dots-studio/dots-3-note-preview:free",
+          "ok": false,
+          "chars": 0,
+          "cost_usd": 0.0,
+          "duration_ms": 15002.3,
+          "error": "cancelled at council deadline",
+          "request_started": true,
+          "cancelled": true,
+          "cancellation_pending": false,
+          "cost_source": "unknown"
+        }
+      ],
+      "degraded": true,
+      "guidance_chars": 0
+    }
+  ]
+}

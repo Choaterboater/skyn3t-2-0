@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from skyn3t.intelligence.council import CouncilAdvice
+
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
@@ -79,6 +81,35 @@ def _runner(tmp_path, **overrides) -> StudioRunner:
     )
 
 
+async def test_run_moa_council_threads_profile_policy_into_engine(tmp_path, monkeypatch):
+    """Profile policy flows through runner into CouncilEngine (Main's patch)."""
+    runner = _runner(tmp_path, moa_enabled=True, moa_advisors="codex_cli,kimi_cli")
+    seen: dict[str, object] = {}
+
+    class _PolicyCapture:
+        def __init__(self, llm, settings, advisors=None, *, policy=None):
+            seen["advisors"] = advisors
+            seen["policy"] = policy
+
+        def enabled(self):
+            return True
+
+        async def advise(self, *, brief, stack="", plan=""):
+            return CouncilAdvice()
+
+    monkeypatch.setattr("skyn3t.intelligence.council.CouncilEngine", _PolicyCapture)
+    manifest = BuildManifest(slug="app", brief="b", stack="static")
+
+    await runner._run_moa_council(
+        "b", manifest, {"moa_policy": "bounded"}, SimpleNamespace(
+            stack="static", checklist=[]
+        )
+    )
+
+    assert seen["policy"] == "bounded"
+    assert seen["advisors"] is None  # profile policy must NOT fake a selection
+
+
 async def test_council_off_leaves_extra_untouched(tmp_path):
     runner = _runner(tmp_path, moa_enabled=False)
     manifest = BuildManifest(slug="app", brief="b", stack="static")
@@ -98,7 +129,7 @@ async def test_council_threads_guidance_and_records_a_bounded_summary(tmp_path, 
     )
 
     class _FakeEngine:
-        def __init__(self, llm, settings, advisors=None):
+        def __init__(self, llm, settings, advisors=None, *, policy=None):
             self.advisors_override = advisors
 
         def enabled(self):
@@ -128,6 +159,9 @@ async def test_council_threads_guidance_and_records_a_bounded_summary(tmp_path, 
     assert record["failed"] == ["kimi_cli"]
     assert record["cost_usd"] == 0.002
     assert record["degraded"] is True
+    assert record["policy"] == "full"
+    assert isinstance(record["duration_ms"], float)
+    assert record["request_count_scope"].startswith("advisor_complete_calls")
     # Bounded: the record carries counts and cost, never advisor prose.
     assert "guidance" not in record
 
@@ -142,7 +176,7 @@ async def test_council_receives_compact_read_only_build_contract(tmp_path, monke
     captured: dict[str, str] = {}
 
     class _FakeEngine:
-        def __init__(self, llm, settings, advisors=None):
+        def __init__(self, llm, settings, advisors=None, *, policy=None):
             pass
 
         def enabled(self):
@@ -201,7 +235,7 @@ async def test_empty_guidance_is_not_threaded(tmp_path, monkeypatch):
     runner = _runner(tmp_path, moa_enabled=True, moa_advisors="codex_cli")
 
     class _AllFailed:
-        def __init__(self, llm, settings, advisors=None):
+        def __init__(self, llm, settings, advisors=None, *, policy=None):
             self.advisors_override = advisors
 
         def enabled(self):

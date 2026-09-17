@@ -365,7 +365,8 @@ class Settings(BaseSettings):
     llm_retry_base_delay: float = Field(default=0.5, ge=0.0)
     llm_retry_max_delay: float = Field(default=8.0, ge=0.0)
     # Failover ladder bounds (win-rate sweep): at most this many fallback
-    # candidates are appended after the primary misses (0 = primary only), and
+    # candidates are appended after the primary misses (0 = uncapped; set
+    # llm_fallback_enabled=False for primary-only requests), and
     # an optional wall-clock deadline (seconds, 0 = disabled) caps one
     # resilient call end-to-end so retries x fallbacks x timeout cannot stack
     # into an unbounded stall.
@@ -718,6 +719,8 @@ class Settings(BaseSettings):
     # is the real hazard here: an oversized codegen prompt slows the agentic CLI
     # enough to blow agentic_build_timeout and ship a stub.
     moa_advisor_block_bytes: int = Field(default=3000, ge=500)
+    # Bounded fan-out wall-clock budget, including semaphore queue wait.
+    moa_council_timeout: float = Field(default=15.0, ge=0.1, le=120.0)
     # Opt-in JSONL trace: one line per council run under logs_dir/moa/.
     moa_trace_enabled: bool = False
 

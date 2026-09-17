@@ -666,6 +666,10 @@ class HandlerRegistry:
             from skyn3t.intelligence.skill_library import SkillProvenance, content_sha256
 
             base = provenance if isinstance(provenance, SkillProvenance) else SkillProvenance()
+            evidence_path = (
+                self.skills.retain_source_evidence(text)
+                if getattr(self.skills, "dir", None) is not None else None
+            )
             metadata = dict(base.metadata)
             metadata.setdefault("skyn3t-source-kind", "github-readme")
             skill_provenance = SkillProvenance(
@@ -674,6 +678,7 @@ class HandlerRegistry:
                 license=base.license,
                 content_hash=content_sha256(text),
                 source_path=base.source_path or "README",
+                evidence_path=evidence_path,
                 tools=base.tools,
                 metadata=metadata,
                 compatibility=base.compatibility,

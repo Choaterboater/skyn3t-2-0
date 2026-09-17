@@ -563,6 +563,49 @@ def _compact_cost_truth(
     }
 
 
+def _interact_summary(value: Any) -> dict[str, Any]:
+    """Bound the browser-outcome verdict to the fields the dashboard renders.
+
+    New results carry ``status`` (passed/failed/not_checked); legacy rows
+    carry only ok/skipped booleans and are reported as not_checked.
+    """
+    data = value if isinstance(value, dict) else {}
+    status = str(data.get("status") or "")
+    if status not in ("passed", "failed", "not_checked"):
+        status = "not_checked"
+    out: dict[str, Any] = {
+        "status": status,
+        "ok": bool(data.get("ok", status == "passed")),
+        "skipped": bool(data.get("skipped", status == "not_checked")),
+        "reason": str(data.get("reason") or "")[:300],
+    }
+    out["fresh"] = data.get("fresh") is True
+    summary = _as_dict(data.get("summary"))
+    out["summary"] = {
+        key: count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else 0
+        for key in ("required", "passed", "failed", "not_checked")
+        for count in [summary.get(key)]
+    }
+    out["outcomes"] = [
+        {
+            "outcome_id": str(row.get("outcome_id") or "")[:160],
+            "requirement_id": str(row.get("requirement_id") or "")[:160],
+            "text": str(row.get("text") or "")[:300],
+            "kind": str(row.get("kind") or "")[:40],
+            "required": row.get("required") is True,
+            "status": row.get("status")
+            if row.get("status") in ("passed", "failed", "not_checked") else "not_checked",
+            "reason": str(row.get("reason") or "")[:300],
+        }
+        for row in _as_list(data.get("outcomes"))[:24]
+        if isinstance(row, dict)
+    ]
+    interactions = data.get("interactions")
+    if isinstance(interactions, list):
+        out["interactions"] = [str(step)[:160] for step in interactions[:10]]
+    return out
+
+
 def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     """Return compact model/profile/quality fields from a manifest dict."""
 
@@ -719,6 +762,9 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         # propagation point to BUILD_COMPLETED payloads — without it the
         # dashboard's gate ladder/diagnostics have nothing to render.
         "gate_findings": list(_as_list(extra.get("gate_findings"))),
+        # Bounded browser-outcome verdict; older rows keep only booleans, so
+        # expose an explicit status for the dashboard's outcome rendering.
+        "web_interact": _interact_summary(extra.get("web_interact")),
     }
     return {
         "build_profile": str(extra.get("build_profile") or ""),

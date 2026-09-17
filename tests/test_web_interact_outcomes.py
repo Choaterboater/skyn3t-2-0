@@ -231,3 +231,174 @@ def test_improve_invalidates_disabled_evidence_but_preserves_rejected_delivery(
         assert outcome.status == "failed"
         assert saved["extra"]["web_interact"] == old_evidence
         assert (project / "main.py").read_text() == "print('original')\n"
+
+
+@pytest.mark.parametrize(
+    "result_maker,expected",
+    [
+        (lambda: wic._skip("playwright not installed"), "not_checked"),
+        (
+            lambda: wic._score(
+                {"apis": [], "checked": []},
+                {"passed": False, "error": "click failed", "steps": ["click"],
+                 "console_errors": [], "coverage": {}},
+                [], {},
+            ),
+            "failed",
+        ),
+        (
+            lambda: wic._score(
+                {"apis": [], "checked": []},
+                {"passed": True, "error": "", "steps": ["act"],
+                 "console_errors": [],
+                 "coverage": {"ui_assertions": 1, "backend_assertions": 0,
+                              "reloads": 0}},
+                [], {},
+            ),
+            "passed",
+        ),
+    ],
+)
+def test_every_interaction_result_carries_explicit_status(result_maker, expected):
+    result = result_maker()
+    assert result["status"] == expected
+    assert result["ok"] is (expected != "failed")
+    assert result["skipped"] is (expected == "not_checked")
+
+
+def _required_product(*texts):
+    from skyn3t.studio.product_spec import ProductSpecV1, RequirementRecord
+    return ProductSpecV1(project_id="tasks", requirements=[
+        RequirementRecord(id=f"req-{index}", text=text) for index, text in enumerate(texts)
+    ])
+
+
+def test_unchecked_contract_requirements_remain_in_denominator(tmp_path, monkeypatch):
+    monkeypatch.setattr(wic, "playwright_available", lambda: False)
+    result = asyncio.run(wic.check_web_interact(
+        tmp_path, "static", settings=SimpleNamespace(),
+        product_spec=_required_product(*[f"Save item {index}" for index in range(10)]),
+    ))
+    assert result["summary"] == {"required": 10, "passed": 0, "failed": 0, "not_checked": 10}
+    assert result["status"] == "not_checked"
+    assert result["blocks_delivery"] is False
+    assert len({o["outcome_id"] for o in result["outcomes"]}) == 10
+
+
+@pytest.mark.requires_loopback
+@pytest.mark.skipif(not wic.playwright_available(), reason="playwright not installed")
+@pytest.mark.parametrize("variant", ["working", "noop", "volatile"])
+def test_required_save_and_persistence_use_real_browser_evidence(tmp_path, monkeypatch, variant):
+    html = browser_fixtures._SPA_HTML
+    if variant == "noop":
+        html = html.replace("tasks.push(document.getElementById('entry').value);", "")
+    monkeypatch.setattr(browser_fixtures, "_SPA_HTML", html)
+    (tmp_path / "index.html").write_text(html)
+
+    class FreshRunner:
+        async def start(self, project_dir, stack):
+            self.runner = browser_fixtures._FixtureRunner(spa=True, persistent=variant != "volatile")
+            return await self.runner.start(project_dir, stack)
+
+        def stop(self, app):
+            self.runner.stop(app)
+
+    def author(prompt):
+        actions = browser_fixtures._SPA_PLAN["actions"]
+        return json.dumps({"actions": actions if '"kind": "persistence"' in prompt else actions[:3]})
+
+    result = asyncio.run(wic.check_web_interact(
+        tmp_path, "static", settings=SimpleNamespace(), llm=author,
+        app_runner=FreshRunner(), product_spec=_required_product("Save tasks and persist after reload"),
+    ))
+    expected = {"working": (2, 0), "noop": (0, 2), "volatile": (1, 1)}[variant]
+    assert result["summary"] == {"required": 2, "passed": expected[0], "failed": expected[1], "not_checked": 0}, result
+    assert result["fresh"] is True
+    assert result["blocks_delivery"] is (variant != "working")
+    (tmp_path / "index.html").write_text(html + "<!-- edited -->")
+    stale = wic.refresh_web_interact(result, tmp_path)
+    assert stale["status"] == "not_checked"
+    assert stale["summary"]["not_checked"] == 2
+    assert stale["blocks_delivery"] is False
+
+
+def test_required_persistence_cannot_be_replaced_by_generic_success():
+    plan = {"actions": browser_fixtures._SPA_PLAN["actions"][:3]}
+    assert wic._validate_required_flow(plan, "persistence")
+    assert not wic._validate_required_flow(browser_fixtures._SPA_PLAN, "persistence")
+    assert {o["kind"] for o in wic.required_outcomes(_required_product("Save tasks; validate invalid input"))} == {"primary", "invalid_input"}
+
+
+@pytest.mark.requires_loopback
+@pytest.mark.skipif(not wic.playwright_available(), reason="playwright not installed")
+@pytest.mark.parametrize("rejects", [True, False])
+def test_required_invalid_input_exercises_rejection(tmp_path, monkeypatch, rejects):
+    html = browser_fixtures._SPA_HTML.replace('<ul id="tasks"></ul>', '<ul id="tasks"></ul><p id="error"></p>')
+    if rejects:
+        html = html.replace("tasks.push(document.getElementById('entry').value);", """
+        if (!document.getElementById('entry').value.trim()) {
+          document.getElementById('error').textContent = 'Task is required'; return;
+        }
+        tasks.push(document.getElementById('entry').value);""")
+    monkeypatch.setattr(browser_fixtures, "_SPA_HTML", html)
+    (tmp_path / "index.html").write_text(html)
+
+    class FreshRunner:
+        async def start(self, project_dir, stack):
+            self.runner = browser_fixtures._FixtureRunner(spa=True)
+            return await self.runner.start(project_dir, stack)
+
+        def stop(self, app):
+            self.runner.stop(app)
+
+    def author(prompt):
+        actions = browser_fixtures._SPA_PLAN["actions"][:3]
+        if '"kind": "invalid_input"' in prompt:
+            actions = [dict(actions[0], value=""), actions[1],
+                       dict(actions[2], selector="#error", contains="Task is required", timeout_ms=500)]
+        return json.dumps({"actions": actions})
+
+    result = asyncio.run(wic.check_web_interact(
+        tmp_path, "static", settings=SimpleNamespace(), llm=author, app_runner=FreshRunner(),
+        product_spec=_required_product("Save tasks and reject invalid input"),
+    ))
+    assert result["summary"] == {"required": 2, "passed": 2 if rejects else 1, "failed": 0 if rejects else 1, "not_checked": 0}, result
+    assert result["blocks_delivery"] is (not rejects)
+
+
+@pytest.mark.parametrize("posture", ["lab", "release"])
+def test_improve_required_outcome_failure_obeys_release_posture(tmp_path, monkeypatch, posture):
+    settings = improve_fixtures._settings(tmp_path)
+    settings.build_posture = posture
+    project = improve_fixtures._seed_project(settings.projects_dir, "demo")
+
+    async def check(*args, **kwargs):
+        return {"status": "failed", "ok": False, "skipped": False, "fresh": True,
+                "blocks_delivery": True, "issues": ["required save produced no result"]}
+
+    monkeypatch.setattr(improve_module, "check_web_interact", check)
+    engine = improve_module.ImproveEngine(EventBus(), improve_fixtures._FakeOrchestrator(), settings=settings)
+    result = asyncio.run(engine.improve("demo", "save tasks"))
+    assert result.status == ("failed" if posture == "release" else "completed"), result.detail
+    if posture == "release":
+        assert result.detail["delivery_blocked"] == "required_browser_outcome_failed"
+        assert (project / "main.py").read_text() == "print('original')\n"
+
+
+@pytest.mark.parametrize("posture,changed", [("lab", False), ("release", False), ("release", True)])
+def test_build_settles_only_fresh_required_failures(tmp_path, posture, changed):
+    from skyn3t.studio.gate_posture import GatePosture
+    from skyn3t.studio.manifest import BuildManifest
+    from skyn3t.worktree import source_tree_snapshot
+    (tmp_path / "index.html").write_text("<button>Save</button>")
+    manifest = BuildManifest(slug="tasks", brief="Save tasks", stack="static")
+    manifest.extra["web_interact"] = {
+        "source_identity": source_tree_snapshot(tmp_path), "issues": ["saved item missing"],
+        "outcomes": [{"outcome_id": "save:primary", "required": True, "status": "failed", "reliable": True}],
+    }
+    if changed:
+        (tmp_path / "index.html").write_text("<button>Save fixed</button>")
+    runner = browser_fixtures._studio_runner(tmp_path)
+    verdict = runner._settle_web_interact(manifest, tmp_path, "go", posture=GatePosture(posture=posture))
+    assert verdict == ("no_go" if posture == "release" and not changed else "go")
+    assert manifest.extra["web_interact"]["status"] == ("not_checked" if changed else "failed")

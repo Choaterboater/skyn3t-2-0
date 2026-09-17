@@ -1324,6 +1324,114 @@ function VisualQualityPane({ slug, onCompleted }) {
     </Panel>
   );
 }
+function SavedWorkPane({ slug, onOpen }) {
+  const client = useQueryClient();
+  const [selected, setSelected] = useState("");
+  const [name, setName] = useState("");
+  const [acknowledged, setAcknowledged] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState("");
+  const base = `/projects/${encodeURIComponent(slug)}/candidates`;
+  const saved = useQuery({
+    queryKey: ["saved-work", slug], queryFn: () => apiFetch(base),
+    enabled: Boolean(slug), refetchInterval: 15000,
+  });
+  const inspection = useQuery({
+    queryKey: ["saved-work-detail", slug, selected],
+    queryFn: () => apiFetch(`${base}/${encodeURIComponent(selected)}`),
+    enabled: Boolean(slug && selected),
+  });
+  const detail = inspection.data;
+
+  async function recover(event) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const recovered = await apiPost(`${base}/${encodeURIComponent(selected)}/recover`, {
+        slug: name, acknowledge_unverified: acknowledged,
+      });
+      setResult(recovered);
+      void client.invalidateQueries({ queryKey: ["projects"] });
+    } catch (failure) {
+      setError(String(failure.message || failure));
+      void inspection.refetch();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Panel className="flex h-full flex-col overflow-hidden">
+      <PanelHead label="Saved unverified work" />
+      <div className="space-y-4 overflow-y-auto p-4 text-sm text-ash">
+        <p>Retained fragments are changed text only, not a full backup. Recovery creates a separate managed copy; the authoritative project and saved archive remain unchanged.</p>
+        <p>No code runs, no task resumes, and no model budgets reset. Deleted files, binary changes and omitted edits cannot be restored.</p>
+        {!slug ? <p>Choose a project to inspect its associated saved work.</p> : null}
+        {saved.isLoading && slug ? <p role="status">Loading saved work…</p> : null}
+        {saved.error ? <p role="alert">Saved work unavailable: {String(saved.error.message)}</p> : null}
+        {slug && saved.data?.candidates?.length === 0 ? <p>No project-associated saved work is available. Orphan archives without a trusted project receipt are not exposed.</p> : null}
+        <ul className="space-y-2">
+          {(saved.data?.candidates || []).map((candidate) => (
+            <li key={candidate.id} className="rounded border border-hairline p-3">
+              <p className="break-all font-mono text-xs">{candidate.id}</p>
+              <p className="mt-1 text-ember">{candidate.status} · {candidate.files?.length || 0} saved files</p>
+              {candidate.reason ? <p className="mt-1 text-xs">{candidate.reason}</p> : null}
+              <button type="button" className="btn-ghost mt-2" disabled={busy || candidate.status === "unavailable"} onClick={() => {
+                setSelected(candidate.id); setAcknowledged(false); setResult(null); setError("");
+              }}>Inspect saved text</button>
+            </li>
+          ))}
+        </ul>
+        {inspection.isFetching && selected ? <p role="status">Checking saved text and live base digest…</p> : null}
+        {inspection.error ? <p role="alert">{String(inspection.error.message)}</p> : null}
+        {detail ? (
+          <div className="space-y-3 border-t border-hairline pt-3">
+            <h3 className="text-bone">Saved text — unverified</h3>
+            {detail.warnings?.map((warning) => <p key={warning} className="text-xs">{warning}</p>)}
+            <p className="text-xs">Omissions: {Object.entries(detail.omitted || {}).map(([reason, count]) => `${reason}: ${count}`).join(", ") || "none recorded (archive still contains changed text only)"}</p>
+            <details className="text-xs">
+              <summary>Source digest evidence</summary>
+              <p className="break-all">Expected base: {detail.base_source_sha256}</p>
+              <p className="break-all">Current original: {detail.live_source_sha256 || "invalid source snapshot"}</p>
+            </details>
+            {Object.entries(detail.files || {}).map(([path, file]) => (
+              <details key={path} className="rounded border border-hairline p-2">
+                <summary className="cursor-pointer break-all font-mono text-xs">{path}</summary>
+                <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all text-xs">{file.content}</pre>
+              </details>
+            ))}
+            {!detail.recoverable ? <p role="alert" className="text-ember">Recovery blocked: {detail.reason}</p> : null}
+            {!result ? (
+              <form onSubmit={recover} className="space-y-3">
+                <label className="block">New separate workspace name
+                  <input className="field mt-1 w-full" value={name} onChange={(event) => setName(event.target.value)} required pattern="[a-z0-9][a-z0-9-]{0,79}" maxLength={80} placeholder="my-app-recovered" disabled={busy} />
+                </label>
+                <label className="flex items-start gap-2 text-xs">
+                  <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} disabled={busy} />
+                  I understand this creates unverified, incomplete work in a new workspace, not a restore or a verified delivery.
+                </label>
+                <button className="btn-ember" disabled={busy || !acknowledged || !detail.recoverable || !name}>
+                  {busy ? "Creating separate copy…" : "Create unverified recovery copy"}
+                </button>
+              </form>
+            ) : (
+              <div role="status" className="space-y-2 rounded border border-ember/40 p-3">
+                <p className="text-bone">Created {result.slug} — unverified. Original preserved; archive retained.</p>
+                <p className="text-xs">{result.files_count} files copied. Preview and deployment require separate proof-backed delivery.</p>
+                {result.skipped?.length ? <details><summary>Excluded from the base copy ({result.skipped.length})</summary><ul>{result.skipped.map((item) => <li key={item.path}>{item.path}: {item.reason}</li>)}</ul></details> : null}
+                <button type="button" className="btn-ghost" onClick={() => onOpen(result.slug)}>Open unverified workspace</button>
+              </div>
+            )}
+            {error ? <p role="alert" className="text-ember">{error}</p> : null}
+          </div>
+        ) : null}
+      </div>
+    </Panel>
+  );
+}
+
 export default function Workspace({ stream }) {
   const [params, setParams] = useSearchParams();
   const slug = params.get("slug") || "";
@@ -1491,9 +1599,17 @@ export default function Workspace({ stream }) {
             >
               Product
             </button>
+            <button
+              className={rightMode === "saved" ? "btn-ember" : "btn-ghost"}
+              onClick={() => setRightMode("saved")}
+            >
+              Saved work
+            </button>
           </div>
           <div className="min-h-0 flex-1">
-            {rightMode === "quality" ? (
+            {rightMode === "saved" ? (
+              <SavedWorkPane key={slug} slug={slug} onOpen={pick} />
+            ) : rightMode === "quality" ? (
               <VisualQualityPane
                 slug={slug}
                 onCompleted={() => setPreviewRevision((value) => value + 1)}

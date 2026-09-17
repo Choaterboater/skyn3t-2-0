@@ -839,6 +839,7 @@ def _normalize_model_override(model: str) -> str:
 def _profile_extra(profile: str, *, asset_gen_enabled: bool) -> dict[str, Any]:
     if profile == "fast":
         return {
+            "moa_policy": "off",
             "best_of_n": 1,
             "best_of_n_across_models": False,
             "max_debug_attempts": 1,
@@ -846,12 +847,14 @@ def _profile_extra(profile: str, *, asset_gen_enabled: bool) -> dict[str, Any]:
         }
     if profile == "cheap_learned":
         return {
+            "moa_policy": "bounded",
             "best_of_n": 1,
             "best_of_n_across_models": False,
             "parallel_code_slices": True,
         }
     if profile == "balanced":
         return {
+            "moa_policy": "bounded",
             "best_of_n": 2,
             "max_debug_attempts": 2,
             "agentic_timeout": 600,
@@ -860,6 +863,7 @@ def _profile_extra(profile: str, *, asset_gen_enabled: bool) -> dict[str, Any]:
         }
     if profile == "best_quality":
         return {
+            "moa_policy": "full",
             "best_of_n": 2,
             "best_of_n_across_models": True,
             "max_debug_attempts": 3,
@@ -874,6 +878,7 @@ def _profile_extra(profile: str, *, asset_gen_enabled: bool) -> dict[str, Any]:
 
 def _full_app_extra(*, asset_gen_enabled: bool) -> dict[str, Any]:
     return {
+        "moa_policy": "full",
         "full_app_contract": True,
         "asset_gen": asset_gen_enabled,
         "best_of_n": 2,
@@ -1529,6 +1534,22 @@ async def rebuild_build(
     }
 
 
+def _build_row_web_interact_fresh(row: dict[str, Any], state: AppState) -> None:
+    """Refresh the served web_interact verdict against the build's project dir.
+
+    Manifest/row extra is the only stored-evidence home; a source mismatch
+    returns not_checked outcomes without a browser or model call.
+    """
+    extra = row.get("extra") if isinstance(row, dict) else None
+    stored = extra.get("web_interact") if isinstance(extra, dict) else None
+    if not isinstance(stored, dict) or not stored:
+        return
+    project_dir = _resolve_project_dir(state, str(row.get("slug") or row.get("id") or ""))
+    refreshed = _fresh_web_interact({"extra": {"web_interact": stored}}, project_dir)
+    if refreshed:
+        extra["web_interact"] = refreshed
+
+
 async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
     builds: list[dict[str, Any]] = []
     # Live cache first.
@@ -1563,7 +1584,12 @@ async def list_builds(state: AppState, limit: int = 25) -> dict[str, Any]:
         build["approval_stages"] = [
             str(item.get("stage")) for item in pending if item.get("stage")
         ]
+        try:
+            _build_row_web_interact_fresh(build, state)
+        except Exception:  # noqa: BLE001 - one bad row must not break the list
+            pass
     return {"builds": visible}
+
 
 
 def _cleanup_build_ids_from_payload(payload: dict[str, Any] | None) -> list[str]:
@@ -3201,6 +3227,24 @@ def _compact_local_reverify(extra: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _fresh_web_interact(manifest: dict[str, Any], project: Path) -> dict[str, Any]:
+    """Serve-time freshness for STORED web_interact: source mismatch invalidates.
+
+    Uses WorkflowCoverage's refresh_web_interact only — no browser, no model.
+    Canonical managed project directory is resolved by the caller; evidence
+    whose base source no longer matches reports not_checked outcomes without
+    blocking delivery.
+    """
+    extra = manifest.get("extra") if isinstance(manifest, dict) else None
+    stored = extra.get("web_interact") if isinstance(extra, dict) else None
+    if not isinstance(stored, dict) or not stored:
+        return {}
+    try:
+        from skyn3t.studio.web_interact_check import refresh_web_interact
+
+        return refresh_web_interact(stored, project)
+    except Exception:  # noqa: BLE001 - freshness must never break a listing
+        return stored
 def _incomplete_project_row(
     state: AppState,
     project: Path,
@@ -3228,7 +3272,13 @@ def _incomplete_project_row(
     if imported:
         status = delivery_state = "imported"
     local_reverify = _compact_local_reverify(raw_extra)
+    fresh_interact = _fresh_web_interact(raw, project)
+    if fresh_interact and raw.get("extra") is raw_extra:
+        raw_extra["web_interact"] = fresh_interact
     summary = build_summary(raw) if raw else {}
+
+
+
     record_scorecard = getattr(record, "quality_scorecard", {})
     record_cost_truth = (
         record_scorecard.get("cost_truth")
@@ -3449,6 +3499,9 @@ async def list_projects(state: AppState) -> dict[str, Any]:
             record_active = _active_reverify_status(
                 getattr(record, "status", "") if record is not None else ""
             )
+            fresh_interact = _fresh_web_interact(m, d)
+            if fresh_interact is not None and m.get("extra") is extra:
+                extra["web_interact"] = fresh_interact
             summary = build_summary(m)
             ai_fields = _compact_project_ai_fields(m, record)
             project_cost = extra.get("build_cost_usd")
@@ -3510,8 +3563,10 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "stage_skills_used": dict(stage_skills_used)
                 if isinstance(stage_skills_used, dict) else {},
                 **ai_fields,
-                "quality_scorecard": dict(extra.get("quality_scorecard") or {})
-                if isinstance(extra.get("quality_scorecard"), dict) else {},
+                "quality_scorecard": {
+                    **(summary.get("quality_scorecard") or {}),
+                    **(dict(extra.get("quality_scorecard")) if isinstance(extra.get("quality_scorecard"), dict) else {}),
+                },
                 "local_reverify": local_reverify,
                 "scaffold_stub_gate": scaffold_stub_gate,
                 "deploy_plan": dict(extra.get("deploy_plan") or {})
@@ -5842,12 +5897,136 @@ async def decide_proposal(state: AppState, proposal_id: str, approved: bool, rea
 _SKILL_QUARANTINE_TAGS = frozenset({"hygiene:quarantine", "quarantine", "disabled"})
 _EXTERNAL_CANDIDATE_SKILL_TAG = "external-candidate"
 _EXTERNAL_GITHUB_SKILL_SOURCE = "github-distilled"
+async def _learning_store_call(state: AppState, method: str, *args: Any, **kwargs: Any) -> Any:
+    operation = getattr(getattr(state, "memory", None), method, None)
+    if not callable(operation):
+        raise RuntimeError("learning memory store is unavailable")
+    try:
+        return await operation(*args, **kwargs)
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise RuntimeError("learning memory store is unavailable") from exc
+
+
+async def corrections_payload(state: AppState, *, include_retired: bool = False) -> dict[str, Any]:
+    return {"corrections": await _learning_store_call(
+        state, "list_corrections", include_retired=include_retired, limit=200,
+    )}
+
+
+async def add_correction(state: AppState, body: dict[str, Any]) -> dict[str, Any]:
+    from skyn3t.intelligence.human_feedback import validate_correction
+
+    if set(body) - {"text", "project", "stack", "stage", "source_build"}:
+        raise ValueError("correction accepts only text, project, stack, stage and source_build")
+    values = validate_correction(
+        body.get("text"), project=body.get("project", ""), stack=body.get("stack", ""),
+        stage=body.get("stage", ""), source_build=body.get("source_build"),
+    )
+    stored = await _learning_store_call(state, "add_correction", **values)
+    message = await _learning_store_call(
+        state, "operation_message",
+        summary="Correction saved as a scoped preference.",
+        details=(
+            "Applies only to matching project, stack or stage contexts.",
+            "Retire it there when it no longer applies.",
+        ),
+    )
+    return {"correction": stored, "message": message}
+
+
+async def retire_correction(state: AppState, correction_id: int) -> dict[str, Any]:
+    if correction_id < 1:
+        raise ValueError("correction id must be positive")
+    if not await _learning_store_call(state, "retire_correction", correction_id):
+        raise FileNotFoundError("correction not found")
+    return {
+        "retired": True,
+        "message": await _learning_store_call(
+            state, "operation_message", summary="Correction retired and no longer applied.",
+        ),
+    }
+
+
+async def persona_payload(state: AppState) -> dict[str, Any]:
+    from skyn3t.intelligence.human_feedback import PERSONA_DEFAULTS
+
+    if getattr(state, "memory", None) is None:
+        return {"persona": dict(PERSONA_DEFAULTS), "defaults": True, "available": False}
+    return {"persona": await _learning_store_call(state, "get_persona")}
+
+
+async def set_persona(state: AppState, body: dict[str, Any]) -> dict[str, Any]:
+    from skyn3t.intelligence.human_feedback import validate_persona
+
+    if set(body) != {"persona"}:
+        raise ValueError("request requires only a persona object")
+    values = validate_persona(body["persona"])
+    stored = await _learning_store_call(state, "set_persona", values)
+    message = await _learning_store_call(
+        state, "operation_message",
+        summary="Communication preferences saved.",
+        details=("Applies to dashboard explanations only; product design, facts and proof requirements are unchanged.",),
+    )
+    return {"persona": stored, "message": message}
+
+
+async def reset_persona(state: AppState) -> dict[str, Any]:
+    if getattr(state, "memory", None) is None:
+        raise RuntimeError("the memory store is unavailable; persona cannot be reset")
+    return {
+        "persona": await _learning_store_call(state, "reset_persona"),
+        "message": await _learning_store_call(
+            state, "operation_message", summary="Communication preferences reset to defaults.",
+        ),
+    }
+
+async def capability_action(
+    state: AppState, slug: str, action: str, body: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,199}", slug):
+        raise ValueError("invalid skill slug")
+    body = body or {}
+    if set(body) - ({"reason"} if action in {"activate", "rollback"} else set()):
+        raise ValueError("unsupported capability request field")
+    reason = body.get("reason")
+    if action == "rollback" or reason is not None:
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
+            raise ValueError("reason must contain 1..2000 characters")
+    library = getattr(state, "skills", None)
+    method = {
+        "evaluate": "evaluate_candidate", "evaluations": "candidate_evaluations",
+        "activate": "activate_candidate", "rollback": "rollback_candidate",
+    }[action]
+    operation = getattr(library, method, None)
+    if not callable(operation) or not callable(getattr(library, "get", None)) or not callable(getattr(library, "capability_status", None)):
+        raise RuntimeError("capability library is unavailable")
+    if library.get(slug) is None:
+        raise FileNotFoundError("skill not found")
+    try:
+        result = await asyncio.to_thread(
+            operation, slug, **({"reason": reason.strip()} if action == "rollback" else {}),
+        )
+        capability = library.capability_status(slug)
+    except OSError as exc:
+        raise RuntimeError("capability evidence store is unavailable") from exc
+    if action == "evaluate":
+        return {"evaluation": result, "capability": capability}
+    if action == "evaluations":
+        return {"evaluations": result, "capability": capability}
+    if result is None:
+        raise ValueError("capability requires current passing evaluation and retained evidence before activation")
+    return {"skill": _skill_payload(result, library=library), "capability": capability}
+
+
 _EXTERNAL_PROMOTION_REFUSAL = (
     "Not promoted. Only a quarantined GitHub-derived external candidate with a "
     "canonical repository URL, immutable 40/64-character revision, SHA-256 "
-    "provenance hash, and source path can be promoted. Migrated candidates also "
-    "need retained source bytes that match that hash; repair the provenance or "
-    "receipt and try again."
+    "provenance hash, and source path can be promoted. Retained source evidence "
+    "must match that hash and a current local evaluation must pass. Repair the "
+    "evidence, evaluate the candidate, then explicitly activate it. Static checks "
+    "do not establish empirical effectiveness."
 )
 
 
@@ -5952,6 +6131,11 @@ def _skill_payload(skill: Any, *, library: Any = None) -> dict[str, Any]:
     out["quarantined"] = quarantined
     out["provenance_complete"] = _external_provenance_complete(skill)
     out["promotion_ready"] = _external_promotion_ready(library, skill, tags=tags)
+    checker = getattr(library, "capability_status", None)
+    out["capability_status"] = checker(out["slug"]) if callable(checker) else {
+        "status": "not_checked", "effectiveness": "not_checked",
+        "active": False, "can_activate": False, "advisory_only": True,
+    }
     return out
 
 
@@ -8158,6 +8342,40 @@ def build_router(state: AppState) -> Any:
             # An unreadable projects_dir must not leak a 500 with internals.
             raise HTTPException(status_code=500, detail="unable to read projects directory") from exc
 
+    async def _candidate_recovery_response(slug: str, action: str, archive_id: str = "", body: dict[str, Any] | None = None) -> dict[str, Any]:
+        from skyn3t.persistence.candidate_archive import CandidateRecovery
+
+        if action == "recover":
+            if not body or set(body) != {"slug", "acknowledge_unverified"} or body.get("acknowledge_unverified") is not True:
+                raise HTTPException(status_code=422, detail="recovery requires a new slug and acknowledge_unverified=true")
+            if not isinstance(body["slug"], str) or not body["slug"].strip():
+                raise HTTPException(status_code=422, detail="new project slug must be a nonempty string")
+        try:
+            recovery = CandidateRecovery(state.settings, _resolve_project_dir(state, slug))
+            if action == "list":
+                return await asyncio.to_thread(recovery.list)
+            if action == "inspect":
+                return await asyncio.to_thread(recovery.inspect, archive_id)
+            return await asyncio.to_thread(recovery.recover, archive_id, slug=body["slug"])
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except (FileExistsError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=503, detail="candidate recovery store is unavailable") from exc
+
+    @router.get("/projects/{slug}/candidates", dependencies=[auth])
+    async def _project_candidates(slug: str) -> dict[str, Any]:
+        return await _candidate_recovery_response(slug, "list")
+
+    @router.get("/projects/{slug}/candidates/{archive_id}", dependencies=[auth])
+    async def _project_candidate(slug: str, archive_id: str) -> dict[str, Any]:
+        return await _candidate_recovery_response(slug, "inspect", archive_id)
+
+    @router.post("/projects/{slug}/candidates/{archive_id}/recover", dependencies=[auth])
+    async def _recover_project_candidate(slug: str, archive_id: str, body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await _candidate_recovery_response(slug, "recover", archive_id, body)
+
     @router.post("/projects/import", dependencies=[auth])
     async def _import_project(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         path, slug, stack = (body.get(key, "") for key in ("path", "slug", "stack"))
@@ -9098,6 +9316,58 @@ def build_router(state: AppState) -> Any:
             reason=str(body.get("reason", "")),
             decided_by=str(body.get("decided_by", "api")),
         )
+
+    async def _learning_response(operation: Any) -> dict[str, Any]:
+        try:
+            return await operation
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @router.get("/learning/corrections", dependencies=[auth])
+    async def _corrections(include_retired: bool = False) -> dict[str, Any]:
+        return await _learning_response(corrections_payload(state, include_retired=include_retired))
+
+    @router.post("/learning/corrections", dependencies=[auth])
+    async def _add_correction(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await _learning_response(add_correction(state, body))
+
+    @router.post("/learning/corrections/{correction_id}/retire", dependencies=[auth])
+    async def _retire_correction(correction_id: int, body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        if body:
+            raise HTTPException(status_code=422, detail="retire does not accept request fields")
+        return await _learning_response(retire_correction(state, correction_id))
+
+    @router.get("/persona", dependencies=[auth])
+    async def _persona() -> dict[str, Any]:
+        return await _learning_response(persona_payload(state))
+
+    @router.put("/persona", dependencies=[auth])
+    async def _set_persona(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await _learning_response(set_persona(state, body))
+
+    @router.delete("/persona", dependencies=[auth])
+    async def _reset_persona() -> dict[str, Any]:
+        return await _learning_response(reset_persona(state))
+
+    @router.post("/skills/{slug}/evaluate", dependencies=[auth])
+    async def _evaluate_capability(slug: str, body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await _learning_response(capability_action(state, slug, "evaluate", body))
+
+    @router.get("/skills/{slug}/evaluations", dependencies=[auth])
+    async def _capability_evaluations(slug: str) -> dict[str, Any]:
+        return await _learning_response(capability_action(state, slug, "evaluations"))
+
+    @router.post("/skills/{slug}/activate", dependencies=[auth])
+    async def _activate_capability(slug: str, body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await _learning_response(capability_action(state, slug, "activate", body))
+
+    @router.post("/skills/{slug}/rollback", dependencies=[auth])
+    async def _rollback_capability(slug: str, body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        return await _learning_response(capability_action(state, slug, "rollback", body))
 
     @router.get("/skills", dependencies=[auth])
     async def _skills() -> dict[str, Any]:

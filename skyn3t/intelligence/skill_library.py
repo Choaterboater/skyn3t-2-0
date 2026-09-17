@@ -21,8 +21,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -59,6 +61,7 @@ _MAX_HUB_FILES = 300
 _LOCAL_HUB_SOURCE = "local-hub"
 _LOCAL_HUB_TAG = "local-hub"
 _LEGACY_MIGRATED_TAG = "legacy-migrated"
+_CAPABILITY_RECORDS_DIRNAME = ".capability_records"
 
 # Agent Skills-compatible metadata keys. The standard reserves ``metadata`` for
 # client-defined values, so SkyN3t keeps its import record namespaced there
@@ -901,6 +904,7 @@ class SkillLibrary:
         self._skills: dict[str, Skill] = {}
         self._hub_report: dict[str, Any] = {"schema_version": 1, "updated_at": 0.0, "reports": []}
         self._retirements: dict[str, dict[str, Any]] = {}
+        self._capability_records: dict[str, list[dict[str, Any]]] = {}
         if self.dir is not None:
             # Load + validate the retirement registry BEFORE reading any skill
             # files, so ``_load`` can exclude retired slugs from the very
@@ -908,6 +912,252 @@ class SkillLibrary:
             self._load_retirements()
             self._load()
             self._load_hub_report()
+            for skill in self._skills.values():
+                if self._is_capability(skill) and not self._capability_active(skill):
+                    self._quarantine_capability(skill)
+
+    # ---- evaluated advisory capabilities -----------------------------
+    def _is_capability(self, skill: Skill) -> bool:
+        tags = _catalog_tagset(skill)
+        return bool(
+            _is_catalog_skill(skill, tags)
+            or tags & {_EXTERNAL_CANDIDATE_TAG, _EXTERNAL_PROMOTED_TAG}
+            or skill.source.strip().lower() == "github-distilled"
+            or skill.slug in self._capability_records
+            or (self.dir is not None and (
+                self.dir / _CAPABILITY_RECORDS_DIRNAME
+                / hashlib.sha256(skill.slug.encode("utf-8")).hexdigest()
+            ).exists())
+        )
+
+    @staticmethod
+    def _capability_fingerprint(skill: Skill) -> str:
+        status_tags = _QUARANTINE_TAGS | {
+            _EXTERNAL_CANDIDATE_TAG, _EXTERNAL_PROMOTED_TAG,
+            _CATALOG_CANDIDATE_TAG, _CATALOG_PROMOTED_TAG,
+        }
+        return content_sha256(json.dumps({
+            "slug": skill.slug, "title": skill.title, "body": skill.body.strip(),
+            "description": skill.description, "stack": skill.stack, "source": skill.source,
+            "tags": sorted(_catalog_tagset(skill) - status_tags),
+            "provenance": skill.provenance.to_dict() if skill.provenance else None,
+        }, sort_keys=True, separators=(",", ":")))
+
+    @staticmethod
+    def _quarantine_capability(skill: Skill) -> None:
+        catalog = _is_catalog_skill(skill)
+        skill.tags = [tag for tag in skill.tags if tag.strip().lower() not in {
+            _CATALOG_PROMOTED_TAG, _EXTERNAL_PROMOTED_TAG,
+        }]
+        skill.tags = _dedupe_tags([
+            *skill.tags, "hygiene:quarantine",
+            _CATALOG_CANDIDATE_TAG if catalog else _EXTERNAL_CANDIDATE_TAG,
+        ])
+
+    def _records_directory(self, slug: str) -> Path:
+        if self.dir is None:
+            raise ValueError("capability activation requires a file-backed skill library")
+        root = self.dir / _CAPABILITY_RECORDS_DIRNAME
+        path = root / hashlib.sha256(slug.encode("utf-8")).hexdigest()
+        if root.is_symlink() or path.is_symlink():
+            raise ValueError("capability records must not use symlinks")
+        return path
+
+    def _read_capability_records(self, slug: str) -> list[dict[str, Any]]:
+        if self.dir is None:
+            return self._capability_records.get(slug, [])
+        path = self._records_directory(slug)
+        records = []
+        for file in sorted(path.glob("*.json")):
+            if file.is_symlink() or not file.is_file() or file.stat().st_size > 32_000:
+                raise ValueError("invalid capability record file")
+            raw = file.read_bytes()
+            if file.stem.split("-")[-1] != hashlib.sha256(raw).hexdigest():
+                raise ValueError("capability record integrity mismatch")
+            record = json.loads(raw)
+            if (
+                not isinstance(record, dict) or record.get("schema_version") != 1
+                or record.get("slug") != slug
+                or record.get("kind") not in {"evaluation", "activation", "rollback"}
+            ):
+                raise ValueError("invalid capability record")
+            records.append(record)
+        return records
+
+    def _append_capability_record(self, slug: str, **fields: Any) -> dict[str, Any]:
+        record = {
+            "schema_version": 1, "id": uuid.uuid4().hex, "slug": slug,
+            "created_at": time.time(), **fields,
+        }
+        if self.dir is None:
+            self._capability_records.setdefault(slug, []).append(record)
+        else:
+            path = self._records_directory(slug)
+            path.mkdir(parents=True, exist_ok=True)
+            raw = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            name = f"{time.time_ns():020d}-{record['id']}-{hashlib.sha256(raw).hexdigest()}.json"
+            # Exclusive creation: historical evaluations are never rewritten.
+            with (path / name).open("xb") as stream:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+            descriptor = os.open(path, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        return json.loads(json.dumps(record))
+
+    def _capability_checks(self, skill: Skill) -> dict[str, bool]:
+        """Bounded local integrity/compatibility checks, never an effectiveness claim.
+
+        No source is executed or fetched. Catalog evidence is the locally persisted
+        compact body and its import hash; GitHub evidence is retained source bytes
+        (at most 512 KB) plus the existing canonical-origin and immutable-pin gate.
+        """
+        provenance = skill.provenance
+        catalog = _is_catalog_skill(skill)
+        tags = _catalog_tagset(skill)
+        checks = {
+            "candidate_kind": self._is_capability(skill),
+            "not_retired": not self.is_retired(skill.slug),
+            "bounded_advisory": bool(skill.body.strip())
+            and len(skill.body.encode("utf-8")) <= _MAX_RETAINED_EVIDENCE_BYTES,
+            "provenance": (
+                _has_catalog_identity(tags) and _has_valid_catalog_activation_evidence(skill)
+                if catalog else _has_complete_github_provenance(provenance)
+            ),
+            "retained_evidence": (
+                _has_valid_catalog_activation_evidence(skill)
+                if catalog else self._retained_evidence_matches(skill)
+            ),
+            "legacy_body": _LEGACY_MIGRATED_TAG not in tags
+            or _has_valid_legacy_migration_body(skill),
+            "persisted_advisory": False,
+        }
+        if self.dir is not None and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", skill.slug):
+            path = self.dir / f"{skill.slug}.md"
+            try:
+                if not path.is_symlink() and path.is_file() and path.stat().st_size <= 1_024_000:
+                    persisted = parse_skill(path.read_text(encoding="utf-8"))
+                    checks["persisted_advisory"] = (
+                        self._capability_fingerprint(persisted) == self._capability_fingerprint(skill)
+                    )
+            except (OSError, ValueError, UnicodeDecodeError):
+                pass
+        return checks
+
+    def candidate_evaluations(self, slug: str) -> list[dict[str, Any]]:
+        """Return detached immutable-history snapshots; no status can be supplied."""
+        return json.loads(json.dumps([
+            row for row in self._read_capability_records(slug) if row["kind"] == "evaluation"
+        ]))
+
+    def evaluate_candidate(self, slug: str) -> dict[str, Any]:
+        """Record local static-advisory compatibility, not empirical effectiveness.
+
+        Passing evaluates only this exact advisory/provenance/evidence revision;
+        activation remains a separate explicit action. There is no success flag.
+        """
+        skill = self.get(slug)
+        if skill is None or not self._is_capability(skill):
+            raise ValueError("unknown advisory capability candidate")
+        self._read_capability_records(slug)  # Reject a corrupt journal before appending.
+        checks = self._capability_checks(skill)
+        status = "passed" if all(checks.values()) else "failed"
+        if self.dir is None:
+            status = "not_checked"
+        receipt = self._append_capability_record(
+            slug, kind="evaluation", method="static-advisory-v1", status=status,
+            fingerprint=self._capability_fingerprint(skill), checks=checks,
+            effectiveness="not_checked", advisory_only=True,
+        )
+        self._quarantine_capability(skill)
+        self._persist(skill)
+        return receipt
+
+    def capability_status(self, slug: str) -> dict[str, Any]:
+        skill = self.get(slug)
+        result: dict[str, Any] = {
+            "slug": slug, "status": "not_checked", "active": False,
+            "can_activate": False, "evaluation_id": None, "advisory_only": True,
+            "effectiveness": "not_checked",
+        }
+        if skill is None or not self._is_capability(skill):
+            return result
+        try:
+            records = self._read_capability_records(slug)
+            evaluation = next((row for row in reversed(records) if row["kind"] == "evaluation"), None)
+            if evaluation is None:
+                return result
+            result["evaluation_id"] = evaluation["id"]
+            current = (
+                evaluation.get("method") == "static-advisory-v1"
+                and evaluation.get("fingerprint") == self._capability_fingerprint(skill)
+                and (evaluation.get("status") != "passed" or all(self._capability_checks(skill).values()))
+            )
+            result["status"] = evaluation.get("status", "failed") if current else "not_checked"
+            if not current or result["status"] != "passed":
+                return result
+            # Rollback invalidates every evaluation that predates it. Re-evaluation
+            # is required even when the advisory/evidence bytes have not changed.
+            index = records.index(evaluation)
+            later = records[index + 1:]
+            if any(row["kind"] == "rollback" for row in later):
+                result["status"] = "not_checked"
+                return result
+            tags = _catalog_tagset(skill)
+            result["can_activate"] = bool(
+                tags & _QUARANTINE_TAGS
+                and tags & {_CATALOG_CANDIDATE_TAG, _EXTERNAL_CANDIDATE_TAG}
+            )
+            result["active"] = bool(
+                not tags & _QUARANTINE_TAGS
+                and tags & {_CATALOG_PROMOTED_TAG, _EXTERNAL_PROMOTED_TAG}
+                and later and later[-1]["kind"] == "activation"
+                and later[-1].get("evaluation_id") == evaluation["id"]
+            )
+        except (OSError, ValueError, KeyError, TypeError):
+            result["status"] = "failed"
+        return result
+
+    def _capability_active(self, skill: Skill) -> bool:
+        current = self.get(skill.slug)
+        return bool(
+            current is skill and self.capability_status(skill.slug)["active"]
+        )
+
+    def activate_candidate(self, slug: str) -> Skill | None:
+        skill = self.get(slug)
+        if skill is None or not self.capability_status(slug)["can_activate"]:
+            return None
+        evaluation_id = self.capability_status(slug)["evaluation_id"]
+        catalog = _is_catalog_skill(skill)
+        self._append_capability_record(slug, kind="activation", evaluation_id=evaluation_id)
+        removed = _QUARANTINE_TAGS | {_CATALOG_CANDIDATE_TAG, _EXTERNAL_CANDIDATE_TAG}
+        skill.tags = [tag for tag in skill.tags if tag.strip().lower() not in removed]
+        skill.tags = _dedupe_tags([
+            *skill.tags, _CATALOG_PROMOTED_TAG if catalog else _EXTERNAL_PROMOTED_TAG,
+        ])
+        if not self._persist(skill) or not self._capability_active(skill):
+            self._quarantine_capability(skill)
+            self._persist(skill)
+            return None
+        return skill
+
+    def rollback_candidate(self, slug: str, *, reason: str = "operator rollback") -> Skill | None:
+        """Durably quarantine without deleting evaluations; require a fresh evaluation."""
+        skill = self.get(slug)
+        if skill is None or not self._is_capability(skill):
+            return None
+        if not isinstance(reason, str) or not reason.strip() or len(reason) > 2_000:
+            raise ValueError("rollback reason must contain 1..2000 characters")
+        self._read_capability_records(slug)
+        self._append_capability_record(slug, kind="rollback", reason=reason.strip())
+        self._quarantine_capability(skill)
+        # The durable journal is authoritative even if the markdown write fails.
+        self._persist(skill)
+        return skill
 
     # ---- persistence (best-effort) ------------------------------------
     def _load_retirements(self) -> None:
@@ -1041,7 +1291,11 @@ class SkillLibrary:
             return None
         try:
             root = self.dir.resolve()
-            target = (self.dir / safe).resolve()
+            unresolved = self.dir / safe
+            components = [self.dir.joinpath(*Path(safe).parts[:index]) for index in range(1, len(Path(safe).parts) + 1)]
+            if any(part.is_symlink() for part in components):
+                return None
+            target = unresolved.resolve()
             target.relative_to(root)
             return target
         except (OSError, ValueError):
@@ -1072,9 +1326,11 @@ class SkillLibrary:
         try:
             if target.is_symlink() or not target.is_file():
                 return False
-            if target.stat().st_size > _MAX_RETAINED_EVIDENCE_BYTES:
+            if not 0 < target.stat().st_size <= _MAX_RETAINED_EVIDENCE_BYTES:
                 return False
-            return content_sha256(target.read_bytes()).lower() == expected
+            with target.open("rb") as stream:
+                raw = stream.read(_MAX_RETAINED_EVIDENCE_BYTES + 1)
+            return len(raw) <= _MAX_RETAINED_EVIDENCE_BYTES and content_sha256(raw).lower() == expected
         except OSError:
             return False
 
@@ -1085,6 +1341,14 @@ class SkillLibrary:
             "updated_at": self._hub_report.get("updated_at", 0.0),
             "reports": [dict(item) for item in self._hub_report.get("reports", [])],
         }
+
+    def retain_source_evidence(self, evidence: str | bytes) -> str:
+        """Retain bounded inert source bytes and return their library-relative path."""
+        raw = evidence.encode("utf-8") if isinstance(evidence, str) else bytes(evidence)
+        path = f"evidence/external/{content_sha256(raw).removeprefix('sha256:')}.source"
+        if not self._retain_evidence(path, raw):
+            raise OSError("could not retain bounded source evidence")
+        return path
 
     def _persist(self, skill: Skill) -> bool:
         if self.dir is None:
@@ -1156,6 +1420,10 @@ class SkillLibrary:
             description=description.strip(),
             provenance=provenance,
         )
+        if self._is_capability(skill):
+            self._quarantine_capability(skill)
+            if skill.description and skill.description.lower() not in skill.body.lower():
+                skill.body = f"{skill.description}\n\n{skill.body}"
         _quarantine_unevidenced_agent_catalog_skill(skill)
         self._skills[slug] = skill
         self._persist(skill)
@@ -1175,6 +1443,8 @@ class SkillLibrary:
         This keeps broad imported docs and wrong-domain repo patterns from
         crowding out stack-native guidance.
         """
+        if self._is_capability(skill) and not self._capability_active(skill):
+            return False
         tagset = {t.lower() for t in (tags or [])}
         sk_stack = (skill.stack or "").strip().lower()
         sk_tags = {t.lower() for t in skill.tags}
@@ -1740,9 +2010,9 @@ class SkillLibrary:
         cands.sort(key=_match, reverse=True)
         return cands[:limit]
 
-    @staticmethod
-    def render_selected(skills: list[Skill], *, stage: bool = False) -> str:
-        """Render an already-ranked selection without repeating retrieval."""
+    def render_selected(self, skills: list[Skill], *, stage: bool = False) -> str:
+        """Revalidate selected capabilities at the final advisory injection seam."""
+        skills = [s for s in skills if not self._is_capability(s) or self._capability_active(s)]
         if not skills:
             return ""
         blocks = "\n\n".join(s.as_advice() for s in skills)
@@ -1848,85 +2118,32 @@ class SkillLibrary:
         sk = self._skills.get(slug)
         if sk is None:
             return None
+        if self._is_capability(sk):
+            return self.rollback_candidate(slug, reason=f"demoted: {tag}")
         if tag not in sk.tags:
             sk.tags.append(tag)
             self._persist(sk)
         return sk
 
     def activate_catalog_candidate(self, slug: str) -> Skill | None:
-        """Explicitly make one evidence-bound local catalog role injectable.
-
-        Catalog text remains non-binding advice. Activation requires a retained
-        candidate/quarantine state plus a compact-body hash and safe path receipt,
-        so a legacy catalog file or altered advisory body cannot become active
-        merely by carrying a status tag. A slug shelved via the retirement
-        registry is refused even if it somehow still exists in memory.
-        """
-        sk = self._skills.get(slug)
-        if sk is None or self.is_retired(slug):
+        """Activate a catalog candidate only after a current local evaluation."""
+        skill = self.get(slug)
+        if skill is None or not _is_catalog_skill(skill):
             return None
-        tags = _catalog_tagset(sk)
-        if not (
-            _is_catalog_skill(sk, tags)
-            and _has_catalog_identity(tags)
-            and _CATALOG_CANDIDATE_TAG in tags
-            and bool(tags & _QUARANTINE_TAGS)
-            and _has_valid_catalog_activation_evidence(sk)
-        ):
-            return None
-        remove_tags = _QUARANTINE_TAGS | {_CATALOG_CANDIDATE_TAG}
-        sk.tags = [tag for tag in sk.tags if tag.strip().lower() not in remove_tags]
-        if _CATALOG_PROMOTED_TAG not in _catalog_tagset(sk):
-            sk.tags.append(_CATALOG_PROMOTED_TAG)
-        self._persist(sk)
-        return sk
+        return self.activate_candidate(slug)
 
     def can_promote_external(self, slug: str) -> bool:
-        """Whether this library would explicitly promote one external candidate.
-
-        This is the read-only counterpart to :meth:`promote_external`, intended
-        for API/UI readiness indicators. It includes the retained-byte receipt
-        check required for a migrated legacy candidate. A slug shelved via the
-        retirement registry can never qualify, even if it somehow still exists
-        in memory.
-        """
-        sk = self._skills.get(slug)
-        if sk is None or (sk.source or "").strip().lower() != "github-distilled":
-            return False
-        if self.is_retired(slug):
-            return False
-        tagset = {tag.strip().lower() for tag in sk.tags if tag.strip()}
-        if _EXTERNAL_CANDIDATE_TAG not in tagset or not (tagset & _QUARANTINE_TAGS):
-            return False
-        if not _has_complete_github_provenance(sk.provenance):
-            return False
-        if _LEGACY_MIGRATED_TAG not in tagset:
-            return True
-        return self._retained_evidence_matches(sk) and _has_valid_legacy_migration_body(sk)
+        """Read-only readiness: immutable provenance and a current passed evaluation."""
+        skill = self.get(slug)
+        return bool(
+            skill is not None and skill.source.strip().lower() == "github-distilled"
+            and _EXTERNAL_CANDIDATE_TAG in _catalog_tagset(skill)
+            and self.capability_status(slug)["can_activate"]
+        )
 
     def promote_external(self, slug: str) -> Skill | None:
-        """Explicitly approve a quarantined GitHub-derived skill for injection.
-
-        Remote README text is an untrusted reference, not a default prompt
-        input. Promotion is therefore deliberately narrow: the candidate must
-        still be marked external, originate from ``github-distilled``, and carry
-        a canonical GitHub repository origin, a full immutable Git object ID, a SHA-256 of the
-        retained source evidence, and the README source path. Missing evidence
-        returns ``None`` and leaves the file quarantined; no branch name, tag,
-        or proposal payload can stand in for a pin.
-        """
-        if not self.can_promote_external(slug):
-            return None
-        sk = self._skills.get(slug)
-        if sk is None:  # defensive: the predicate read the same in-memory map
-            return None
-
-        remove_tags = _QUARANTINE_TAGS | {_EXTERNAL_CANDIDATE_TAG}
-        sk.tags = [tag for tag in sk.tags if tag.strip().lower() not in remove_tags]
-        if _EXTERNAL_PROMOTED_TAG not in {tag.strip().lower() for tag in sk.tags}:
-            sk.tags.append(_EXTERNAL_PROMOTED_TAG)
-        self._persist(sk)
-        return sk
+        """Explicitly activate an evaluated GitHub candidate as non-binding advice."""
+        return self.activate_candidate(slug) if self.can_promote_external(slug) else None
 
     # ---- auto-promotion from build patterns ---------------------------
     def maybe_promote_pattern(

@@ -42,9 +42,29 @@ def _info(event: str, **kw: Any) -> None:
             pass
 
 
-# Words that signal a durable, reusable lesson vs. one-off noise.
-_POSITIVE_MARKERS = ("worked", "passed", "fixed", "stable", "fast", "clean", "go")
-_NEGATIVE_MARKERS = ("failed", "broke", "flaky", "timeout", "regression", "no_go", "missing")
+# Historical boilerplate remains auditable in storage, but never becomes advice.
+_GENERIC_LESSON_RE = re.compile(
+    r"(?:this build shape scored .*; keep its approach\.|"
+    r"build scored .*; the chosen approach underperformed\.|"
+    r"build succeeded with this pipeline shape; keep its approach\.|"
+    r"build failed verification — re-check the plan\.)$"
+)
+_GENERIC_OUTCOME_WORDS = frozenset({
+    "a", "all", "and", "approach", "as", "build", "checks", "clean", "complete",
+    "completed", "everything", "expected", "fast", "good", "great", "has", "have",
+    "is", "it", "its", "keep", "looks", "passed", "passing", "pipeline", "proof",
+    "really", "run", "shape", "stable", "succeeded", "success", "successful",
+    "successfully", "tests", "that", "the", "this", "to", "very", "was", "well",
+    "were", "with", "worked", "working",
+})
+
+
+def is_actionable_lesson(text: str) -> bool:
+    if not text.strip() or _GENERIC_LESSON_RE.search(text) is not None:
+        return False
+    words = set(re.findall(r"[a-z]+", text.lower()))
+    # Outcome vocabulary alone is not a reusable technique, even when verbose.
+    return bool(words - _GENERIC_OUTCOME_WORDS)
 
 
 @dataclass(slots=True)
@@ -91,7 +111,7 @@ def mine_best_practices(
         for t in texts:
             for line in str(t).splitlines():
                 line = line.strip().lstrip("-*0123456789. ").strip()
-                if 8 <= len(line) <= 140:
+                if 8 <= len(line) <= 140 and is_actionable_lesson(line):
                     key = re.sub(r"\s+", " ", line.lower())
                     counts[key] = counts.get(key, 0) + 1
         return counts
@@ -121,19 +141,8 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
     """Extract candidate lesson strings from a build-outcome dict."""
     lessons: list[str] = []
     verdict = str(build.get("verdict") or build.get("status") or "").lower()
-    score = build.get("score")
     stack = build.get("stack") or "generic"
     gaps = build.get("gaps") or []
-
-    if isinstance(score, (int, float)):
-        if score >= 90:
-            lessons.append(
-                f"{stack}: this build shape scored {score:.0f}; keep its approach."
-            )
-        elif score < 60:
-            lessons.append(
-                f"{stack}: build scored {score:.0f}; the chosen approach underperformed."
-            )
 
     if "no_go" in verdict or "fail" in verdict:
         for g in gaps[:3]:
@@ -144,29 +153,10 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
         for e in (build.get("proof_errors") or [])[:3]:
             flat = " ".join(str(e).split())[:160]
             lessons.append(f"{stack}: avoid — {flat}")
-        if (
-            not gaps
-            and not build.get("proof_errors")
-            and not build.get("gate_findings")
-            and not build.get("infrastructure_failure")
-        ):
-            lessons.append(f"{stack}: build failed verification — re-check the plan.")
-    elif "go" in verdict or "complete" in verdict or "success" in str(verdict):
-        # Never echo the brief into a lesson: a row whose text literally IS an
-        # old brief maximally matches any similar future brief in the
-        # injection re-rank (BM25 + cosine against the CURRENT brief), gets
-        # graded helpful on every go, and permanently crowds actionable
-        # avoid/gap rules out of the score-ranked top fetch — one content-free
-        # row per distinct brief. Real notes are fine; without them mint one
-        # constant, brief-free success note that dedupes to a single row per
-        # stack.
+    elif verdict in {"go", "complete", "success", "completed"} and build.get("proof_passed") is True:
         notes = build.get("notes")
-        if notes:
-            lessons.append(f"{stack}: successful build — {str(notes)[:120]}")
-        else:
-            lessons.append(
-                f"{stack}: build succeeded with this pipeline shape; keep its approach."
-            )
+        if isinstance(notes, str) and len(notes.split()) >= 5 and is_actionable_lesson(notes):
+            lessons.append(f"{stack}: verified build observation — {notes.strip()[:240]}")
 
     # Advisory-gate findings become lessons REGARDLESS of verdict: the
     # end-of-build gates (seo/mcp_check/rag_check/liveness) record findings and
@@ -178,10 +168,11 @@ def _summarize_outcome(build: dict[str, Any]) -> list[str]:
         if flat:
             lessons.append(f"{stack}: gate flagged — {flat}")
 
-    # Fold in any auto-mined best practices.
-    lessons.extend(
-        mine_best_practices(build.get("accepted"), build.get("rejected"))
-    )
+    # Positive examples require passed proof; rejection evidence remains useful.
+    lessons.extend(mine_best_practices(
+        build.get("accepted") if build.get("proof_passed") is True else None,
+        build.get("rejected"),
+    ))
     # De-dup while preserving order.
     seen: set[str] = set()
     out: list[str] = []
@@ -522,10 +513,13 @@ class LearningLoop:
             except Exception as exc:  # noqa: BLE001 - retain ranked advice on recall failure
                 _info("learning.recent_failed", error=type(exc).__name__)
         injected = InjectedLessons(stack=stack, stage=stage)
+        # The constant brief-free success note is deliberate capture content
+        # (one deduped row per stack); the generic-text gate applies to new
+        # captures, not to the store's existing rows.
         for row in rows:
             lid = row.get("id")
             text = row.get("text")
-            if lid is not None and text:
+            if lid is not None and text and is_actionable_lesson(str(text)):
                 injected.lesson_ids.append(int(lid))
                 injected.texts.append(str(text))
         _info(

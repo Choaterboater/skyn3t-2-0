@@ -1,0 +1,161 @@
+{
+  "repo_state": {
+    "repo_root": "skyn3t 2.0",
+    "branch": "main",
+    "commit": "2bb1036",
+    "dirty": true,
+    "include_tests": true,
+    "llm_assisted": false
+  },
+  "sections": [
+    {
+      "title": "Repo Review",
+      "score": 81.0,
+      "findings": [
+        {
+          "severity": "P3",
+          "category": "docs",
+          "claim": "STATUS.md was last reviewed 2026-08-01.",
+          "evidence": [
+            "STATUS.md"
+          ],
+          "recommendation": "Refresh STATUS.md after major audit council runs."
+        }
+      ],
+      "notes": [
+        "Reviews SkyN3t repository structure, docs freshness, source/test shape, and maintenance signals.",
+        "This is a factory audit, so generated project trees are intentionally out of scope for v1."
+      ],
+      "metrics": {
+        "code_files": 764,
+        "source_files": 304,
+        "test_files": 460,
+        "todo_markers": 9
+      }
+    },
+    {
+      "title": "Debug Audit",
+      "score": 90.0,
+      "findings": [],
+      "notes": [
+        "Checks whether the factory has explicit proof, debug, verifier, and repair handoff surfaces."
+      ],
+      "metrics": {
+        "components_present": 5,
+        "components_expected": 5
+      }
+    },
+    {
+      "title": "Product Rating",
+      "score": 100.0,
+      "findings": [],
+      "notes": [
+        "Rates SkyN3t as an app factory across product and engineering dimensions."
+      ],
+      "metrics": {
+        "reliability": 100.0,
+        "usability": 100.0,
+        "app_breadth": 100.0,
+        "proof_quality": 100.0,
+        "autonomy": 100.0,
+        "maintainability": 100.0
+      }
+    },
+    {
+      "title": "Gap Analysis",
+      "score": 100.0,
+      "findings": [],
+      "notes": [
+        "Compares stated factory ambitions against repo-local evidence."
+      ],
+      "metrics": {
+        "covered": 5,
+        "checked": 5
+      }
+    },
+    {
+      "title": "Explorer Map",
+      "score": 100.0,
+      "findings": [
+        {
+          "severity": "P3",
+          "category": "explorer",
+          "claim": "Use this subsystem map as the next engineer's starting path.",
+          "evidence": [
+            "skyn3t/cli/main.py",
+            "skyn3t/studio/runner.py",
+            "skyn3t/studio/proof_run.py",
+            "skyn3t/agents/",
+            "skyn3t/cortex/",
+            "skyn3t/web/ui/src/routes/Studio.jsx",
+            "skyn3t/studio/bench.py",
+            "docs/START_HERE.md"
+          ],
+          "recommendation": "Open these paths first before broad searching; keep docs/FILE_MAP.md in sync when boundaries move."
+        }
+      ],
+      "notes": [
+        "CLI: skyn3t/cli/main.py",
+        "Studio pipeline: skyn3t/studio/runner.py",
+        "Proof and gates: skyn3t/studio/proof_run.py",
+        "Agents: skyn3t/agents/",
+        "Cortex: skyn3t/cortex/",
+        "Web UI: skyn3t/web/ui/src/routes/Studio.jsx",
+        "Bench: skyn3t/studio/bench.py",
+        "Docs: docs/START_HERE.md"
+      ],
+      "metrics": {
+        "mapped_areas": 8,
+        "present": 8
+      }
+    },
+    {
+      "title": "Comparison Rubric",
+      "score": 100.0,
+      "findings": [],
+      "notes": [
+        "Local rubric only: v1 does not browse live competitors or make market freshness claims."
+      ],
+      "metrics": {
+        "multi_stack_generation": "present",
+        "objective_proof": "present",
+        "visual_runtime_checks": "present",
+        "learning_memory": "present",
+        "bench_regression": "present",
+        "human_gated_autonomy": "present",
+        "deploy_readiness": "present",
+        "handoff_reporting": "present"
+      }
+    }
+  ],
+  "overall_rating": 95.17,
+  "prioritized_handoff": [
+    {
+      "severity": "P3",
+      "category": "docs",
+      "claim": "STATUS.md was last reviewed 2026-08-01.",
+      "evidence": [
+        "STATUS.md"
+      ],
+      "recommendation": "Refresh STATUS.md after major audit council runs."
+    },
+    {
+      "severity": "P3",
+      "category": "explorer",
+      "claim": "Use this subsystem map as the next engineer's starting path.",
+      "evidence": [
+        "skyn3t/cli/main.py",
+        "skyn3t/studio/runner.py",
+        "skyn3t/studio/proof_run.py",
+        "skyn3t/agents/",
+        "skyn3t/cortex/",
+        "skyn3t/web/ui/src/routes/Studio.jsx",
+        "skyn3t/studio/bench.py",
+        "docs/START_HERE.md"
+      ],
+      "recommendation": "Open these paths first before broad searching; keep docs/FILE_MAP.md in sync when boundaries move."
+    }
+  ],
+  "generated_at": "2026-09-17T12:41:28.306600+00:00",
+  "summary": "SkyN3t was audited as an app factory using deterministic repo-local analyzers. The report focuses on product capability, proof/debug maturity, roadmap gaps, comparison rubric coverage, and next-engineer handoff steps."
+}

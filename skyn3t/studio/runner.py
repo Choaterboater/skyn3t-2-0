@@ -118,7 +118,7 @@ from skyn3t.studio.slicer import slice_plan, slice_tier
 from skyn3t.studio.stage_debug import debug_stage
 from skyn3t.studio.stages import StageSpec
 from skyn3t.studio.visual_loop import visual_self_improve
-from skyn3t.studio.web_interact_check import check_web_interact
+from skyn3t.studio.web_interact_check import check_web_interact, refresh_web_interact
 from skyn3t.studio.web_polish_check import check_web_polish
 from skyn3t.studio.workflow_depth import check_workflow_depth
 from skyn3t.worktree import (
@@ -1432,6 +1432,9 @@ class StudioRunner:
                 llm,
                 self.settings,
                 advisors=str(selected) if selected is not None else None,
+                policy=str(extra.get("moa_policy"))
+                if isinstance(extra, dict) and extra.get("moa_policy") is not None
+                else None,
             )
             if not engine.enabled():
                 return extra
@@ -1498,6 +1501,9 @@ class StudioRunner:
                 llm,
                 self.settings,
                 advisors=str(selected) if selected is not None else None,
+                policy=str(extra.get("moa_policy"))
+                if isinstance(extra, dict) and extra.get("moa_policy") is not None
+                else None,
             )
             if not engine.enabled():
                 return ""
@@ -2325,14 +2331,7 @@ class StudioRunner:
         return final_score, verdict
 
     async def _run_web_interact_gate(self, manifest, project_dir: str, plan) -> None:
-        """Advisory web interaction check (web stacks): serve the delivered app
-        and drive ONE LLM-authored Playwright script through ONE real user flow,
-        asserting BOTH the UI surface and the backend surface — the "renders but
-        isn't wired" catch no static/route gate can make. RECORDED ONLY to
-        ``manifest.extra["web_interact"]``: it never routes through
-        ``_gate_outcome`` and never dampens the score, and the check itself
-        soft-skips ($0, before serving) without Playwright or a non-stub LLM
-        backend. Never raises."""
+        """Record bounded contract-derived browser outcomes; settle posture after final proof."""
         if not bool(getattr(self.settings, "web_interact_check_enabled", True)):
             manifest.extra.pop("web_interact", None)
             return
@@ -2345,7 +2344,7 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001
             log.warning("web_interact.failed", error=str(exc))
             result = {
-                "ok": True, "skipped": True,
+                "status": "not_checked", "ok": True, "skipped": True,
                 "reason": f"web interact error: {exc}"[:300],
                 "issues": [], "warnings": [], "interactions": [], "checked": [],
             }
@@ -2356,6 +2355,19 @@ class StudioRunner:
             ok=result.get("ok"),
             issues=len(result.get("issues") or []),
         )
+
+    def _settle_web_interact(self, manifest, project_dir, verdict, *, posture=None):
+        interaction = manifest.extra.get("web_interact")
+        if isinstance(interaction, dict):
+            interaction = refresh_web_interact(interaction, project_dir)
+            manifest.extra["web_interact"] = interaction
+            if interaction.get("blocks_delivery") is True:
+                verdict = self._gate_outcome(
+                    manifest, "product_quality", False, verdict,
+                    "required browser outcome failed: " + "; ".join(interaction.get("issues", [])[:3]),
+                    posture=posture,
+                )
+        return verdict
 
     async def _reproof_after_post_proof_repairs(self, manifest, plan, project_dir, proof):
         if not (isinstance(manifest.extra, dict)
@@ -6399,6 +6411,18 @@ class StudioRunner:
                 stage_extra = self._extra_with_stage_role_guidance(
                     extra, plan.stack, spec, brief, manifest
                 )
+                correction_recall = getattr(self.memory, "relevant_corrections", None)
+                if callable(correction_recall):
+                    try:
+                        from skyn3t.intelligence.human_feedback import render_corrections
+
+                        stage_extra["user_corrections"] = render_corrections(
+                            await correction_recall(
+                                project=manifest.slug, stack=plan.stack, stage=spec.name
+                            )
+                        )
+                    except Exception as exc:  # noqa: BLE001 - preferences are advisory
+                        log.warning("corrections.recall_failed", error=type(exc).__name__)
 
                 # ---- best-of-N for the code stage (P0) -------------------
                 if spec.agent_type == "code" and plan.best_of_n > 1:
@@ -7260,13 +7284,9 @@ class StudioRunner:
                     manifest, project_dir, plan, proof, final_score, verdict,
                     posture=posture)
 
-            # Advisory web interaction check (web stacks): CLICK the served app
-            # the way a user does (ONE LLM-authored Playwright flow asserting
-            # BOTH the UI and the backend surface) — the "renders but isn't
-            # wired" catch liveness' GET probes cannot make. Recorded only; it
-            # never flips the verdict and soft-skips ($0) without Playwright or
-            # a non-stub LLM backend. Runs after liveness so it sees the
-            # repaired app. Never crashes the build.
+            # Exercise bounded required browser outcomes after liveness repairs.
+            # Missing tooling remains not_checked. Required executed defects are
+            # settled under release/lab posture after final source-freshness checks.
             await self._run_web_interact_gate(manifest, project_dir, plan)
 
             final_score, verdict = self._run_product_quality_gates(
@@ -7388,6 +7408,7 @@ class StudioRunner:
                 verdict,
                 float(getattr(self.settings, "degraded_proof_score_cap", 74.0)),
             )
+            verdict = self._settle_web_interact(manifest, project_dir, verdict, posture=posture)
             final_score = self._clamp_score_to_verdict(final_score, verdict)
             manifest.score = final_score
             manifest.verdict = verdict

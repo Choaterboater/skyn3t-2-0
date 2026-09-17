@@ -325,6 +325,11 @@ class Cortex:
         lab_policy = LabAutonomyPolicy.from_settings(self.settings)
         gates_on = bool(self.settings.approval_gates) and lab_policy.approval_gates_enabled
         is_gated_type = prop.type in GATED_TYPES
+        if getattr(self.settings, "autonomous_improvement", False):
+            if self._is_repo_scout_github_research(prop):
+                return "apply"
+            if prop.type in {ProposalType.FEATURE, ProposalType.CODE_PATCH}:
+                return "apply"
         # Lab autonomy explicitly permits GitHub *research* without a repetitive
         # approval click. Keep the exception narrow: only RepoScout proposals
         # with a canonical GitHub repo identity clear this branch. The INGEST
@@ -423,6 +428,11 @@ class Cortex:
         )
 
     def _auto_approval_reason(self, prop: Proposal) -> str:
+        if getattr(self.settings, "autonomous_improvement", False) and (
+            self._is_repo_scout_github_research(prop)
+            or prop.type in {ProposalType.FEATURE, ProposalType.CODE_PATCH}
+        ):
+            return "auto-approved (autonomous improvement; isolated verification required)"
         if self._is_lab_github_research(prop):
             return "auto-approved (lab autonomy GitHub research; external content quarantined)"
         return "auto-approved (safe)"
@@ -610,6 +620,13 @@ def build_cortex(
         agents=agents,
         ratchet_evaluator=ratchet_evaluator,
     )
+    if getattr(settings, "autonomous_improvement", False):
+        from skyn3t.cortex.automatic_candidates import AutomaticCandidates
+
+        automation = AutomaticCandidates(cortex, settings, skills)
+        cortex.handlers.register(ProposalType.FEATURE, automation.apply)
+        cortex.handlers.register(ProposalType.CODE_PATCH, automation.apply)
+        cortex.add_component(automation)
 
     # Re-attach prompt overrides approved in a prior process to the live agents,
     # so an evolved instruction carries across restarts (durable effect, not just

@@ -61,9 +61,8 @@ class HandlerRegistry:
         self.agents: dict[str, Any] = agents if agents is not None else {}
         # Where to persist prompt overrides so they survive a process restart.
         self.data_dir = Path(data_dir) if data_dir else None
-        # Optional RAG engine: when present, INGEST proposals actually fetch +
-        # ingest the source into the corpus (so recall improves future builds).
-        # When None we fall back to staging intent only (unchanged behaviour).
+        # Optional RAG engine. Autonomous advisory learning can retain bounded
+        # GitHub evidence through SkillLibrary alone; normal mode stages without RAG.
         self.rag = rag
         # Optional SkillLibrary: when present, an ingested repo also distills a
         # reusable, advisory skill (so approvals surface on the Skills page, not
@@ -236,16 +235,15 @@ class HandlerRegistry:
         return self._stage(proposal, "feature")
 
     async def _stage_ingest(self, proposal: Proposal) -> dict[str, Any]:
-        """Ingest the source into RAG when an engine is wired; else stage intent.
+        """Ingest with RAG, or with skills alone in autonomous improvement mode.
 
-        Strictly opt-in on ``self.rag``: with no engine this is byte-for-byte the
-        old staging behaviour. Offline / RAG errors degrade to a *retryable*
-        staged record (not ``applied: False``) so a transient failure doesn't
-        mark the proposal permanently FAILED.
+        Normal mode retains its staging fallback. Fetch failures remain retryable;
+        all external RAG evidence stays quarantined regardless of skill activation.
         """
         payload = proposal.payload or {}
         repo_or_url = payload.get("url") or payload.get("repo")
-        if self.rag is not None and repo_or_url:
+        learn_advisory = bool(getattr(self.settings, "autonomous_improvement", False))
+        if repo_or_url and (self.rag is not None or (learn_advisory and self.skills is not None)):
             result = await self._ingest_github(str(repo_or_url), proposal)
             if result is not None:
                 return result
@@ -272,10 +270,16 @@ class HandlerRegistry:
             staged = self._stage(proposal, "ingest")  # offline -> keep intent, retryable
             staged["ingested"] = 0
             staged["degraded"] = True
+            if bool(getattr(self.settings, "autonomous_improvement", False)):
+                staged["advisory_learning"] = []
+                staged["rag_status"] = "not_ingested"
+                staged["evidence_status"] = "unavailable"
             return staged
         url = evidence.source_url
         rag = self.rag
-        if rag is None:
+        learn_advisory = bool(getattr(self.settings, "autonomous_improvement", False))
+        skills_only_allowed = learn_advisory and self.skills is not None
+        if rag is None and not skills_only_allowed:
             return self._stage(proposal, "ingest")
 
         def _metadata(source_path: str, source_kind: str) -> dict[str, object]:
@@ -302,18 +306,23 @@ class HandlerRegistry:
                     raise
                 return rag.ingest_text(text, source=source, kind="github")
 
-        try:
-            ingested = _rag_ingest(
-                evidence.text,
-                url,
-                _metadata(evidence.source_path, "github_readme"),
-            )
-        except Exception as exc:  # noqa: BLE001 - retryable primary RAG failure
-            staged = self._stage(proposal, "ingest")
-            staged["ingested"] = 0
-            staged["degraded"] = True
-            staged["error"] = f"rag ingest failed: {exc}"
-            return staged
+        ingested = 0
+        rag_error: str | None = None
+        if rag is not None:
+            try:
+                ingested = _rag_ingest(
+                    evidence.text,
+                    url,
+                    _metadata(evidence.source_path, "github_readme"),
+                )
+            except Exception as exc:  # noqa: BLE001 - optional RAG may be unavailable
+                if not skills_only_allowed:
+                    staged = self._stage(proposal, "ingest")
+                    staged["ingested"] = 0
+                    staged["degraded"] = True
+                    staged["error"] = f"rag ingest failed: {exc}"
+                    return staged
+                rag_error = f"rag ingest failed: {exc}"
 
         # ``markdown_files`` is additive for backward-compatible custom
         # evidence providers. If it is absent/empty, preserve the historical
@@ -326,6 +335,8 @@ class HandlerRegistry:
 
         extra_ingest_errors: list[str] = []
         for source_path, document in documents:
+            if rag is None or rag_error is not None:
+                break
             if source_path.casefold() == evidence.source_path.casefold():
                 continue
             if not evidence.pinned_revision:
@@ -345,6 +356,7 @@ class HandlerRegistry:
 
         skill_slugs: list[str] = []
         skill_errors: list[str] = []
+        advisory_learning: list[dict[str, Any]] = []
         if self.skills is not None:
             from skyn3t.intelligence.skill_library import SkillProvenance
 
@@ -361,18 +373,38 @@ class HandlerRegistry:
                     source_path=source_path,
                     metadata={"skyn3t-source-kind": source_kind},
                 ).with_content_hash(document)
+                learning: dict[str, Any] | None = {} if learn_advisory else None
                 skill_slug, skill_error = self._distill_repo_skill(
                     url,
                     document,
                     proposal.payload or {},
                     provenance=provenance,
+                    learning=learning,
                 )
                 if skill_slug:
                     skill_slugs.append(skill_slug)
                 elif skill_error:
                     skill_errors.append(f"{source_path}: {skill_error}")
+                if learning is not None:
+                    if skill_error:
+                        learning.update({
+                            "source_path": source_path,
+                            "evaluation": {"status": "not_checked", "reason": skill_error},
+                            "activation": {"status": "not_activated"},
+                            "active": False,
+                            "advisory_only": True,
+                            "effectiveness": "not_checked",
+                        })
+                    advisory_learning.append(learning)
 
         result: dict[str, Any] = {"applied": True, "ingested": ingested, "source": url}
+        if learn_advisory:
+            result["advisory_learning"] = advisory_learning
+            result["rag_status"] = (
+                "unavailable" if rag is None else "failed" if rag_error else "ingested"
+            )
+            if rag_error:
+                result["rag_error"] = rag_error
         if len(skill_slugs) == 1:
             result["skill"] = skill_slugs[0]
         elif skill_slugs:
@@ -604,6 +636,7 @@ class HandlerRegistry:
         payload: dict[str, Any],
         *,
         provenance: Any | None = None,
+        learning: dict[str, Any] | None = None,
     ) -> tuple[str | None, str | None]:
         """Turn an ingested repo into an advisory Skill.
 
@@ -683,22 +716,62 @@ class HandlerRegistry:
                 metadata=metadata,
                 compatibility=base.compatibility,
             )
-            self.skills.add(
-                title=(
-                    f"Patterns: {full}"
-                    if source_name in {"readme", "readme.md"}
-                    else f"Patterns: {full} — {source_path_hint}"
-                ),
-                body=body,
-                stack=stack,
-                tags=tags,
-                source="github-distilled",
-                slug=slug,
-                description=(
-                    desc or f"Concrete build/run commands and layout patterns distilled from {full}"
-                ),
-                provenance=skill_provenance,
-            )
+            unchanged = False
+            if learning is not None:
+                # Retirements and prior lifecycle decisions remain authoritative.
+                # An unchanged import may be evaluated once only if its durable
+                # journal is empty, including no rollback before first evaluation.
+                if self.skills.is_retired(slug):
+                    return None, "skill is retired"
+                previous = self.skills.get(slug)
+                if (
+                    previous is not None
+                    and previous.provenance is not None
+                    and previous.provenance.content_hash == skill_provenance.content_hash
+                ):
+                    unchanged = True
+                    if self.skills._read_capability_records(slug):
+                        learning.update(self.skills.capability_status(slug))
+                        learning["evaluation"] = {
+                            "status": "skipped", "reason": "unchanged_content",
+                        }
+                        learning["activation"] = {"status": "preserved"}
+                        return slug, None
+            if not unchanged:
+                self.skills.add(
+                    title=(
+                        f"Patterns: {full}"
+                        if source_name in {"readme", "readme.md"}
+                        else f"Patterns: {full} — {source_path_hint}"
+                    ),
+                    body=body,
+                    stack=stack,
+                    tags=tags,
+                    source="github-distilled",
+                    slug=slug,
+                    description=(
+                        desc or f"Concrete build/run commands and layout patterns distilled from {full}"
+                    ),
+                    provenance=skill_provenance,
+                )
+            if learning is not None:
+                learning.update({
+                    "slug": slug, "active": False, "advisory_only": True,
+                    "effectiveness": "not_checked",
+                    "evaluation": {"status": "not_checked"},
+                    "activation": {"status": "not_activated"},
+                })
+                try:
+                    evaluation = self.skills.evaluate_candidate(slug)
+                    learning["evaluation"] = evaluation
+                    if evaluation["status"] == "passed":
+                        activated = self.skills.activate_candidate(slug)
+                        learning["activation"] = {
+                            "status": "activated" if activated is not None else "not_activated",
+                        }
+                    learning.update(self.skills.capability_status(slug))
+                except Exception as exc:  # noqa: BLE001 - candidate stays quarantined
+                    learning["activation"] = {"status": "not_activated", "error": str(exc)}
             return slug, None
         except Exception as exc:  # noqa: BLE001 - distillation is best-effort
             return None, f"distillation failed: {exc}"

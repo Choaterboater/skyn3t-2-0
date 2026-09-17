@@ -2592,7 +2592,7 @@ async def assemble_app_state(event_bus: Any | None = None) -> Any:
     # SelfTuningEngine; start() spawns the component loops on this loop.
     cortex = None
     try:
-        if settings.autonomous_learning or settings.autonomous_builds:
+        if settings.autonomous_learning or settings.autonomous_builds or settings.autonomous_improvement:
             from skyn3t.cortex.bootstrap import build_cortex
 
             cortex = build_cortex(

@@ -36,6 +36,7 @@ from skyn3t.working_diff import working_diff
 
 _OUTPUT_LIMIT = 64 * 1024
 _CANDIDATE_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+_COMMIT_SHA_RE = re.compile(r"^(?:[a-f0-9]{40}|[a-f0-9]{64})$")
 _SAFE_BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _SHELL_EXECUTABLES = frozenset(
     {
@@ -89,6 +90,7 @@ _DEFAULT_VERIFICATION_EXECUTABLES = frozenset(
 # Narrow positive scope.  Deny rules below always win.
 _ALLOWED_PREFIXES = (
     "docs/",
+    "skyn3t/agents/",
     "skyn3t/cortex/",
     "skyn3t/orchestration/",
     "skyn3t/studio/",
@@ -103,8 +105,14 @@ _ALLOWED_FILES = frozenset(
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "README.md",
-        "skyn3t/agents/_scaffold.py",
         "skyn3t/web/ui/index.html",
+    }
+)
+_CONTROL_PLANE_PATHS = frozenset(
+    {
+        "skyn3t/cortex/candidate_engine.py",
+        "skyn3t/cortex/candidate_service.py",
+        "skyn3t/cortex/bootstrap.py",
     }
 )
 
@@ -204,6 +212,7 @@ class CandidateStatus(StrEnum):
     STALE_BASE = "stale_base"
     MERGE_FAILED = "merge_failed"
     MERGED = "merged"
+    ROLLED_BACK = "rolled_back"
     ERROR = "error"
 
 
@@ -449,6 +458,13 @@ class CandidateReport:
     errors: list[str] = field(default_factory=list)
     worktree_preserved: bool = False
     merged: bool = False
+    verified_tree_sha: str = ""
+    merge_integrity: str = "not_checked"
+    rollback_status: str = "not_requested"
+    rollback_sha: str = ""
+    rollback_reason: str = ""
+    rollback_error: str = ""
+    rollback_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -474,6 +490,15 @@ class CandidateReport:
             "errors": list(self.errors),
             "worktree_preserved": self.worktree_preserved,
             "merged": self.merged,
+            "review_path": str(Path(self.report_path).with_suffix(".md")),
+            "manual_publishing_required": True,
+            "verified_tree_sha": self.verified_tree_sha,
+            "merge_integrity": self.merge_integrity,
+            "rollback_status": self.rollback_status,
+            "rollback_sha": self.rollback_sha,
+            "rollback_reason": self.rollback_reason,
+            "rollback_error": self.rollback_error,
+            "rollback_at": self.rollback_at,
         }
 
 
@@ -672,6 +697,12 @@ class CortexCandidateEngine:
                 report.errors.append("verification commands changed the candidate under test")
                 return self._finish(report, created=created)
 
+            report.verified_tree_sha = self._git_output(
+                ["rev-parse", f"{report.candidate_sha}^{{tree}}"],
+                cwd=worktree,
+                report=report,
+            )
+
             current_main = self._git_output(
                 ["rev-parse", "--verify", f"refs/heads/{self.policy.main_branch}"],
                 cwd=self.repo_path,
@@ -682,6 +713,10 @@ class CortexCandidateEngine:
                 report.status = CandidateStatus.STALE_BASE
                 report.errors.append("main advanced while the candidate was being verified")
                 return self._finish(report, created=created)
+
+            # Publish the complete verification evidence before touching main.
+            report.status = CandidateStatus.READY
+            self._persist(report)
 
             if not self.policy.auto_merge:
                 report.status = CandidateStatus.READY
@@ -719,6 +754,20 @@ class CortexCandidateEngine:
                 )
                 report.merged = True
                 report.status = CandidateStatus.MERGED
+                self._persist(report)
+                committed_tree = self._git_output(
+                    ["rev-parse", f"{report.after_sha}^{{tree}}"],
+                    cwd=merge_worktree,
+                    report=report,
+                    phase="merge_integrity",
+                )
+                if committed_tree != report.verified_tree_sha:
+                    report.merge_integrity = "failed"
+                    report.errors.append("committed main tree differs from the verified candidate")
+                    self._revert_merge(report, merge_worktree, reason="post-merge integrity failed")
+                    report.status = CandidateStatus.MERGE_FAILED
+                else:
+                    report.merge_integrity = "passed"
             except Exception as exc:  # noqa: BLE001 - merge failure is a durable result
                 report.status = CandidateStatus.MERGE_FAILED
                 report.errors.append(f"merge failed: {exc}")
@@ -730,6 +779,196 @@ class CortexCandidateEngine:
             report.status = CandidateStatus.ERROR
             report.errors.append(str(exc))
             return self._finish(report, created=created)
+
+    def rollback_candidate(
+        self, candidate_id: str, *, reason: str = "operator rollback"
+    ) -> CandidateReport:
+        """Revert an exact recorded main tip; never reset history or contact a remote.
+
+        Only the generated JSON in ``reports_dir`` authorizes rollback. Caller
+        supplied report objects and paths are not accepted. Refusals after loading
+        a valid report are durable and raise ``CandidateSafetyError``.
+        """
+        if not isinstance(candidate_id, str) or not _CANDIDATE_ID_RE.fullmatch(candidate_id):
+            raise CandidateSafetyError("invalid candidate id")
+        reason = _validate_commit_title(reason)
+        report = self._load_rollback_report(candidate_id)
+        worktree: Path | None = None
+        temporary = False
+        try:
+            if report.rollback_status == "reverted":
+                raise CandidateSafetyError("candidate has already been rolled back")
+            if report.status != CandidateStatus.MERGED or not report.merged:
+                raise CandidateSafetyError("candidate report does not authorize a merged candidate")
+            candidate_tree = self._git_output(
+                ["rev-parse", f"{report.candidate_sha}^{{tree}}"],
+                cwd=self.repo_path, report=report, phase="rollback",
+            )
+            merged_tree = self._git_output(
+                ["rev-parse", f"{report.after_sha}^{{tree}}"],
+                cwd=self.repo_path, report=report, phase="rollback",
+            )
+            if merged_tree != candidate_tree or (
+                report.verified_tree_sha and candidate_tree != report.verified_tree_sha
+            ):
+                raise CandidateSafetyError("recorded merge does not match the verified tree")
+            self._assert_rollback_clean(self.repo_path, report)
+            worktree, temporary = self._main_worktree(report)
+            self._revert_merge(report, worktree, reason=reason)
+            report.status = CandidateStatus.ROLLED_BACK
+            return report
+        except Exception as exc:
+            if report.rollback_status not in {"reverted", "failed"}:
+                report.rollback_status = "refused"
+                report.rollback_reason = reason
+                report.rollback_error = str(exc)
+                report.rollback_at = _utc_now()
+            if isinstance(exc, CandidateSafetyError):
+                raise
+            raise CandidateSafetyError(f"rollback failed: {exc}") from exc
+        finally:
+            if temporary and worktree is not None:
+                self._remove_temporary_main_worktree(worktree, report)
+            self._persist(report)
+
+    def _load_rollback_report(self, candidate_id: str) -> CandidateReport:
+        path = self.reports_dir / f"{candidate_id}.json"
+        if path.is_symlink() or path.resolve(strict=False) != path:
+            raise CandidateSafetyError("rollback report must be a local regular file")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+                raise ValueError("unsupported report schema")
+            # These fields are derived at serialization, never rollback authority.
+            payload.pop("review_path", None)
+            payload.pop("manual_publishing_required", None)
+            payload["status"] = CandidateStatus(payload["status"])
+            payload["commands"] = [
+                CommandEvidence(**{**row, "argv": tuple(row["argv"])})
+                for row in payload["commands"]
+            ]
+            report = CandidateReport(**payload)
+            if (
+                report.candidate_id != candidate_id
+                or report.repo_path != str(self.repo_path)
+                or report.main_branch != self.policy.main_branch
+                or report.report_path != str(path)
+                or report.candidate_branch != f"{self.policy.candidate_branch_prefix}/{candidate_id}"
+                or report.worktree_path != str(self._candidate_worktree(candidate_id))
+                or report.merge_strategy not in {"ff-only", "squash"}
+                or report.auto_merge_enabled is not True
+                or report.merged is not True
+            ):
+                raise ValueError("report identity or merge authority does not match this engine")
+            for sha in (report.before_sha, report.candidate_sha, report.after_sha):
+                if not isinstance(sha, str) or not _COMMIT_SHA_RE.fullmatch(sha):
+                    raise ValueError("report contains an invalid commit SHA")
+            proof = [command for command in report.commands if command.phase == "verification"]
+            if not proof or any(
+                command.passed is not True or command.returncode != 0 or command.timed_out
+                for command in proof
+            ):
+                raise ValueError("report lacks successful verification evidence")
+            if not any(
+                command.phase == "merge" and command.passed is True
+                and command.returncode == 0 and not command.timed_out
+                and (
+                    command.argv == ("git", "merge", "--ff-only", report.candidate_sha)
+                    if report.merge_strategy == "ff-only"
+                    else command.argv[:6] == (
+                        "git", "-c", "user.name=SkyN3t Cortex", "-c",
+                        "user.email=cortex@localhost", "commit",
+                    )
+                )
+                for command in report.commands
+            ):
+                raise ValueError("report lacks successful local merge evidence")
+            if not report.changed_paths or self.validate_changed_paths(report.changed_paths):
+                raise ValueError("report contains unapproved changed paths")
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            raise CandidateSafetyError(f"invalid authoritative rollback report: {exc}") from exc
+        return report
+
+    def _assert_rollback_clean(self, worktree: Path, report: CandidateReport) -> None:
+        if self._git_output(
+            ["status", "--porcelain", "--untracked-files=all"],
+            cwd=worktree, report=report, phase="rollback",
+        ):
+            raise CandidateSafetyError("rollback refuses a dirty working tree")
+
+    def _revert_merge(self, report: CandidateReport, worktree: Path, *, reason: str) -> None:
+        report.rollback_reason = reason
+        report.rollback_error = ""
+        report.rollback_at = _utc_now()
+        attempted = False
+        try:
+            self._assert_rollback_clean(worktree, report)
+            branch = self._git_output(
+                ["symbolic-ref", "--short", "HEAD"], cwd=worktree, report=report, phase="rollback",
+            )
+            tip = self._git_output(
+                ["rev-parse", "HEAD"], cwd=worktree, report=report, phase="rollback",
+            )
+            main_tip = self._git_output(
+                ["rev-parse", "--verify", f"refs/heads/{self.policy.main_branch}"],
+                cwd=worktree, report=report, phase="rollback",
+            )
+            if branch != self.policy.main_branch or tip != report.after_sha or main_tip != tip:
+                raise CandidateSafetyError("rollback refuses main tip changes or later commits")
+            for sha in (report.candidate_sha, report.after_sha):
+                parents = self._git_output(
+                    ["rev-list", "--parents", "-n", "1", sha],
+                    cwd=worktree, report=report, phase="rollback",
+                ).split()
+                if parents != [sha, report.before_sha]:
+                    raise CandidateSafetyError("rollback requires exactly the engine's own single commit")
+            if report.merge_strategy == "ff-only" and report.after_sha != report.candidate_sha:
+                raise CandidateSafetyError("recorded fast-forward is not the verified candidate")
+            paths = self._git_paths(
+                ["diff", "--name-only", "-z", report.before_sha, report.candidate_sha],
+                cwd=worktree, report=report, phase="rollback",
+            )
+            if paths != set(report.changed_paths) or self.validate_changed_paths(paths):
+                raise CandidateSafetyError("recorded candidate paths do not match git history")
+            report.rollback_status = "reverting"
+            self._persist(report)
+            # Recheck immediately before the only history-changing operation.
+            self._assert_rollback_clean(worktree, report)
+            if self._git_output(
+                ["rev-parse", "HEAD"], cwd=worktree, report=report, phase="rollback",
+            ) != report.after_sha:
+                raise CandidateSafetyError("main advanced before rollback")
+            attempted = True
+            self._git(
+                ["-c", "user.name=SkyN3t Cortex", "-c", "user.email=cortex@localhost",
+                 "revert", "--no-edit", report.after_sha],
+                cwd=worktree, report=report, phase="rollback",
+            )
+            report.rollback_sha = self._git_output(
+                ["rev-parse", "HEAD"], cwd=worktree, report=report, phase="rollback",
+            )
+            parents = self._git_output(
+                ["rev-list", "--parents", "-n", "1", report.rollback_sha],
+                cwd=worktree, report=report, phase="rollback",
+            ).split()
+            restored = self._git_output(
+                ["rev-parse", f"{report.rollback_sha}^{{tree}}"],
+                cwd=worktree, report=report, phase="rollback",
+            )
+            before_tree = self._git_output(
+                ["rev-parse", f"{report.before_sha}^{{tree}}"],
+                cwd=worktree, report=report, phase="rollback",
+            )
+            if parents != [report.rollback_sha, report.after_sha] or restored != before_tree:
+                raise CandidateSafetyError("revert commit did not restore the recorded base tree")
+            self._assert_rollback_clean(worktree, report)
+            report.rollback_status = "reverted"
+        except Exception as exc:
+            report.rollback_status = "failed" if attempted else "refused"
+            report.rollback_error = str(exc)
+            raise
+        finally:
+            self._persist(report)
 
     def validate_changed_paths(
         self,
@@ -1113,11 +1352,21 @@ class CortexCandidateEngine:
         return result
 
     def _persist(self, report: CandidateReport) -> None:
-        path = Path(report.report_path)
-        if path.parent.resolve(strict=False) != self.reports_dir:
+        path = self.reports_dir / f"{report.candidate_id}.json"
+        if (
+            not _CANDIDATE_ID_RE.fullmatch(report.candidate_id)
+            or Path(report.report_path) != path
+            or path.is_symlink()
+            or path.with_suffix(".md").is_symlink()
+        ):
             raise CandidateSafetyError("report path escaped configured reports directory")
-        temp = path.with_suffix(f"{path.suffix}.{uuid.uuid4().hex}.tmp")
         payload = json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n"
+        self._atomic_report_write(path, payload)
+        self._atomic_report_write(path.with_suffix(".md"), self._review_markdown(report))
+
+    @staticmethod
+    def _atomic_report_write(path: Path, payload: str) -> None:
+        temp = path.with_suffix(f"{path.suffix}.{uuid.uuid4().hex}.tmp")
         try:
             with temp.open("x", encoding="utf-8") as handle:
                 handle.write(payload)
@@ -1126,6 +1375,41 @@ class CortexCandidateEngine:
             temp.replace(path)
         finally:
             temp.unlink(missing_ok=True)
+
+    @staticmethod
+    def _review_markdown(report: CandidateReport) -> str:
+        lines = [
+            f"# Local candidate review: {report.candidate_id}",
+            "",
+            "Local review record only; no GitHub pull request was created.",
+            "Remote publishing requires manual operator action. This engine never pushes.",
+            "",
+            f"- Status: {report.status.value}",
+            f"- Before SHA: {report.before_sha or 'not recorded'}",
+            f"- Candidate SHA: {report.candidate_sha or 'not recorded'}",
+            f"- After SHA (integration): {report.after_sha or 'not recorded'}",
+            f"- Verified tree SHA: {report.verified_tree_sha or 'not recorded'}",
+            f"- Post-merge integrity: {report.merge_integrity}",
+            f"- Rollback outcome: {report.rollback_status}",
+            f"- Rollback SHA: {report.rollback_sha or 'not recorded'}",
+            f"- Rollback time: {report.rollback_at or 'not requested'}",
+            "",
+            "## Changed paths",
+            "",
+        ]
+        lines.extend(f"    {json.dumps(path)}" for path in report.changed_paths)
+        lines.extend(["", "## Verification evidence", ""])
+        for command in report.commands:
+            if command.phase not in {"verification", "merge_integrity", "rollback"}:
+                continue
+            # Indented JSON treats command output as data, not Markdown directives.
+            lines.extend("    " + line for line in json.dumps(command.to_dict(), indent=2).splitlines())
+            lines.append("")
+        lines.extend(["## Rollback details and errors", ""])
+        for value in (report.rollback_reason, report.rollback_error, *report.errors):
+            if value:
+                lines.append("    " + json.dumps(value))
+        return "\n".join(lines) + "\n"
 
 
 def _changed_path_rejection(raw: str) -> str | None:
@@ -1161,6 +1445,8 @@ def _changed_path_rejection(raw: str) -> str | None:
         return "secret_material"
 
     normalized = path.as_posix()
+    if normalized.lower() in _CONTROL_PLANE_PATHS:
+        return "automation_control_plane"
     if normalized in _ALLOWED_FILES or normalized.startswith(_ALLOWED_PREFIXES):
         return None
     return "outside_allowlist"

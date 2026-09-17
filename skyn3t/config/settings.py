@@ -742,6 +742,9 @@ class Settings(BaseSettings):
     # ---- Autonomy --------------------------------------------------------
     autonomous_builds: bool = False
     autonomous_learning: bool = True
+    # One-time consent for scheduled research, advisory activation, and isolated
+    # local code candidates. Publishing remains manual; proof is never bypassed.
+    autonomous_improvement: bool = False
     approval_gates: bool = True
     cortex_auto_approve_safe: bool = True
     # Personal-lab profile: remove repetitive approval and budget friction for

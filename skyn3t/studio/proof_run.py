@@ -27,6 +27,10 @@ from html import escape, unescape
 from pathlib import Path
 from typing import Any
 
+from skyn3t.node_package_manager import (
+    existing_node_install_args as _existing_node_install_args,
+)
+from skyn3t.node_package_manager import node_package_manager
 from skyn3t.npm_utils import (
     discard_foreign_node_modules,
     invalidate_npm_build,
@@ -5548,45 +5552,8 @@ def _node_package_manager(
 ) -> tuple[str, str | None]:
     manager = "npm"
     if cmd_ctx is not None and cmd_ctx.existing_project:
-        package = json.loads((pdir / "package.json").read_text(encoding="utf-8"))
-        declared = package.get("packageManager", "") if isinstance(package, dict) else ""
-        if not isinstance(declared, str):
-            raise ValueError("packageManager must be a string")
-        if declared:
-            manager = declared.split("@", 1)[0]
-        else:
-            locked = [
-                name for name, files in (
-                    ("npm", ("package-lock.json", "npm-shrinkwrap.json")),
-                    ("pnpm", ("pnpm-lock.yaml",)),
-                    ("yarn", ("yarn.lock",)),
-                ) if any((pdir / file).is_file() for file in files)
-            ]
-            if len(locked) > 1:
-                raise ValueError("Conflicting lockfiles: declare packageManager before improving this project")
-            manager = locked[0] if locked else "npm"
-        if manager not in {"npm", "pnpm", "yarn"}:
-            raise ValueError(f"Automatic proof does not support package manager {manager!r}")
+        manager = node_package_manager(pdir)
     return manager, manager if _use_container_command_names(cmd_ctx) else shutil.which(manager)
-
-
-def _existing_node_install_args(pdir: Path, manager: str, command: str) -> list[str]:
-    if manager == "npm":
-        locked = any((pdir / name).is_file() for name in ("package-lock.json", "npm-shrinkwrap.json"))
-        return [
-            command, "ci" if locked else "install",
-            "--ignore-scripts", "--no-audit", "--no-fund",
-            *([] if locked else ["--package-lock=false"]),
-        ]
-    if manager == "pnpm":
-        return [command, "install", "--frozen-lockfile", "--ignore-scripts"]
-    package = json.loads((pdir / "package.json").read_text(encoding="utf-8"))
-    declared = str(package.get("packageManager", ""))
-    modern = bool(re.match(r"yarn@(?:[2-9]|\d{2,})\.", declared)) or (pdir / ".yarnrc.yml").is_file()
-    return (
-        [command, "install", "--immutable"] if modern
-        else [command, "install", "--frozen-lockfile", "--ignore-scripts"]
-    )
 
 
 def _prepare_node_dependencies(

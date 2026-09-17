@@ -978,7 +978,16 @@ class PreviewSupervisor:
                 },
             )
 
+        if spec.error:
+            return self._failure(
+                pdir, port=host_port, kind=spec.kind, reason=spec.error,
+            )
         if spec.kind == "node":
+            if Path(spec.cmd[0]).stem != "npm":
+                return self._failure(
+                    pdir, port=host_port, kind=spec.kind,
+                    reason="Isolated Node previews currently support npm only",
+                )
             lockfile = pdir / "package-lock.json"
             if lockfile.is_symlink() or not lockfile.is_file():
                 return self._failure(

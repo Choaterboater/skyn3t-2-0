@@ -324,6 +324,51 @@ with **10 skipped** in 532.86 seconds, with Ruff clean on all four changed
 Python files. The same optional Docker/local-fallback limitations noted for
 the first batch apply. No remote push or deployment was performed.
 
+## Follow-up: local preview package-manager parity
+
+Inspection found a separate reliability gap: imported proof selected npm, pnpm,
+or Yarn from `packageManager` and lockfiles, while local preview launch and dependency
+preparation always used npm. Preview now shares the resolver/install-policy
+helper with imported proof: a declaration takes precedence, otherwise one lock
+family is required (including npm-shrinkwrap.json). Ambiguous locks, malformed
+preview declarations, and missing selected executables fail the Node preview,
+without falling through to static/Python serving. Pinned static previews remain
+static.
+
+npm preview retains current-receipt reuse and ci-to-install reconciliation.
+pnpm and Yarn use frozen/immutable preparation without npm fallback or npm
+receipts; unsupported reuse layouts honestly prepare again. Yarn PnP does not
+acquire a synthetic node_modules directory. Install lifecycle scripts are
+disabled, including modern Yarn's environment policy. Preview does not install
+manager CLIs; Corepack network acquisition is disabled. Existing generated and
+imported proof policies and the verified build-cache implementation are retained.
+
+The Union Alpha run's outer proof initially reported **5,291 passed, 10 skipped,
+one failed**: an error run-spec dropped safe environment and missing-secret
+metadata. Safe candidate recovery retained four files; the omitted proof helper
+extraction was reconstructed without bypassing the archive's content filter.
+Error specs now retain filtered metadata. Executable availability is checked
+when starting a local preview, not during shared content detection, so Docker
+previews do not require npm on the host.
+
+Isolated production previews remain npm-only. They now explicitly reject
+invalid specs and unsupported managers instead of trying an empty command or
+silently changing a pnpm/Yarn command to npm. This pass does not add pnpm/Yarn
+support to the Docker preview backend.
+
+Final targeted verification passed **246 tests**, covering preview managers,
+secret filtering, imported proof, dependency receipts, Docker supervision, and
+preview fingerprints. Ruff and whitespace checks passed. The full suite was
+not rerun after these final corrections; the earlier full-suite results above
+apply only to their respective snapshots.
+
+Real, dependency-free local fixtures launched through `AppRunner` with installed
+npm 11.12.1 and pnpm 10.33.0. Both returned HTTP 200 on loopback, received the
+correct port/host arguments, and did not receive a synthetic provider secret.
+Both servers were stopped and their logs cleaned up. No packages or manager
+CLIs were downloaded. Yarn policy is covered by deterministic tests, not a
+live Yarn run. These observations are not an end-to-end speed measurement.
+
 ## Sources
 
 Upstream links are commit-pinned; local links identify the inspected absolute

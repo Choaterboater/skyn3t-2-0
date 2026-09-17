@@ -29,9 +29,11 @@ from typing import Any
 
 from skyn3t.npm_utils import (
     discard_foreign_node_modules,
+    invalidate_npm_build,
     mark_npm_build_current,
     mark_npm_install_current,
     npm_build_current,
+    npm_build_fingerprint,
     npm_docker_install_stamp_path,
     npm_env,
     npm_install_args,
@@ -5765,9 +5767,15 @@ def _run_node_build(
         return (True, False, install_summary)
 
     summaries = [install_summary]
-    if npm_build_current(pdir, build_cmd):
+    # Receipts describe local npm production builds only. Container toolchain
+    # identity and other managers need their own contract before sharing them.
+    cacheable = build_cmd == "build" and manager == "npm" and not use_container_names
+    if cacheable and npm_build_current(pdir, build_cmd):
         summaries.append(f"npm run {build_cmd} skipped (build current)")
     else:
+        if not invalidate_npm_build(pdir):
+            return (True, False, "cannot invalidate the previous build receipt")
+        build_inputs = npm_build_fingerprint(pdir, build_cmd) if cacheable else ""
         bld = _run_proof_command(
             cmd_ctx,
             [npm_cmd, "run", build_cmd],
@@ -5801,7 +5809,8 @@ def _run_node_build(
                 if not retry.timed_out and retry.returncode == 0:
                     if findings is not None:
                         findings["type_check"] = _distill_build_errors(out)
-                    mark_npm_build_current(pdir, build_cmd)
+                    # Compile-only success does not certify the failed declared
+                    # build script and must never mint a reusable build receipt.
                     summaries.append(
                         retry_out[-300:] if retry_out else f"{compile_only} ok"
                     )
@@ -5817,7 +5826,8 @@ def _run_node_build(
             # Surface file/symbol diagnostics so the fix-loop targets the real
             # compiler cause instead of receiving an unhelpful output tail.
             return (True, False, _distill_build_errors(out))
-        mark_npm_build_current(pdir, build_cmd)
+        if build_inputs and build_inputs == npm_build_fingerprint(pdir, build_cmd):
+            mark_npm_build_current(pdir, build_cmd)
         summaries.append(out[-300:] if out else f"npm run {build_cmd} ok")
 
     # A production build can transpile while strict framework/TypeScript checks

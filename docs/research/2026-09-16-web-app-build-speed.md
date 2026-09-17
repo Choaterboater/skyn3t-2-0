@@ -267,6 +267,63 @@ reported rather than represented as Docker isolation. This verified first batch
 is eligible for a local-only commit; the production-build-cache pass remains
 separate work until its own tests pass.
 
+## Recommendation 2: safe production-build reuse
+
+The second Union Alpha pass passed SkyN3t's own full proof and delivered five
+changed files to its staging project. Its implementation replaces source-only
+build stamps with version 2 receipts binding the declared build command,
+deterministically hashed inputs, and the paths/content of actual output files.
+Legacy receipts, missing/tampered output, unreadable inputs, and unrecognized
+build layouts miss the cache rather than certify an unproven build.
+
+The cache deliberately supports only recognized default Vite/Astro `dist`
+layouts and Next `.next` layouts, including supported checker-then-build scripts.
+Unknown scripts, custom output/root/environment configuration, lifecycle hooks,
+container builds, and other package managers still run normal proof without
+reusing these local npm receipts. Typecheck/check-only runs and compile-only
+fallbacks cannot be stamped as successful full production builds. Separately
+declared validation commands still execute on cache hits.
+
+Additional local regressions exposed and fixed three integration gaps before
+acceptance: runner-owned proof metadata must not force another build; allowed
+process-environment changes must invalidate the build; and inability to remove
+an old receipt must be reported before a rebuild begins. The implementation
+reuses the canonical root-only proof-output exclusions, preserving authored
+lookalike paths and design contracts as inputs. Environment-file bytes and the
+filtered npm process environment contribute only to an aggregate hash; their
+values are not stored in receipts or printed.
+
+### Real local Vite measurement
+
+A small HTML/JavaScript website was built through the real
+`_run_node_build()` command path using the already-installed Vite 8.1.4 dependency
+tree. No packages were downloaded. Timings below include the proof build helper,
+not just the compiler. This fixture is intentionally small and is **not** an
+end-to-end SkyN3t generation benchmark.
+
+| Step | Elapsed seconds | Cumulative actual build commands |
+| --- | ---: | ---: |
+| First real build | 1.2955 | 1 |
+| Three unchanged checks | 0.0031 / 0.0031 / 0.0026 | 1 |
+| After writing proof metadata | 0.0027 | 1 |
+| Changed static image | 0.4728 | 2 |
+| Changed allowed build environment | 0.4593 | 3 |
+| Deleted compiled HTML | 0.4475 | 4 |
+| Unchanged check after rebuilding | 0.0033 | 4 |
+
+The image change appeared in the built artifact; the environment change appeared
+in the actual JavaScript bundle; deleted HTML was regenerated. Valid unchanged
+checks issued zero build commands. These observations support reuse of this
+specific build step, not a percentage speedup claim for the entire factory.
+
+The measurement script and JSON results are retained in the session artifacts
+as `measure-vite-cache.py` and `real-vite-cache-measurements.json`. The focused
+local, imported-project, advisory-check, and container-environment regression
+selection passed 113 tests. Final full-suite verification passed **5,249 tests**
+with **10 skipped** in 532.86 seconds, with Ruff clean on all four changed
+Python files. The same optional Docker/local-fallback limitations noted for
+the first batch apply. No remote push or deployment was performed.
+
 ## Sources
 
 Upstream links are commit-pinned; local links identify the inspected absolute

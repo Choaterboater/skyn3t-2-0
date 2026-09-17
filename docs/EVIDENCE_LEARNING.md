@@ -207,6 +207,14 @@ diagnostic carries the saved path through `ImproveEngine` and the CLI. A raised
 exception with actual source changes counts as execution, so it cannot silently
 restart as a context-free per-file rewrite.
 
+Completed generation can also be rejected by the later proof step. In that case
+`ImproveEngine` retains the reported changed text files before removing the
+temporary worktree, and exposes the receipt as `detail.candidate_retention`.
+The original project remains untouched and the result still fails proof.
+This allows inspection and repair of useful generated work instead of requiring
+the model to generate it again. Storage failure is reported separately and never
+replaces the proof failure.
+
 Receipts live under `<data_dir>/.skyn3t-recovery/improve_candidates/`, separate
 from normal boot checkpoints and excluded from authored-source snapshots and
 delivery copies. Clean delivery preserves existing local recovery state.

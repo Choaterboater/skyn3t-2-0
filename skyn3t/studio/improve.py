@@ -27,10 +27,11 @@ except ImportError:  # pragma: no cover - Windows uses the in-process lock
 
 import structlog
 
-from skyn3t.config.settings import get_settings
+from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus, EventType
 from skyn3t.intelligence.learning_loop import LearningLoop
+from skyn3t.persistence.candidate_archive import CandidateArchive
 from skyn3t.rag.repo_map import build_repo_context_pack
 from skyn3t.security.secrets import SecretsStore, scrub_text
 from skyn3t.studio.design_tokens import read_design_md
@@ -798,6 +799,7 @@ class ImproveEngine:
         rollback_confirmed = False
         preserve_recovery_artifacts = False
         context_pack_summary: dict[str, object] = {}
+        candidate_archive: CandidateArchive | None = None
         try:
             try:
                 async with asyncio.timeout(improve_agentic_timeout) as _project_lock_timeout:
@@ -901,6 +903,13 @@ class ImproveEngine:
             )
             # Seed the worktree with the existing project files.
             merge_back(str(project_dir), wt.dir, overwrite=True, clean=False)
+            if isinstance(self.settings, Settings):
+                try:
+                    candidate_archive = await asyncio.to_thread(
+                        CandidateArchive, Path(wt.dir), self.settings,
+                    )
+                except (OSError, RuntimeError) as exc:
+                    _log.warning("improve.candidate_archive_unavailable", error=type(exc).__name__)
             context_pack = await asyncio.to_thread(
                 build_repo_context_pack,
                 wt.dir,
@@ -1198,6 +1207,22 @@ class ImproveEngine:
                     "repo_context_pack": context_pack_summary,
                     "layout_profile": layout_profile,
                 }
+                if files_changed:
+                    try:
+                        retention = (
+                            await asyncio.to_thread(
+                                candidate_archive.save, {},
+                                dict.fromkeys(files_changed),
+                            )
+                            if candidate_archive is not None
+                            else {"status": "unavailable", "reason": "archive_unavailable"}
+                        )
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        retention = {"status": "unavailable", "reason": type(exc).__name__}
+                        _log.warning(
+                            "improve.candidate_retention_failed", error=type(exc).__name__,
+                        )
+                    failure_detail["candidate_retention"] = retention
                 if skipped:
                     failure_detail["skipped"] = skipped
                 outcome = ImproveOutcome(

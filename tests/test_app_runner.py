@@ -6,7 +6,9 @@ import json
 import socket
 import urllib.request
 
-from skyn3t.npm_utils import npm_install_current
+import pytest
+
+from skyn3t.npm_utils import mark_npm_install_current, npm_install_current
 from skyn3t.studio import app_runner as _app_runner
 from skyn3t.studio.app_runner import AppRunner, build_run_spec, ensure_node_deps, free_port
 
@@ -178,19 +180,26 @@ HTTPServer(('127.0.0.1', int(os.environ['PORT'])), Handler).serve_forever()
         runner.stop(app)
 
 
-def test_ensure_node_deps_skips_when_node_modules_present(tmp_path):
+def test_ensure_node_deps_skips_when_receipt_current(tmp_path, monkeypatch):
     (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
     (tmp_path / "node_modules").mkdir()
+    mark_npm_install_current(tmp_path)
+    # A cache hit does not even require npm on PATH.
+    monkeypatch.setattr(_app_runner.shutil, "which", lambda cmd: None)
     calls = []
     ok, info = ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd) or (True, {}))
     assert ok is True
-    assert calls == []  # already installed -> never shells out to npm
+    assert info == {"skipped": "dependencies current"}
+    assert calls == []
 
 
-def test_ensure_node_deps_reinstalls_docker_node_modules(tmp_path):
+def test_ensure_node_deps_reinstalls_docker_node_modules(tmp_path, monkeypatch):
+    monkeypatch.setattr(_app_runner.shutil, "which", lambda cmd: "npm")
+    monkeypatch.setenv("SKYN3T_NPM_CACHE_DIR", str(tmp_path / "npm-cache"))
     (tmp_path / "package.json").write_text(json.dumps({"scripts": {"dev": "vite"}}))
     nm = tmp_path / "node_modules"
     nm.mkdir()
+    mark_npm_install_current(tmp_path)  # even a matching host receipt cannot override Docker
     (nm / ".skyn3t-docker-install.json").write_text(
         json.dumps({"backend": "docker", "container_os": "linux", "fingerprint": "abc"}),
         encoding="utf-8",
@@ -238,7 +247,9 @@ def test_ensure_node_deps_prefers_ci_with_lockfile(tmp_path):
     assert "--prefer-offline" in calls[0]
 
 
-def test_ensure_node_deps_falls_back_to_install_when_ci_fails(tmp_path):
+def test_ensure_node_deps_falls_back_to_install_when_ci_fails(tmp_path, monkeypatch):
+    monkeypatch.setattr(_app_runner.shutil, "which", lambda cmd: "npm")
+    monkeypatch.setenv("SKYN3T_NPM_CACHE_DIR", str(tmp_path / "npm-cache"))
     # A generated/edited project's lockfile is often out of sync with
     # package.json, which `npm ci` rejects outright. Fall back to `npm install`
     # (which reconciles the lockfile) so a buildable project is still previewable.
@@ -255,7 +266,12 @@ def test_ensure_node_deps_falls_back_to_install_when_ci_fails(tmp_path):
 
     ok, info = ensure_node_deps(tmp_path, runner=fake)
     assert ok is True
-    assert calls == ["ci", "install"]  # tried ci, fell back to install
+    assert calls == ["ci", "install"]  # two attempts, one successful preparation
+    assert npm_install_current(tmp_path) is True
+    assert ensure_node_deps(tmp_path, runner=fake) == (
+        True, {"skipped": "dependencies current"},
+    )
+    assert calls == ["ci", "install"]  # unchanged rerun adds zero attempts
 
 
 def test_ensure_node_deps_ci_success_does_not_fall_back(tmp_path):
@@ -277,6 +293,99 @@ def test_ensure_node_deps_noop_without_package_json(tmp_path):
     calls = []
     ok, info = ensure_node_deps(tmp_path, runner=lambda cmd, cwd: calls.append(cmd) or (True, {}))
     assert ok is True and calls == []  # nothing to install
+
+
+@pytest.mark.parametrize("changed_file", ["package.json", "package-lock.json"])
+def test_preview_dependency_change_prepares_once(tmp_path, monkeypatch, changed_file):
+    monkeypatch.setattr(_app_runner.shutil, "which", lambda cmd: "npm")
+    monkeypatch.setenv("SKYN3T_NPM_CACHE_DIR", str(tmp_path / "npm-cache"))
+    (tmp_path / "package.json").write_text('{"scripts":{"dev":"vite"}}')
+    (tmp_path / "package-lock.json").write_text("{}")
+    (tmp_path / "node_modules").mkdir()
+    mark_npm_install_current(tmp_path)
+    path = tmp_path / changed_file
+    path.write_text(path.read_text() + "\n")
+    calls = []
+
+    def fake(cmd, cwd):
+        calls.append(cmd[1])
+        assert "--ignore-scripts" in cmd
+        assert "--prefer-offline" in cmd
+        assert cwd == str(tmp_path)
+        return True, {"ran": True}
+
+    assert ensure_node_deps(tmp_path, runner=fake)[0] is True
+    assert calls == ["ci"]
+    assert npm_install_current(tmp_path) is True
+    for _ in range(3):
+        assert ensure_node_deps(tmp_path, runner=fake) == (
+            True, {"skipped": "dependencies current"},
+        )
+    assert calls == ["ci"]  # three unchanged previews add zero attempts
+
+
+@pytest.mark.parametrize("receipt", [None, "invalid json", "{}"])
+def test_preview_untracked_dependencies_require_install(tmp_path, monkeypatch, receipt):
+    monkeypatch.setattr(_app_runner.shutil, "which", lambda cmd: "npm")
+    monkeypatch.setenv("SKYN3T_NPM_CACHE_DIR", str(tmp_path / "npm-cache"))
+    (tmp_path / "package.json").write_text('{"scripts":{"dev":"vite"}}')
+    nm = tmp_path / "node_modules"
+    nm.mkdir()
+    if receipt is not None:
+        (nm / ".skyn3t-install.json").write_text(receipt)
+    calls = []
+
+    def fake(cmd, cwd):
+        calls.append(cmd[1])
+        return True, {}
+
+    assert ensure_node_deps(tmp_path, runner=fake)[0] is True
+    assert calls == ["install"]
+    assert npm_install_current(tmp_path) is True
+
+
+@pytest.mark.parametrize("with_lock", [False, True])
+def test_preview_install_failure_blocks_server_and_receipt(tmp_path, monkeypatch, with_lock):
+    monkeypatch.setattr(_app_runner.shutil, "which", lambda cmd: "npm")
+    monkeypatch.setenv("SKYN3T_NPM_CACHE_DIR", str(tmp_path / "npm-cache"))
+    (tmp_path / "package.json").write_text('{"scripts":{"dev":"vite"}}')
+    (tmp_path / "node_modules").mkdir()
+    if with_lock:
+        (tmp_path / "package-lock.json").write_text("{}")
+    calls = []
+
+    def fail_install(cmd, cwd):
+        calls.append(cmd[1])
+        return False, {"error": "dependency preparation failed"}
+
+    def forbidden_server(*args, **kwargs):
+        pytest.fail("failed dependency preparation must not start a server")
+
+    monkeypatch.setattr(_app_runner, "_default_npm_run", fail_install)
+    monkeypatch.setattr(_app_runner.subprocess, "Popen", forbidden_server)
+    app = asyncio.run(AppRunner().start(tmp_path, "react", ready_timeout=1))
+    assert app.status == "failed"
+    assert app.pid is None
+    assert "dependency preparation failed" in str(app.detail)
+    assert calls == (["ci", "install"] if with_lock else ["install"])
+    assert not (tmp_path / "node_modules" / ".skyn3t-install.json").exists()
+    assert npm_install_current(tmp_path) is False
+
+
+def test_preview_foreign_tree_removal_failure_blocks_reuse(tmp_path, monkeypatch):
+    (tmp_path / "package.json").write_text('{"scripts":{"dev":"vite"}}')
+    nm = tmp_path / "node_modules"
+    nm.mkdir()
+    mark_npm_install_current(tmp_path)
+    (nm / ".skyn3t-docker-install.json").write_text('{"backend":"docker"}')
+    monkeypatch.setattr(_app_runner, "discard_foreign_node_modules", lambda pdir: "")
+    calls = []
+    ok, detail = ensure_node_deps(
+        tmp_path, runner=lambda cmd, cwd: calls.append(cmd) or (True, {}),
+    )
+    assert ok is False
+    assert "host-incompatible" in detail["error"]
+    assert calls == []
 
 
 def test_run_spec_env_strips_host_secrets(tmp_path, monkeypatch):

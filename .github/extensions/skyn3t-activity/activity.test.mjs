@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ActivityObserver, ObservationError } from "./monitor.mjs";
-import { LIMITS, RecordDecoder, validateRecord } from "./records.mjs";
+import { LIMITS, RecordDecoder, eventLine, validateRecord } from "./records.mjs";
 import { attachLifecycle, createActivityTools } from "./tools.mjs";
 
 function record(seq = 1, event = "activity", extra = {}) {
@@ -52,6 +52,183 @@ async function waitFor(predicate) {
         await delay(20);
     }
 }
+
+test("timeline explains rate limits and failed edits without raw tool jargon", () => {
+    const latest = { stage: "generating", model: "stealth/union-alpha", provider: "openrouter" };
+    const retry = eventLine("abcd", record(1, "warning", {
+        message: "Retry decision: stealth/union-alpha (http_429), attempt 2, delay 1.1s, outcome waiting",
+    }), latest);
+    assert.match(retry, /AI service is busy.*trying again in 1\.1s.*attempt 2/i);
+    assert.doesNotMatch(retry, /http_429|Retry decision|outcome waiting|generating|stealth\/union-alpha/);
+    const failedEdit = eventLine("abcd", record(2, "warning", {
+        message: "Tool failed: edit_file", tool: "edit_file", path: "tests/test_app_runner.py",
+    }), latest);
+    assert.match(failedEdit, /Could not apply an edit.*tests\/test_app_runner\.py/);
+    assert.doesNotMatch(failedEdit, /Tool failed|edit_file|run failed/i);
+    assert.match(failedEdit, /overall result is not known from this step alone/);
+    assert.match(eventLine("abcd", record(3, "activity", {
+        message: "Using finish", tool: "finish",
+    }), latest), /AI has finished editing; checks come next/);
+    assert.match(eventLine("abcd", record(4, "stage", {
+        stage: "verifying", message: "Verifying the candidate",
+    }), { ...latest, stage: "verifying" }), /Checking that the changes work/);
+    assert.match(eventLine("abcd", record(5, "model", {
+        model: latest.model, provider: latest.provider, message: "Codegen route selected",
+    }), latest), /stealth\/union-alpha.*openrouter.*AI model selected/i);
+    assert.match(eventLine("abcd", record(6, "warning", {
+        message: "Retry decision: stealth/union-alpha (http_429), attempt 3, delay 0s, outcome exhausted",
+    }), latest), /Automatic retries stopped/);
+    for (const [outcome, expected] of [
+        ["fatal", /This request cannot be retried/],
+        ["model_failover", /SkyN3t is trying another AI model/],
+    ]) {
+        assert.match(eventLine("abcd", record(7, "warning", {
+            message: `Retry decision: stealth/union-alpha (http_429), attempt 3, delay 0s, outcome ${outcome}`,
+        }), latest), expected);
+    }
+});
+
+test("known stages are readable while unfamiliar labels and warning details survive", () => {
+    for (const [stage, label] of [
+        ["initializing", "starting up"], ["localize", "reading the project"],
+        ["generating", "updating files"], ["prepare_dependencies", "preparing required packages"],
+        ["proof", "checking the changes"], ["verifying", "checking the changes"],
+        ["repairing", "fixing problems"], ["finalizing", "getting changes ready for checks"],
+        ["delivering", "saving checked changes"], ["custom-stage", "custom-stage"],
+        ["constructor", "constructor"], ["__proto__", "__proto__"],
+    ]) {
+        assert.equal(eventLine("abcd", record(1, "stage", { message: "toString" }), { stage }),
+            `[SkyN3t abcd | 00:01] ${label}: toString`);
+    }
+    for (const message of [
+        "Disk space is low",
+        "Agent started: but could not load project",
+        "Retry decision: model (unknown_issue), attempt 1, delay 1s, outcome waiting",
+        "Retry decision: model (http_429), attempt 1, delay 1s, outcome unknown",
+        "Finished read_file",
+    ]) {
+        assert.equal(eventLine("abcd", record(1, "warning", { message, tool: "read_file" }), {}),
+            `[SkyN3t abcd | 00:01] Warning: ${message}`);
+    }
+    assert.match(eventLine("abcd", record(1, "warning", {
+        message: "Tool failed: functions.edit_file: matching text was not found",
+    }), {}), /Could not apply an edit.*Details: matching text was not found$/);
+});
+
+test("successful tool acknowledgements are quiet but failures and completed work remain visible", async (t) => {
+    const f = await fixture(t);
+    const { monitor, activity_file } = await f.watch();
+    await writeFile(activity_file, jsonl(
+        record(1, "activity", { tool: "read_file", path: "src/app.py", message: "Reading: src/app.py" }),
+        record(2, "activity", { tool: "read_file", message: "Finished read_file" }),
+        record(3, "activity", { tool: "edit_file", path: "src/app.py", message: "Editing: src/app.py" }),
+        record(4, "activity", { tool: "edit_file", message: "Finished edit_file" }),
+        record(5, "warning", { tool: "edit_file", message: "Tool failed: edit_file" }),
+        record(6, "completed", { changed_files: 1, proof_passed: true }),
+    ), { flag: "wx" });
+    await monitor.poll();
+    const text = f.logs.map((line) => line.message).join("\n");
+    assert.doesNotMatch(text, /Finished read_file|Finished edit_file/);
+    assert.match(text, /Reading: src\/app\.py/);
+    assert.match(text, /Editing: src\/app\.py/);
+    assert.match(text, /Could not apply an edit/);
+    assert.match(text, /checks: passed/);
+    assert.equal(monitor.status().accepted_records, 6);
+});
+
+test("repeated model metadata and acknowledgements stay quiet without losing context changes", async (t) => {
+    const f = await fixture(t);
+    const { monitor, activity_file } = await f.watch();
+    const metadata = { stage: "generating", model: "example-model", provider: "example-service" };
+    const last = record(8, "warning", { ...metadata, message: "Finished read_file", tool: "read_file" });
+    await writeFile(activity_file, jsonl(
+        record(1, "model", { ...metadata, message: "Codegen route selected" }),
+        record(2, "activity", { ...metadata, tool: "read_file", message: "Reading: src/app.py" }),
+        record(3, "activity", { ...metadata, tool: "read_file", message: "Finished read_file" }),
+        record(4, "activity", { ...metadata, tool: "list_files", message: "Finished list_files" }),
+        record(5, "activity", { ...metadata, tool: "functions.edit_file", message: "Finished functions.edit_file" }),
+        record(6, "activity", { ...metadata, stage: "finalizing", tool: "edit_file", message: "Finished edit_file" }),
+        record(7, "activity", { ...metadata, tool: "edit_file", message: "Finished edit_file: changes need attention" }),
+        last,
+    ), { flag: "wx" });
+    await monitor.poll();
+    assert.equal(f.logs.filter((line) => line.message.includes("example-model")).length, 1);
+    assert.match(f.logs[1].message, /Reading: src\/app.py/);
+    assert.match(f.logs[2].message, /getting changes ready for checks: Work status updated/);
+    assert.match(f.logs[3].message, /Finished edit_file: changes need attention/);
+    assert.match(f.logs[4].message, /Warning: Finished read_file/);
+    assert.equal(f.logs[4].level, "warning");
+    assert.equal(f.logs.length, 5);
+    assert.deepEqual(monitor.status().latest, metadata);
+    assert.deepEqual(monitor.status().last_event, last);
+    assert.equal(monitor.status().accepted_records, 8);
+    assert.equal(monitor.status().throttled_activity_records, 3);
+});
+
+test("editing finish survives bursts without claiming run completion or hiding failures", async (t) => {
+    const f = await fixture(t);
+    const { monitor, activity_file } = await f.watch();
+    await writeFile(activity_file, jsonl(
+        record(1, "activity", { tool: "edit_file", message: "Editing: src/app.py" }),
+        record(2, "activity", { tool: "read_file", message: "Reading: src/app.py" }),
+        record(3, "activity", { tool: "finish", message: "Using finish" }),
+        record(4, "activity", { tool: "finish", message: "Finished finish" }),
+        record(5, "activity"),
+        record(6, "warning", { tool: "edit_file", message: "Tool failed: edit_file" }),
+        record(7, "warning", { tool: "edit_file", message: "Tool failed: edit_file" }),
+    ), { flag: "wx" });
+    await monitor.poll();
+    assert.match(f.logs[1].message, /Reading: src\/app.py/);
+    assert.match(f.logs[2].message, /The AI has finished editing; checks come next/);
+    assert.equal(f.logs.filter((line) => line.message.includes("Could not apply an edit")).length, 2);
+    assert.equal(monitor.status().observed_outcome, null);
+    assert.equal(monitor.status().monitoring, true);
+    assert.doesNotMatch(f.logs.map((line) => line.message).join("\n"), /Finished finish|Completed:/);
+    await appendFile(activity_file, jsonl(record(8, "failed", {
+        message: "SkyN3t run failed; see the CLI outcome", proof_passed: false,
+    })));
+    await monitor.poll();
+    assert.match(f.logs.at(-1).message, /Failed: SkyN3t could not finish.*checks: failed/);
+    assert.equal(f.logs.at(-1).level, "error");
+    assert.equal(monitor.status().observed_outcome, "failed");
+    assert.equal(monitor.status().monitoring, false);
+});
+
+test("quiet verification distinguishes a fresh check-in from missing contact", async (t) => {
+    const f = await fixture(t);
+    const { monitor, activity_file } = await f.watch();
+    await writeFile(activity_file, jsonl(record(1, "stage", {
+        stage: "verifying", message: "Verifying the candidate",
+    })), { flag: "wx" });
+    await monitor.poll();
+    f.advance(60000);
+    await appendFile(activity_file, jsonl(record(2, "heartbeat", { stage: "verifying" })));
+    await monitor.poll();
+    assert.match(f.logs.at(-1).message, /SkyN3t is still checking in.*last step: checking the changes/i);
+    assert.match(f.logs.at(-1).message, /No check results yet/);
+    assert.doesNotMatch(f.logs.at(-1).message, /process outcome|passed|stuck|still running/i);
+    f.advance(60000);
+    await monitor.poll();
+    assert.match(f.logs.at(-1).message, /No update from SkyN3t for 01:00/);
+    assert.match(f.logs.at(-1).message, /cannot tell whether it is still working/);
+    assert.equal(monitor.status().observed_outcome, null);
+});
+
+test("contact at the stale threshold is explicitly uncertain, not a fresh check-in", async (t) => {
+    const f = await fixture(t);
+    const { monitor, activity_file } = await f.watch();
+    await writeFile(activity_file, jsonl(record(1, "stage", { stage: "proof" })), { flag: "wx" });
+    await monitor.poll();
+    f.advance(LIMITS.livenessMs - LIMITS.staleMs);
+    await appendFile(activity_file, jsonl(record(2, "heartbeat")));
+    await monitor.poll();
+    f.advance(LIMITS.staleMs);
+    await monitor.poll();
+    assert.equal(f.logs.at(-1).ephemeral, true);
+    assert.match(f.logs.at(-1).message, /No update from SkyN3t for 00:30.*cannot tell whether it is still working/);
+    assert.doesNotMatch(f.logs.at(-1).message, /still checking in|No check results yet/);
+    assert.equal(monitor.status().last_event_age_s, 30);
+});
 
 test("watch allocates unique private future files without starting or creating a job", async (t) => {
     const f = await fixture(t);
@@ -149,8 +326,9 @@ test("queued and partial lines retain order, stage/model context and terminal re
     assert.equal(status.monitoring, false);
     assert.equal(status.accepted_records, 5);
     assert.deepEqual(status.latest, { stage: "Improving", model: "gpt-6-astra", provider: "copilot" });
-    assert.match(f.logs[3].message, /\| 00:18\].*Improving.*gpt-6-astra.*Read src\/MapWorkspace\.tsx/u);
-    assert.match(f.logs.at(-1).message, /Completed:.*changed files: 2, proof: passed/u);
+    assert.match(f.logs[3].message, /\| 00:18\].*Improving.*Read src\/MapWorkspace\.tsx/u);
+    assert.doesNotMatch(f.logs[3].message, /gpt-6-astra/u);
+    assert.match(f.logs.at(-1).message, /Completed:.*files changed: 2, checks: passed/u);
     f.advance(5000);
     assert.equal(monitor.status().last_event_age_s, 5);
     assert.equal(monitor.decoder.pending.length, 0);
@@ -430,7 +608,7 @@ test("stage/model/provider changes on activity or heartbeat events bypass burst 
     assert.match(f.logs[1].message, /Proof/u);
     assert.match(f.logs[2].message, /Reported activity 3/u);
     assert.match(f.logs[3].message, /gpt-6-astra \(copilot\)/u);
-    assert.match(f.logs[4].message, /synthetic-provider.*Reported stage\/model\/provider changed/u);
+    assert.match(f.logs[4].message, /synthetic-provider.*Work status updated/u);
     assert.doesNotMatch(JSON.stringify(f.logs), /UNSUPPORTED_HEARTBEAT_CLAIM/u);
 });
 
@@ -441,7 +619,7 @@ test("heartbeats and stale periods are low-noise and never invent process progre
     await monitor.poll();
     assert.equal(f.logs.length, 1);
     assert.equal(f.logs[0].ephemeral, true);
-    assert.match(f.logs[0].message, /no SkyN3t start has been observed/u);
+    assert.match(f.logs[0].message, /No start confirmed yet/u);
     await writeFile(activity_file, jsonl(record(1, "started")), { flag: "wx" });
     await monitor.poll();
     for (let seq = 2; seq <= 6; seq++) {
@@ -451,7 +629,7 @@ test("heartbeats and stale periods are low-noise and never invent process progre
     }
     assert.equal(f.logs.length, 3);
     assert.equal(f.logs[2].ephemeral, true);
-    assert.match(f.logs[2].message, /No new reported activity for 01:00; process outcome is unknown/u);
+    assert.match(f.logs[2].message, /SkyN3t is still checking in.*No new work details yet/u);
     assert.doesNotMatch(JSON.stringify(f.logs), /UNSUPPORTED_CLAIM|hung/u);
     assert.equal(monitor.status().last_event_age_s, 0);
     assert.equal(monitor.status().last_reported_activity_age_s, 75);

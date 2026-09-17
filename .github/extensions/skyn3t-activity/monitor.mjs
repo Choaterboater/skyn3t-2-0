@@ -2,7 +2,7 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { isAbsolute, join } from "node:path";
-import { LIMITS, RecordDecoder, TERMINAL_EVENTS, duration, eventLine } from "./records.mjs";
+import { LIMITS, RecordDecoder, TERMINAL_EVENTS, duration, eventLine, isEditingFinished, isToolAcknowledgement, stageLabel } from "./records.mjs";
 
 const ERRORS = Object.freeze({
     workspace_unavailable: "The current session has no usable private workspacePath.",
@@ -247,6 +247,9 @@ export class ActivityMonitor {
         const contextChanged = ["stage", "model", "provider"].some(
             (key) => record[key] !== undefined && record[key] !== this.latest[key],
         );
+        const modelChanged = ["model", "provider"].some(
+            (key) => record[key] !== undefined && record[key] !== this.latest[key],
+        );
         for (const key of ["operation", "project", "stage", "model", "provider"]) {
             if (record[key] !== undefined) this.latest[key] = record[key];
         }
@@ -255,14 +258,19 @@ export class ActivityMonitor {
             if (!contextChanged) return;
         }
         this.lastReportedAt = this.now();
-        const displayRecord = record.event === "heartbeat"
+        const acknowledgement = isToolAcknowledgement(record);
+        if (acknowledgement && !contextChanged) {
+            this.suppressed++;
+            return;
+        }
+        const displayRecord = record.event === "heartbeat" || acknowledgement
             ? { ...record, message: "Reported stage/model/provider changed." }
             : record;
-        const line = eventLine(this.id, displayRecord, this.latest);
+        const line = eventLine(this.id, displayRecord, this.latest, { showModel: modelChanged });
         this.recent.push(line);
         if (this.recent.length > LIMITS.recentLines) this.recent.shift();
 
-        if (record.event === "activity" && !contextChanged) {
+        if (record.event === "activity" && !contextChanged && !isEditingFinished(record)) {
             if (this.now() - this.lastActivityLogAt >= LIMITS.activityMs) {
                 this.pendingActivity = undefined;
                 await this.#emit(line);
@@ -299,9 +307,16 @@ export class ActivityMonitor {
         if (!this.active || quietFor < LIMITS.staleMs
             || now - this.lastLivenessAt < LIMITS.livenessMs) return;
         this.lastLivenessAt = now;
-        const message = this.lastEventAt === undefined
-            ? "Waiting for reported activity; no SkyN3t start has been observed."
-            : `No new reported activity for ${duration(quietFor / 1000)}; process outcome is unknown.`;
+        const contactAge = this.lastEventAt === undefined ? null : now - this.lastEventAt;
+        const step = stageLabel(this.latest.stage) ?? "waiting for a work update";
+        const waiting = ["proof", "verifying"].includes(this.latest.stage)
+            ? "No check results yet; some checks take several minutes."
+            : "No new work details yet.";
+        const message = contactAge === null
+            ? "Waiting for SkyN3t to start sending updates. No start confirmed yet."
+            : contactAge < LIMITS.staleMs
+                ? `SkyN3t is still checking in; last step: ${step}. ${waiting}`
+                : `No update from SkyN3t for ${duration(contactAge / 1000)}; last step: ${step}. The activity feed cannot tell whether it is still working.`;
         await this.#emit(`[SkyN3t ${this.id.slice(0, 4)}] ${message}`, { ephemeral: true });
     }
 

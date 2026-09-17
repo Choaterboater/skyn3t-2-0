@@ -28,7 +28,8 @@ def test_learning_loop_capture_inject_grade():
     loop = LearningLoop()  # in-memory fallback
     ids = run(
         loop.capture_from_build(
-            {"stack": "fastapi", "score": 95.0, "verdict": "go", "slug": "b1"}
+            {"stack": "fastapi", "verdict": "go", "proof_passed": True, "slug": "b1",
+             "notes": "asyncpg pool reuse kept p99 latency flat under load"}
         )
     )
     assert ids

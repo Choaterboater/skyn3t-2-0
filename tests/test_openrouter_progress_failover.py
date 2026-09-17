@@ -204,6 +204,46 @@ def test_exhausted_models_do_not_cycle_when_quarantine_expires(setup, cap, expec
     assert result["progress_fallbacks"] == len(expected) - 1
 
 
+@pytest.mark.parametrize("failure", ["no_write_progress", "model_unavailable"])
+def test_public_agentic_disabled_fallback_keeps_every_request_on_the_pinned_model(
+    tmp_path, monkeypatch, failure
+):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "main.py").write_text("value = 1\n")
+    settings = Settings(
+        _env_file=None, llm_backend="openrouter", openrouter_api_key="test-only",
+        data_dir=tmp_path / "data", logs_dir=tmp_path / "logs",
+        projects_dir=tmp_path / "projects", vector_db_path=tmp_path / "vectors",
+        free_only=True, auto_route=False, model_evolution=False,
+        preferred_model=PRIMARY, openrouter_codegen_model=PRIMARY,
+        llm_fallback_enabled=False, llm_max_retries=0, llm_max_fallbacks=0,
+        llm_fallback_models=FALLBACK,
+        openrouter_agentic_max_turns=2, openrouter_agentic_no_write_turns=2,
+        agentic_verify_on_stop=False,
+    )
+    def respond(model, count):
+        if model != PRIMARY:
+            return tool("finish", {})
+        if failure == "model_unavailable":
+            return httpx.Response(
+                404, json={"error": {"message": "No endpoints found"}},
+                request=httpx.Request("POST", llm.OPENROUTER_URL),
+            )
+        return tool("read_file", {"path": "main.py"})
+
+    provider = Provider(respond)
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kwargs: provider)
+    client = llm.LLMClient(settings)
+    result = asyncio.run(client.agentic_build(
+        "Inspect the existing source.", str(project),
+        model=PRIMARY, stack="python", timeout=5,
+    ))
+    assert provider.calls == [PRIMARY] * (2 if failure == "no_write_progress" else 1)
+    assert not result["ok"]
+    assert result["progress_fallbacks"] == 0
+
+
 def test_transport_fallback_cannot_resurrect_session_exhausted_model(setup):
     def respond(model, count):
         if model == PRIMARY:

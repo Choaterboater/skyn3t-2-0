@@ -77,6 +77,179 @@ def _advise(engine, **kw):
     return asyncio.run(engine.advise(brief=kw.pop("brief", "a habit tracker"), **kw))
 
 
+def test_bounded_policy_keeps_first_two_slots_and_records_the_rest(tmp_path):
+    llm = _FakeLLM()
+    engine = CouncilEngine(llm, _settings(tmp_path), policy="bounded")
+    advice = _advise(engine)
+    # Only the first two admissible slots run; the rest are recorded, silent
+    # drops, never passed off as failures.
+    assert llm.calls == [("claude_cli", "sonnet"), ("codex_cli", "")]
+    assert advice.to_dict()["request_count"] == 2
+    dropped = advice.to_dict()["dropped"]
+    assert dropped == [{"slot": "kimi_cli", "reason": "bounded_policy"}]
+    assert advice.ok_count == 2
+    assert advice.degraded is False
+
+
+def test_bounded_policy_uses_one_deadline_not_per_advisor_waves(tmp_path):
+    llm = _FakeLLM(delay=0.6)
+    engine = CouncilEngine(
+        llm,
+        SimpleNamespace(
+            moa_enabled=True,
+            moa_advisors="claude_cli,codex_cli,kimi_cli,copilot_cli",
+            moa_max_concurrency=4,
+            moa_advisor_timeout=60,
+            moa_council_timeout=0.2,
+            free_only=False,
+            no_claude=False,
+        ),
+        policy="bounded",
+    )
+
+    advice = _advise(engine)
+    payload = advice.to_dict()
+    # 0.6s advisors under a 0.2s council deadline: the fan-out returns near the
+    # deadline instead of the 60s per-advisor budget. Both kept slots started
+    # (concurrency 4 >= cap 2) and both are cancelled, honestly accounted.
+    assert payload["deadline_ms"] == 200.0
+    assert payload["duration_ms"] < 5000.0
+    assert payload["not_started_count"] == 0
+    assert payload["cancelled_count"] == 2
+    assert all(a["error"] for a in payload["advisors"] if a["cancelled"])
+    assert advice.ok_count == 0
+
+
+def test_bounded_policy_records_queued_never_started_slot(tmp_path):
+    llm = _FakeLLM(delay=0.6)
+    engine = CouncilEngine(
+        llm,
+        SimpleNamespace(
+            moa_enabled=True, moa_advisors="claude_cli:sonnet,codex_cli",
+            moa_max_concurrency=1, moa_advisor_timeout=60, moa_council_timeout=0.2,
+            free_only=False, no_claude=False,
+        ),
+        policy="bounded",
+    )
+
+    advice = _advise(engine)
+
+    # Semaphore queue wait counts INSIDE the council deadline: the second slot
+    # never starts and is recorded as not_started, never as provider-failed.
+    payload = advice.to_dict()
+    assert payload["request_count"] == 1
+    assert payload["not_started_count"] == 1
+    assert payload["cancelled_count"] == 2
+    assert payload["advisors"][1]["request_started"] is False
+    assert payload["advisors"][1]["duration_ms"] == 0.0
+
+
+def test_bounded_policy_collects_what_finished_before_the_deadline(tmp_path):
+    class _Racing(_FakeLLM):
+        async def complete(self, prompt, **kw):
+            key = kw.get("provider_override") or ""
+            if key == "claude_cli":
+                return SimpleNamespace(
+                    text="fast advisor: ship the smallest working slice first and wire "
+                    "the real data model before polishing layout, because a thin "
+                    "vertical slice surfaces the hard integration risks early.",
+                    model="", backend="claude_cli", cost_usd=0.001,
+                    status="cli_response", cost_source="reported",
+                )
+            await asyncio.sleep(30)
+            return await super().complete(prompt, **kw)
+
+    llm = _Racing()
+    engine = CouncilEngine(
+        llm, SimpleNamespace(
+            moa_enabled=True, moa_advisors="claude_cli:sonnet,codex_cli",
+            moa_max_concurrency=4, moa_advisor_timeout=60, moa_council_timeout=0.3,
+            free_only=False, no_claude=False,
+        ),
+        policy="bounded",
+    )
+
+    advice = _advise(engine)
+
+    # One useful reply beat the deadline and IS assembled; the cancelled
+    # pending work is accounted for, never counted as failed-by-provider.
+    assert advice.ok_count == 1
+    assert "claude_cli:sonnet" in advice.guidance
+    payload = advice.to_dict()
+    assert payload["cancelled_count"] == 1
+    assert payload["request_count"] == 2
+    assert payload["advisors"][1]["cancelled"] is True
+    assert payload["advisors"][1]["duration_ms"] >= 0
+
+
+def test_bounded_policy_full_when_fewer_than_the_cap(tmp_path):
+    llm = _FakeLLM()
+    engine = CouncilEngine(llm, _settings(tmp_path, moa_advisors="kimi_cli"), policy="bounded")
+
+    advice = _advise(engine)
+
+    assert llm.calls == [("kimi_cli", "")]
+    assert advice.to_dict()["dropped"] == []
+
+
+def test_explicit_selection_preserves_every_advisor_under_bounded(tmp_path):
+    llm = _FakeLLM()
+    engine = CouncilEngine(
+        llm, _settings(tmp_path), advisors="claude_cli:sonnet,codex_cli,kimi_cli",
+        policy="bounded",
+    )
+    advice = _advise(engine)
+
+    assert llm.calls == [("claude_cli", "sonnet"), ("codex_cli", ""), ("kimi_cli", "")]
+
+
+def test_off_policy_makes_no_calls_even_with_selected_advisors(tmp_path):
+    llm = _FakeLLM()
+    engine = CouncilEngine(llm, _settings(tmp_path), policy="off")
+
+    advice = _advise(engine)
+
+    assert llm.calls == []
+    assert advice.guidance == ""
+    assert advice.to_dict()["policy"] == "off"
+
+
+def test_unknown_policy_preserves_full_council(tmp_path):
+    llm = _FakeLLM()
+    engine = CouncilEngine(llm, _settings(tmp_path), policy="turbo")
+
+    advice = _advise(engine)
+
+    assert llm.calls == [("claude_cli", "sonnet"), ("codex_cli", ""), ("kimi_cli", "")]
+    assert advice.to_dict()["policy"] == "full"
+
+
+def test_duration_and_deadline_are_recorded(tmp_path):
+    llm = _FakeLLM()
+    engine = CouncilEngine(llm, _settings(tmp_path))
+
+    advice = _advise(engine)
+
+    payload = advice.to_dict()
+    assert payload["duration_ms"] >= 0
+    assert payload["deadline_ms"] == 60000.0
+    assert all(a["duration_ms"] >= 0 for a in payload["advisors"])
+    assert payload["request_count"] == 3
+    assert payload["not_started_count"] == 0
+
+
+def test_cost_source_is_honest_when_unknown(tmp_path):
+    class _NoCostSource(_FakeLLM):
+        async def complete(self, prompt, **kw):
+            result = await super().complete(prompt, **kw)
+            del result.cost_source
+            return result
+
+    engine = CouncilEngine(_NoCostSource(), _settings(tmp_path))
+    advice = _advise(engine)
+    assert all(a.cost_source == "unknown" for a in advice.advisors)
+
+
 def test_council_fans_out_across_every_configured_provider(tmp_path):
     llm = _FakeLLM()
     advice = _advise(CouncilEngine(llm, _settings(tmp_path)))

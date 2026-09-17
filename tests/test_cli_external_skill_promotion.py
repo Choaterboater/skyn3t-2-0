@@ -5,7 +5,7 @@ from __future__ import annotations
 from typer.testing import CliRunner
 
 from skyn3t.cli.main import app
-from skyn3t.intelligence.skill_library import SkillLibrary, SkillProvenance
+from skyn3t.intelligence.skill_library import SkillLibrary, SkillProvenance, content_sha256
 
 runner = CliRunner()
 
@@ -28,7 +28,8 @@ def _candidate(library: SkillLibrary, *, revision: str = "a" * 40) -> str:
         provenance=SkillProvenance(
             source_url="https://github.com/example/repo",
             pinned_revision=revision,
-            content_hash="sha256:" + "b" * 64,
+            content_hash=content_sha256("Reviewed source evidence."),
+            evidence_path=library.retain_source_evidence("Reviewed source evidence."),
             source_path="README.md",
         ),
     )
@@ -39,6 +40,8 @@ def test_cortex_promote_skill_explicitly_approves_valid_external_candidate(monke
     _isolate(monkeypatch, tmp_path)
     library = SkillLibrary(tmp_path / "data" / "skills")
     slug = _candidate(library)
+    evaluation = runner.invoke(app, ["cortex", "evaluate-skill", slug])
+    assert evaluation.exit_code == 0, evaluation.output
 
     result = runner.invoke(app, ["cortex", "promote-skill", slug])
 

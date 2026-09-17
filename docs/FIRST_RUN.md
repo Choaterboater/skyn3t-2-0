@@ -163,6 +163,11 @@ contains `429`, `timeout`, or `503`. Other task results retain the default retry
 permission and the existing transient/permanent classifier. This does not disable
 provider recovery or block a later explicit submission with new evidence.
 
+To prohibit model failover, set `SKYN3T_LLM_FALLBACK_ENABLED=false`.
+`SKYN3T_LLM_MAX_FALLBACKS=0` means an uncapped fallback ladder, not
+primary-only routing; an empty fallback list still permits router-derived
+candidates when failover is enabled.
+
 `openrouter/free` is a supported free-router model ID, distinct from
 `openrouter/auto`; the underlying free model can vary between requests. Explicit
 named free fallbacks still use the existing bounded recovery policy. Free routing

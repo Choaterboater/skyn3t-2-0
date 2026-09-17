@@ -17,9 +17,10 @@ export default function GoldenBenchCard() {
   return (
     <Panel className="mb-6 overflow-hidden">
       <PanelHead
-        label="Golden bench"
+        label="Benchmark evidence"
         right={<span className="font-mono text-[11px] text-ash">artifacts/golden</span>}
       />
+      <p className="border-b border-hairline px-4 py-3 text-xs text-ash">Offline stub benchmarks check the test harness, not live AI product quality. Provider-enabled runs cover only their recorded suite and configuration; neither rate guarantees this build will work.</p>
       <ul className="divide-y divide-hairline/60">
         {ledgers.map((ledger) => {
           const running = ledger.status === "partial";
@@ -29,19 +30,20 @@ export default function GoldenBenchCard() {
           const rate = ledger.attempts
             ? `${Math.round((ledger.passed / ledger.attempts) * 100)}%`
             : "—";
+          const updated = typeof ledger.updated_at === "number" && ledger.updated_at > 0 ? new Date(ledger.updated_at * 1000) : null;
+          const completed = ledger.completed_at ? new Date(ledger.completed_at) : null;
+          const date = completed && !Number.isNaN(completed.getTime()) ? completed : updated;
+          const scope = ledger.live === true ? "Provider-enabled benchmark" : ledger.llm_backend === "stub" ? "Offline stub benchmark" : "Benchmark provider scope not confirmed";
           return (
-            <li key={ledger.name} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 px-4 py-2 text-sm sm:flex sm:gap-4">
-              <span className="font-mono text-bone">{ledger.name}</span>
-              {ledger.live ? (
-                <span className="badge border-ember/50 text-ember">provider · {ledger.llm_backend}</span>
-              ) : (
-                <span className="badge border-hairline text-ash">floor · {ledger.llm_backend}</span>
-              )}
-              <span className={`col-span-2 ${running ? "text-ember-soft" : "text-ash"}`}>
-                {running ? "running" : ledger.status}
-              </span>
-              <span className="col-span-2 font-mono text-[12px] text-ash sm:ml-auto">
-                {done} attempts · <span className="text-plasma">{ledger.passed} passed</span> · {rate}
+            <li key={ledger.name} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-sm">
+              <div className="min-w-0 flex-1 basis-48">
+                <span className="break-words font-mono text-bone">{ledger.name}</span>
+                <span className={ledger.live ? "badge border-ember/50 text-ember" : "badge border-hairline text-ash"}>{ledger.live ? "provider" : "floor"} · {ledger.llm_backend || "backend not recorded"}</span>
+                <p className="mt-1 text-xs text-ash">{scope} · {date && !Number.isNaN(date.getTime()) ? `${completed && !Number.isNaN(completed.getTime()) ? "Completed" : "Ledger updated"} ${date.toLocaleString()}` : "Date not recorded"} · case scope not supplied</p>
+              </div>
+              <span className={running ? "text-ember-soft" : "text-ash"}>{running ? "running" : ledger.status || "status not recorded"}</span>
+              <span className="font-mono text-[12px] text-ash">
+                {done} attempts · {ledger.passed} passed · {rate} within this ledger
               </span>
             </li>
           );

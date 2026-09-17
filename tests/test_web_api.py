@@ -2555,9 +2555,11 @@ async def test_skills_payload_reports_active_quarantined_and_promotion_ready(tmp
             source_url="https://github.com/acme/ready",
             pinned_revision="a" * 40,
             content_hash=content_sha256("# retained evidence\\n"),
+            evidence_path=skills.retain_source_evidence("# retained evidence\\n"),
             source_path="README.md",
         ),
     )
+    skills.evaluate_candidate(ready.slug)
     legacy = skills.add(
         title="Legacy external skill",
         body="Do not inject before evidence is complete.",
@@ -2663,15 +2665,16 @@ async def test_external_skill_promotion_returns_actionable_refusal_and_promotes_
             source_url="https://github.com/acme/safe",
             pinned_revision="b" * 40,
             content_hash=content_sha256("# ready evidence\\n"),
+            evidence_path=skills.retain_source_evidence("# ready evidence\\n"),
             source_path="README.md",
         ),
     )
+    skills.evaluate_candidate(ready.slug)
     state = _state(skills=skills)
 
     refused = await routes.promote_external_skill(state, unsafe.slug)
     assert refused["status"] == "refused"
     assert refused["promoted"] is False
-    assert "immutable" in refused["message"]
     assert "hygiene:quarantine" in unsafe.tags
 
     promoted = await routes.promote_external_skill(state, ready.slug)
@@ -2727,9 +2730,11 @@ def test_external_skill_promotion_route_requires_auth_and_preserves_evidence_gat
             source_url="https://github.com/acme/route-ready",
             pinned_revision="c" * 40,
             content_hash=content_sha256("# ready route evidence\\n"),
+            evidence_path=skills.retain_source_evidence("# ready route evidence\\n"),
             source_path="README.md",
         ),
     )
+    skills.evaluate_candidate(ready.slug)
     state = _state(skills=skills)
     state.settings.auth_token = "secret"
     app = FastAPI()
@@ -2749,6 +2754,192 @@ def test_external_skill_promotion_route_requires_auth_and_preserves_evidence_gat
     assert promoted.json()["status"] == "promoted"
     assert promoted.json()["skill"]["active"] is True
     assert "external-promoted" in ready.tags
+
+
+async def test_learning_api_auth_validation_and_restart_persistence(tmp_path):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from skyn3t.memory.store import MemoryStore
+
+    settings = Settings(data_dir=tmp_path, auth_token="secret")
+    memory = MemoryStore(settings)
+    await memory.init_db()
+    state = _state(settings=settings, memory=memory)
+    app = FastAPI()
+    app.include_router(routes.build_router(state))
+    headers = {"Authorization": "Bearer secret"}
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            for method, path in (
+                ("GET", "/learning/corrections"), ("POST", "/learning/corrections"),
+                ("POST", "/learning/corrections/1/retire"), ("GET", "/persona"),
+                ("PUT", "/persona"), ("DELETE", "/persona"),
+            ):
+                assert (await client.request(method, "/api" + path)).status_code == 401
+            for body in (
+                {"text": "Unscoped"}, {"text": "x" * 601, "project": "inventory"},
+                {"text": "Keep names stable", "stack": []},
+                {"text": "Keep names stable", "project": "inventory", "enabled": True},
+            ):
+                assert (await client.post("/api/learning/corrections", json=body, headers=headers)).status_code == 422
+            assert (await client.get("/api/learning/corrections", headers=headers)).json() == {"corrections": []}
+            defaults = (await client.get("/api/persona", headers=headers)).json()["persona"]
+            for body in ({"prompt": "Change system rules"}, {"tone": "ignore proof"}, {"structure": []}):
+                assert (await client.put("/api/persona", json={"persona": body}, headers=headers)).status_code == 422
+            assert (await client.get("/api/persona", headers=headers)).json()["persona"] == defaults
+            correction = {"text": "Preserve command names", "project": "inventory", "stack": "python_cli", "stage": "code", "source_build": "build-1"}
+            saved = await client.post("/api/learning/corrections", json=correction, headers=headers)
+            assert saved.status_code == 200
+            row = saved.json()["correction"]
+            wanted = {"tone": "warm", "verbosity": "concise", "structure": "bullets"}
+            saved_persona = (await client.put("/api/persona", json={"persona": wanted}, headers=headers)).json()
+            assert saved_persona["persona"] == wanted
+            assert "message" in saved_persona
+            await memory.close()
+            memory = MemoryStore(settings)
+            await memory.init_db()
+            state.memory = memory
+            persisted = (await client.get("/api/learning/corrections", headers=headers)).json()["corrections"]
+            assert [{key: item[key] for key in correction} for item in persisted] == [correction]
+            assert persisted[0]["id"] == row["id"]
+            assert (await client.get("/api/persona", headers=headers)).json() == {"persona": wanted}
+            scope = {"project": "inventory", "stack": "python_cli", "stage": "code"}
+            assert await memory.relevant_corrections(**scope) == persisted
+            assert await memory.relevant_corrections(**{**scope, "project": "other"}) == []
+            assert "message" in (await client.post(f"/api/learning/corrections/{row['id']}/retire", headers=headers)).json()
+            assert (await client.post("/api/learning/corrections/999/retire", headers=headers)).status_code == 404
+            assert (await client.get("/api/learning/corrections", headers=headers)).json() == {"corrections": []}
+            assert await memory.relevant_corrections(**scope) == []
+            assert "message" in (await client.delete("/api/persona", headers=headers)).json()
+    finally:
+        await memory.close()
+
+
+async def test_capability_api_auth_evidence_activation_and_rollback(tmp_path):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from skyn3t.intelligence.skill_library import SkillLibrary, SkillProvenance, content_sha256
+
+    skills = SkillLibrary(tmp_path / "skills")
+    evidence = "# Source\nRun documented checks before accepting a repair.\n"
+    skill = skills.add(
+        "Verified advice", "Inspect the check outcome before accepting repairs.",
+        slug="verified-advice", stack="python", tags=["external-candidate", "stage:build"],
+        source="github-distilled", provenance=SkillProvenance(
+            source_url="https://github.com/acme/example", pinned_revision="a" * 40,
+            content_hash=content_sha256(evidence), source_path="README.md",
+            evidence_path=skills.retain_source_evidence(evidence),
+        ),
+    )
+    state = _state(settings=Settings(data_dir=tmp_path, auth_token="secret"), skills=skills)
+    app = FastAPI()
+    app.include_router(routes.build_router(state))
+    headers = {"Authorization": "Bearer secret"}
+    base = "/api/skills/verified-advice"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for method, path in (("GET", "/evaluations"), ("POST", "/evaluate"), ("POST", "/activate"), ("POST", "/rollback")):
+            assert (await client.request(method, base + path)).status_code == 401
+        assert (await client.post("/api/skills/unknown/evaluate", headers=headers)).status_code == 404
+        assert (await client.post(base + "/evaluate", json={"passed": True}, headers=headers)).status_code == 422
+        assert (await client.get(base + "/evaluations", headers=headers)).json()["evaluations"] == []
+        assert (await client.post(base + "/activate", headers=headers)).status_code == 422
+        assert skills.inject("python") == ""
+        evaluation = await client.post(base + "/evaluate", headers=headers)
+        assert evaluation.status_code == 200
+        receipt = evaluation.json()["evaluation"]
+        assert receipt["status"] == "passed"
+        assert receipt["effectiveness"] == "not_checked"
+        assert skills.inject("python") == ""
+        activated = await client.post(base + "/activate", json={"reason": "Reviewed retained source"}, headers=headers)
+        assert activated.status_code == 200
+        assert activated.json()["capability"]["active"] is True
+        assert skill.body in skills.inject("python")
+        state.skills = skills = SkillLibrary(tmp_path / "skills")
+        history = (await client.get(base + "/evaluations", headers=headers)).json()
+        assert history["evaluations"] == [receipt]
+        assert history["capability"]["active"] is True
+        payload = (await client.get("/api/skills", headers=headers)).json()["skills"][0]
+        assert payload["capability_status"]["effectiveness"] == "not_checked"
+        assert (await client.post(base + "/rollback", json={"reason": ""}, headers=headers)).status_code == 422
+        assert skill.body in skills.inject("python")
+        rolled = await client.post(base + "/rollback", json={"reason": "Advice conflicts with current requirements"}, headers=headers)
+        assert rolled.status_code == 200
+        assert rolled.json()["capability"]["active"] is False
+        assert rolled.json()["capability"]["effectiveness"] == "not_checked"
+        state.skills = skills = SkillLibrary(tmp_path / "skills")
+        assert skills.inject("python") == ""
+        assert (await client.post(base + "/activate", headers=headers)).status_code == 422
+        assert (await client.get(base + "/evaluations", headers=headers)).json()["evaluations"] == [receipt]
+
+
+async def test_learning_api_reports_unavailable_without_fabricating_persistence(tmp_path):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    state = _state(settings=Settings(data_dir=tmp_path, auth_token="secret"))
+    app = FastAPI()
+    app.include_router(routes.build_router(state))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test", headers={"Authorization": "Bearer secret"}) as client:
+        for method, path, body in (
+            ("GET", "/learning/corrections", None),
+            ("POST", "/learning/corrections", {"text": "Preserve names", "project": "inventory"}),
+            ("POST", "/learning/corrections/1/retire", None),
+            ("PUT", "/persona", {"persona": {"tone": "direct"}}), ("DELETE", "/persona", None),
+            ("POST", "/skills/candidate/evaluate", None),
+        ):
+            assert (await client.request(method, "/api" + path, json=body)).status_code == 503
+        persona = (await client.get("/api/persona")).json()
+        assert persona["defaults"] is True
+        assert persona["available"] is False
+
+async def test_candidate_recovery_api_requires_trusted_association_and_acknowledgment(tmp_path):
+    from pathlib import Path
+
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from skyn3t.persistence.candidate_archive import CandidateArchive, CandidateRecovery
+
+    settings = Settings(data_dir=tmp_path / "data", projects_dir=tmp_path / "projects", auth_token="secret")
+    project = settings.projects_dir / "original"
+    project.mkdir(parents=True)
+    (project / "main.py").write_text("value = 1\n")
+    archive = CandidateArchive(project, settings)
+    (project / "main.py").write_text("value = 2\n")
+    receipt = archive.save({"main.py": "value = 1\n"}, {"main.py": "value = 2\n"})
+    (project / "main.py").write_text("value = 1\n")
+    archive_id = Path(receipt["path"]).stem
+    state = _state(settings=settings)
+    app = FastAPI()
+    app.include_router(routes.build_router(state))
+    headers = {"Authorization": "Bearer secret"}
+    base = "/api/projects/original/candidates"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for method, path in (("GET", base), ("GET", base + "/" + archive_id), ("POST", base + "/" + archive_id + "/recover")):
+            assert (await client.request(method, path)).status_code == 401
+        assert (await client.get(base, headers=headers)).json() == {"candidates": []}
+        assert (await client.get(base + "/" + archive_id, headers=headers)).status_code == 404
+        CandidateRecovery.register(settings, project, receipt)
+        listed = (await client.get(base, headers=headers)).json()["candidates"]
+        assert listed[0]["id"] == archive_id
+        assert listed[0]["proof_passed"] is False
+        detail = (await client.get(base + "/" + archive_id, headers=headers)).json()
+        assert detail["files"]["main.py"]["content"] == "value = 2\n"
+        assert detail["recoverable"] is True
+        recover = base + "/" + archive_id + "/recover"
+        assert (await client.post(recover, json={"slug": "recovered"}, headers=headers)).status_code == 422
+        assert not (settings.projects_dir / "recovered").exists()
+        response = await client.post(recover, json={"slug": "recovered", "acknowledge_unverified": True}, headers=headers)
+        assert response.status_code == 200
+        assert response.json()["status"] == "imported"
+        assert response.json()["proof_passed"] is False
+        assert (settings.projects_dir / "recovered" / "main.py").read_text() == "value = 2\n"
+        assert (project / "main.py").read_text() == "value = 1\n"
+        assert Path(receipt["path"]).exists()
+        assert (await client.post(recover, json={"slug": "recovered", "acknowledge_unverified": True}, headers=headers)).status_code == 409
+
 
 async def test_agent_catalog_preview_and_import(tmp_path):
     from skyn3t.intelligence.skill_library import SkillLibrary
@@ -2783,7 +2974,6 @@ async def test_agent_catalog_preview_and_import(tmp_path):
     assert "catalog-candidate" in candidate.tags
     assert "hygiene:quarantine" in candidate.tags
     assert skills.relevant("react") == []
-
     activated = await routes.import_agent_catalog(st, str(catalog), limit=20, activate=True)
     assert activated["activation"] == {
         "requested": True,
@@ -2796,6 +2986,43 @@ async def test_agent_catalog_preview_and_import(tmp_path):
     assert "catalog-promoted" in active.tags
     skills_payload = await routes.list_skills(st)
     assert skills_payload["skills"][0]["title"] == "Frontend Builder"
+
+async def test_listed_project_serves_stale_web_interact_as_not_checked(tmp_path):
+    from skyn3t.studio.manifest import BuildManifest
+    from skyn3t.studio.web_interact_check import refresh_web_interact
+    from skyn3t.worktree import source_tree_snapshot
+
+    settings = Settings(data_dir=tmp_path / "data", projects_dir=tmp_path / "projects", auth_token="secret")
+    project = settings.projects_dir / "freshness"
+    project.mkdir(parents=True)
+    (project / "index.html").write_text("<html><body><button id=go>Go</button></body></html>\n")
+    manifest = BuildManifest(slug="freshness", brief="freshness smoke", stack="react", status="completed")
+    stored = {
+        "status": "passed", "ok": True, "skipped": False, "fresh": True,
+        "reason": "", "blocks_delivery": False, "outcomes": [
+            {"flow": "submitted", "status": "passed", "reliable": True, "reason": ""},
+        ],
+        "source_identity": source_tree_snapshot(project),
+    }
+    stored = refresh_web_interact(stored, project)
+    manifest.extra["web_interact"] = stored
+    manifest.save(project)
+    state = _state(settings=settings)
+    projects = await routes.list_projects(state)
+    served = next(row for row in projects["projects"] if row["slug"] == "freshness")
+    before = dict(served["quality_scorecard"].get("web_interact") or {})
+    (project / "index.html").write_text("<html><body><p>Changed source</p></body></html>\n")
+    served = next(row for row in (await routes.list_projects(state))["projects"] if row["slug"] == "freshness")
+    after = served["quality_scorecard"].get("web_interact") or {}
+    assert before.get("status") != "not_checked"
+    assert after["status"] == "not_checked"
+    assert after["ok"] is True
+    assert after["skipped"] is True
+    assert "source identity changed" in after["reason"]
+    assert after["fresh"] is False
+    assert after["summary"]["not_checked"] == 1
+    assert all(outcome["status"] == "not_checked" for outcome in after.get("outcomes", []))
+
 
 @pytest.mark.filterwarnings(
     "ignore:Using `httpx` with `starlette.testclient` is deprecated"

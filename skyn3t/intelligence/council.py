@@ -42,8 +42,8 @@ Deliberately NOT ported, and why:
 * the privacy filter (``moa_loop.py:24-150``) — this is a local lab.
 
 Design rules this module answers to (docs/ARCHITECTURE.md): #5 cheap by default
-(the master switch ships ON, but ``moa_advisors`` ships EMPTY, so a fresh
-checkout still makes zero calls; one fan-out per build), #6 degrade don't crash (an
+(stub-backed builds make zero calls; one fan-out per build), #6 degrade don't
+crash (an
 advisor failure, a dead provider, or a council exception can never fail a
 build). It adds NO gate: the council never inspects output, never scores, never
 touches the verdict.
@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import structlog
@@ -166,6 +166,10 @@ class AdvisorOutput:
     error: str = ""
     cost_usd: float = 0.0
     duration_ms: float = 0.0
+    request_started: bool = False
+    cancelled: bool = False
+    cancellation_pending: bool = False
+    cost_source: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -177,6 +181,10 @@ class AdvisorOutput:
             "cost_usd": round(self.cost_usd, 6),
             "duration_ms": round(self.duration_ms, 1),
             "error": self.error,
+            "request_started": self.request_started,
+            "cancelled": self.cancelled,
+            "cancellation_pending": self.cancellation_pending,
+            "cost_source": self.cost_source,
         }
 
 
@@ -188,6 +196,9 @@ class CouncilAdvice:
     advisors: list[AdvisorOutput] = field(default_factory=list)
     degraded: bool = False
     dropped: list[dict[str, str]] = field(default_factory=list)
+    policy: str = "full"
+    duration_ms: float = 0.0
+    deadline_ms: float = 0.0
 
     @property
     def ok_count(self) -> int:
@@ -206,6 +217,18 @@ class CouncilAdvice:
             "guidance_chars": len(self.guidance),
             "cost_usd": self.cost_usd,
             "degraded": self.degraded,
+            "policy": self.policy,
+            "duration_ms": round(self.duration_ms, 1),
+            "deadline_ms": round(self.deadline_ms, 1),
+            # These are complete() invocations, NOT physical provider requests:
+            # retries and provider queueing are tracked by the LLM client.
+            "request_count": sum(a.request_started for a in self.advisors),
+            "request_count_scope": "advisor_complete_calls_excludes_provider_retries",
+            "cancelled_count": sum(a.cancelled for a in self.advisors),
+            "not_started_count": sum(not a.request_started for a in self.advisors),
+            "cancellation_pending_count": sum(a.cancellation_pending for a in self.advisors),
+            "ok_count": self.ok_count,
+            "cost_scope": "reported_only",
         }
 
 
@@ -267,7 +290,10 @@ def resolve_advisor_effort(slot: ModelSlot, settings: Any) -> str:
 class CouncilEngine:
     """Runs one bounded, tool-free advisor fan-out and assembles guidance."""
 
-    def __init__(self, llm: Any, settings: Any, advisors: str | None = None) -> None:
+    def __init__(
+        self, llm: Any, settings: Any, advisors: str | None = None,
+        *, policy: str | None = None,
+    ) -> None:
         self.llm = llm
         self.settings = settings
         # Per-build advisor selection (the dashboard's pre-build picker) wins
@@ -275,6 +301,12 @@ class CouncilEngine:
         # per build without editing settings. ``None`` = use the setting; an
         # explicit empty string = deliberately no advisors for this build.
         self.advisors_override = advisors
+        # Selecting advisors is explicit user intent, not a profile suggestion.
+        # Unknown policy values preserve the established full-council behavior.
+        self.policy = (
+            policy if advisors is None and policy in {"off", "bounded", "full"}
+            else "full"
+        )
 
     # ---- configuration -------------------------------------------------
     def slots(self) -> list[ModelSlot]:
@@ -299,6 +331,8 @@ class CouncilEngine:
         the empty ``moa_advisors`` default. Do not weaken either without
         replacing the guarantee.
         """
+        if self.policy == "off":
+            return False
         if not bool(getattr(self.settings, "moa_enabled", False)):
             return False
         if not self.slots():
@@ -307,10 +341,11 @@ class CouncilEngine:
         return backend != "stub"
 
     # ---- fan-out -------------------------------------------------------
-    async def _run_advisor(self, slot: ModelSlot, task: str) -> AdvisorOutput:
+    async def _run_advisor(
+        self, slot: ModelSlot, task: str, out: AdvisorOutput,
+    ) -> AdvisorOutput:
         label = slot.address
         started = time.monotonic()
-        out = AdvisorOutput(label=label, provider=slot.provider, model=slot.model)
         timeout = max(10, int(getattr(self.settings, "moa_advisor_timeout", 60)))
         try:
             kwargs: dict[str, Any] = {}
@@ -318,6 +353,7 @@ class CouncilEngine:
                 kwargs["provider_override"] = slot.provider
             if slot.model:
                 kwargs["model_override"] = slot.model
+            out.request_started = True
             result = await asyncio.wait_for(
                 self.llm.complete(
                     task,
@@ -330,6 +366,9 @@ class CouncilEngine:
                 ),
                 timeout=timeout,
             )
+        except asyncio.CancelledError:
+            out.duration_ms = (time.monotonic() - started) * 1000.0
+            raise
         except TimeoutError:
             out.error = f"timed out after {timeout}s"
             log.warning("moa.advisor_timeout", label=label, timeout=timeout)
@@ -342,6 +381,7 @@ class CouncilEngine:
             return out
         out.duration_ms = (time.monotonic() - started) * 1000.0
         out.cost_usd = float(getattr(result, "cost_usd", 0.0) or 0.0)
+        out.cost_source = str(getattr(result, "cost_source", "unknown") or "unknown")
         text = str(getattr(result, "text", "") or "").strip()
         backend = str(getattr(result, "backend", "") or "")
         status = str(getattr(result, "status", "") or "")
@@ -382,24 +422,24 @@ class CouncilEngine:
         return out
 
     async def advise(self, *, brief: str, stack: str = "", plan: str = "") -> CouncilAdvice:
-        """Fan out to every configured advisor and assemble guidance.
+        """Run the selected advisor policy and assemble useful guidance.
 
         Never raises. Returns empty guidance when the council is off, when every
         advisor fails, or on any unexpected error — in which case the codegen
         prompt is byte-identical to a council-off build.
         """
         if not self.enabled():
-            return CouncilAdvice()
+            return CouncilAdvice(policy=self.policy)
         try:
             return await self._advise(brief=brief, stack=stack, plan=plan)
         except Exception as exc:  # noqa: BLE001 - the council may never break a build
             log.warning("moa.council_failed", error=str(exc)[:160])
-            return CouncilAdvice(degraded=True)
+            return CouncilAdvice(degraded=True, policy=self.policy)
 
     async def _advise(self, *, brief: str, stack: str, plan: str) -> CouncilAdvice:
         slots, dropped = self._admissible_slots()
         if not slots:
-            return CouncilAdvice(degraded=bool(dropped), dropped=dropped)
+            return CouncilAdvice(degraded=bool(dropped), dropped=dropped, policy=self.policy)
         plan_block = f"Planned files / architecture:\n{plan}\n" if plan.strip() else ""
         task = _ADVISOR_TASK.format(
             brief=brief.strip() or "(no brief supplied)",
@@ -418,11 +458,11 @@ class CouncilEngine:
         council-off repair.
         """
         if not self.enabled():
-            return CouncilAdvice()
+            return CouncilAdvice(policy=self.policy)
         try:
             slots, dropped = self._admissible_slots()
             if not slots:
-                return CouncilAdvice(degraded=bool(dropped), dropped=dropped)
+                return CouncilAdvice(degraded=bool(dropped), dropped=dropped, policy=self.policy)
             task = _REPAIR_TASK.format(
                 brief=(brief or "").strip() or "(no brief supplied)",
                 stack=(stack or "").strip() or "(unpinned)",
@@ -431,7 +471,7 @@ class CouncilEngine:
             return await self._fan_out(task, slots, dropped)
         except Exception as exc:  # noqa: BLE001 - the council may never break a repair
             log.warning("moa.repair_council_failed", error=str(exc)[:160])
-            return CouncilAdvice(degraded=True)
+            return CouncilAdvice(degraded=True, policy=self.policy)
 
     async def _fan_out(
         self,
@@ -439,35 +479,85 @@ class CouncilEngine:
         slots: list[ModelSlot],
         dropped: list[dict[str, str]],
     ) -> CouncilAdvice:
+        started = time.monotonic()
         limit = max(1, int(getattr(self.settings, "moa_max_concurrency", 4)))
         sem = asyncio.Semaphore(limit)
-
-        async def _one(slot: ModelSlot) -> AdvisorOutput:
-            async with sem:
-                return await self._run_advisor(slot, task)
-
-        results = await asyncio.gather(
-            *(_one(slot) for slot in slots), return_exceptions=True
+        per_advisor_timeout = max(10, int(getattr(self.settings, "moa_advisor_timeout", 60)))
+        # Full retains every selection and the existing per-wave timeout budget.
+        # Bounded includes semaphore/provider queue wait in ONE council deadline.
+        timeout = (
+            max(0.1, min(120.0, float(getattr(self.settings, "moa_council_timeout", 15.0))))
+            if self.policy == "bounded"
+            else per_advisor_timeout * ((len(slots) + limit - 1) // limit)
         )
-        advisors: list[AdvisorOutput] = []
-        for slot, res in zip(slots, results, strict=False):
-            if isinstance(res, BaseException):
-                advisors.append(
-                    AdvisorOutput(
-                        label=slot.address,
-                        provider=slot.provider,
-                        model=slot.model,
-                        error=str(res)[:160],
+        advisors = [
+            AdvisorOutput(label=s.address, provider=s.provider, model=s.model)
+            for s in slots
+        ]
+        running_since: dict[int, float] = {}
+
+        async def _one(slot: ModelSlot, out: AdvisorOutput) -> None:
+            async with sem:
+                running_since[id(out)] = time.monotonic()
+                await self._run_advisor(slot, task, out)
+
+        tasks = [
+            asyncio.create_task(_one(slot, out))
+            for slot, out in zip(slots, advisors, strict=True)
+        ]
+        try:
+            await asyncio.wait(tasks, timeout=timeout)
+        finally:
+            # Also clean up children on build/user cancellation, without swallowing
+            # that cancellation. Production CLI cancellation kills the owned tree.
+            pending = {t for t in tasks if not t.done()}
+            for child in pending:
+                child.cancel()
+            if pending:
+                # A misbehaving adapter must not add an unbounded cleanup tail.
+                # Report unacknowledged cancellation instead of claiming termination.
+                await asyncio.wait(pending, timeout=2.0)
+            for child, out in zip(tasks, advisors, strict=True):
+                if child in pending or child.cancelled():
+                    out.cancelled = True
+                    out.cancellation_pending = not child.done()
+                    if out.request_started:
+                        out.duration_ms = (
+                            time.monotonic() - running_since[id(out)]
+                        ) * 1000.0
+                    out.ok = False
+                    out.text = ""
+                    out.error = (
+                        "council deadline; cancellation pending"
+                        if out.cancellation_pending else "cancelled at council deadline"
                     )
-                )
-            else:
-                advisors.append(res)
-        advice = CouncilAdvice(advisors=advisors, dropped=dropped)
-        advice.guidance = self._assemble(advisors)
-        advice.degraded = bool(dropped) or any(not a.ok for a in advisors)
+                if child.done() and not child.cancelled():
+                    exc = child.exception()
+                    if exc is not None:
+                        out.error = str(exc)[:160]
+                elif not child.done():
+                    # Consume late exceptions; never inject late advice or mutate
+                    # the returned record when cancellation-resistant work settles.
+                    child.add_done_callback(self._consume_task_result)
+        # Snapshot outputs: cancellation-resistant adapters still own their inputs.
+        advice = CouncilAdvice(
+            advisors=[replace(out) for out in advisors],
+            dropped=dropped, policy=self.policy,
+            duration_ms=(time.monotonic() - started) * 1000.0,
+            deadline_ms=timeout * 1000.0,
+        )
+        advice.guidance = self._assemble(advice.advisors)
+        advice.degraded = any(d["reason"] != "bounded_policy" for d in dropped) or any(
+            not a.ok for a in advice.advisors
+        )
         if not advice.guidance:
             log.warning("moa.all_advisors_failed", count=len(advisors))
         return advice
+
+    @staticmethod
+    def _consume_task_result(task: asyncio.Task) -> None:
+        if not task.cancelled():
+            task.exception()
 
     def _admissible_slots(self) -> tuple[list[ModelSlot], list[dict[str, str]]]:
         """Split configured slots into runnable ones and recorded drops.
@@ -500,6 +590,11 @@ class CouncilEngine:
                 dropped.append({"slot": slot.address, "reason": "free_only"})
                 continue
             keep.append(slot)
+        if self.policy == "bounded":
+            dropped.extend(
+                {"slot": slot.address, "reason": "bounded_policy"} for slot in keep[2:]
+            )
+            keep = keep[:2]
         for entry in dropped:
             log.info("moa.slot_dropped", slot=entry["slot"], reason=entry["reason"])
         return keep, dropped

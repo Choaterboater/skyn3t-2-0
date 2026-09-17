@@ -73,6 +73,9 @@ def save_council_run(
             "guidance": getattr(advice, "guidance", ""),
             "degraded": bool(getattr(advice, "degraded", False)),
             "cost_usd": float(getattr(advice, "cost_usd", 0.0) or 0.0),
+            "policy": getattr(advice, "policy", "full"),
+            "duration_ms": float(getattr(advice, "duration_ms", 0.0) or 0.0),
+            "deadline_ms": float(getattr(advice, "deadline_ms", 0.0) or 0.0),
         }
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:

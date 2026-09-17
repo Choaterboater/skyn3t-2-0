@@ -59,8 +59,8 @@ def candidate_project(tmp_path):
         vector_db_path=tmp_path / "vectors",
         llm_backend="openrouter",
     )
-    project = tmp_path / "worktree"
-    project.mkdir()
+    project = tmp_path / "projects" / "candidate-demo"
+    project.mkdir(parents=True)
     (project / "main.py").write_text("value = 1\n")
     return settings, project
 
@@ -277,6 +277,27 @@ async def test_engine_surfaces_unverified_bytes_after_real_worktree_cleanup(cand
     assert state["base_source_sha256"] == base_hash
     assert state["files"]["main.py"]["content"].encode("utf-8") == candidate
     assert state["files"]["main.py"]["sha256"] == hashlib.sha256(candidate).hexdigest()
+
+    from skyn3t.persistence.candidate_archive import CandidateRecovery
+    from skyn3t.studio.manifest import BuildManifest
+
+    retained = outcome.detail["candidate_retention"]
+    assert retained["status"] == "unverified"
+    recovery = CandidateRecovery(settings, project)
+    [saved] = recovery.list()["candidates"]
+    assert saved["status"] == "unverified"
+    archive_before = receipts[0].read_bytes()
+    recovered = recovery.recover(saved["id"], slug="recovered-provider-failure")
+    recovered_dir = Path(recovered["project_dir"])
+    assert recovered_dir != project
+    assert recovered["unverified"] is True
+    assert recovered["proof_passed"] is False
+    assert (recovered_dir / "main.py").read_bytes() == candidate
+    assert (project / "main.py").read_bytes() == original
+    assert receipts[0].read_bytes() == archive_before
+    recovered_manifest = BuildManifest.load(recovered_dir)
+    assert recovered_manifest is not None
+    assert recovered_manifest.status == "imported"
 
 
 @pytest.mark.parametrize("storage_failed", [False, True])

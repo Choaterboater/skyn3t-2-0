@@ -76,7 +76,7 @@ export default function Overview({ stream }) {
         sub="Start a new build, continue a project, or refine a running app. SkyN3t keeps the technical proof available without putting it in your way."
         actions={
           <span className="badge border-hairline text-ash">
-            backend · <span className="ml-1 text-ember">{d.backend || d.llm_backend || "stub"}</span>
+            {health.isLoading ? "Dashboard connection: checking" : health.error ? "Dashboard disconnected" : "Dashboard connected"} · {d.backend === "stub" || d.llm_backend === "stub" ? "Offline demo generation" : `Generation engine: ${d.backend || d.llm_backend || "not checked"}`}
           </span>
         }
       />
@@ -106,10 +106,13 @@ export default function Overview({ stream }) {
       {/* a dead stream freezes the ladder's heat — say so instead of pulsing */}
       <StreamStaleBanner stream={stream} />
 
-      <div className="mb-3 mt-8"><h2 className="font-display text-xl font-semibold text-bone">System confidence</h2><p className="mt-1 text-sm text-ash">Connection, verification, agents, and recorded activity from the real backend.</p></div>
+      <div className="mb-3 mt-8"><h2 className="font-display text-xl font-semibold text-bone">Connection and verification</h2><p className="mt-1 text-sm text-ash">Dashboard connectivity does not prove generation availability or product behavior. Offline demo output is not live AI output; proof applies only to the build that was checked.</p></div>
 
+      <details className="mb-6">
+        <summary className="cursor-pointer py-3 text-sm font-semibold text-bone">Technical verification stages</summary>
       {/* the signature: every build climbs the verify ladder before it ships */}
       <GateLadder stream={stream} />
+      </details>
 
       {/* golden bench runs are isolated from build memory — surface them here */}
       <GoldenBenchCard />
@@ -117,8 +120,8 @@ export default function Overview({ stream }) {
       {/* demoted telemetry — quiet strip, not the hero */}
       <Panel className="mb-6">
         <div className="flex flex-wrap items-center gap-x-10 gap-y-3 px-4 py-3">
-          <Telem label="Agents" value={d.agents ?? d.agent_count ?? agents.length} />
           <Telem label="Forging" value={forging} tone={forging ? "ember" : "plasma"} />
+          <Telem label="Agents" value={d.agents ?? d.agent_count ?? agents.length} />
           <Telem label="Active builds" value={d.active_builds ?? 0} tone={d.active_builds ? "ember" : "bone"} />
           <Telem label="Events" value={events.length} />
         </div>
@@ -126,16 +129,16 @@ export default function Overview({ stream }) {
 
       <Panel className="mb-6 overflow-hidden">
         <PanelHead
-          label="The Swarm"
-          right={<span className="font-mono text-[11px] text-ash">{forging}/{agents.length} forging</span>}
+          label="Agents"
+          right={<span className="font-mono text-[11px] text-ash">{forging}/{agents.length} working</span>}
         />
         <SwarmConstellation agents={agents} heat={heat} />
       </Panel>
 
       <Panel>
-        <PanelHead label="Live event tail" right={<span className="font-mono text-[11px] text-ash">/ws</span>} />
+        <PanelHead label="Recent activity" right={<span className="font-mono text-[11px] text-ash">/ws</span>} />
         {recent.length === 0 ? (
-          <Empty icon="≋">Quiet forge. Submit a build to see the swarm light up.</Empty>
+          <Empty icon="≋">No activity yet. Start a build to see progress.</Empty>
         ) : (
           <ul className="divide-y divide-hairline/60">
             {recent.map((e) => {

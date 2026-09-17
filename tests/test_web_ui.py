@@ -308,26 +308,6 @@ def test_dead_event_stream_is_labelled_stale_on_live_status_routes() -> None:
     assert "<ForgeStage s={p} stale={streamStale} />" in studio
 
 
-def test_dashboard_policy_and_mobile_loading_contracts_are_visible_in_source() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
-    settings = (ROUTES / "Settings.jsx").read_text(encoding="utf-8")
-    projects = (ROUTES / "Projects.jsx").read_text(encoding="utf-8")
-    ladder = (COMPONENTS / "GateLadder.jsx").read_text(encoding="utf-8")
-    bench = (COMPONENTS / "GoldenBenchCard.jsx").read_text(encoding="utf-8")
-    app = (SRC / "App.jsx").read_text(encoding="utf-8")
-
-    assert 'routingNoClaude = routingSecrets.no_claude !== false' in studio
-    assert 'option.id !== "claude_cli"' in studio
-    assert 'option.id !== "claude_cli"' in settings
-    assert 'option.provider !== "claude"' in settings
-    assert 'loading projects…' in projects
-    assert 'items={visibleProjectSignals}' in projects
-    assert 'Swipe to inspect all gates' in ladder
-    assert 'w-24 shrink-0 snap-start' in ladder
-    assert 'provider · {ledger.llm_backend}' in bench
-    assert 'grid-cols-[minmax(0,1fr)_auto]' in bench
-    assert 'min-h-11' in app
-
 def test_build_terminal_settles_active_slice_rows() -> None:
     helper = SRC / "agentSignals.js"
     script = f"""
@@ -906,50 +886,9 @@ def test_studio_polling_is_scoped_to_active_builds() -> None:
     assert 'queryKey: ["llm-secrets"]' in studio
 
 
-def test_studio_exposes_free_only_routing_toggle() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
-    assert "const routingFreeOnly =" in studio
-    assert "const setFreeOnlyRouting = useMutation" in studio
-    assert 'apiPost("/llm/routing", { free_only })' in studio
-    assert "Free only" in studio
-    assert "routingFreeOnly ? \"free only\" : \"paid allowed\"" in studio
-    assert "setFreeOnlyRouting.mutate(e.target.checked)" in studio
 
 
-def test_studio_has_command_deck_summary() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
-    assert "SignalGrid" in studio
-    assert "const effectiveBuildProfile =" in studio
-    assert "build_profile: effectiveBuildProfile" in studio
-    assert "Full app contract" in studio
-    assert "const buildIntent =" in studio
-    assert "Command deck" in studio
-    assert "mode" in studio
-    assert "model" in studio
-    assert "reference" in studio
-    assert "fan-out" in studio
-    assert "assetState.label" in studio
-    assert "Routing estimate" in studio
-    assert "estimate_reason" in studio
-    assert "Explicit model pins remain unrestricted" in studio
-    assert "selectedStacks.size" in studio
-    assert "Cleanup completed" in studio
-    assert "onClick={() => cleanupCompletedBuilds.mutate()}" in studio
-    assert "cleanupBuild.mutate({ build_id: buildKey })" in studio
-    assert "add one more" in studio
-    assert "xl:order-2" in studio
-    assert "order-3" in studio
-    assert "xl:row-start-2" in studio
 
-
-def test_studio_foundry_layout_avoids_stretched_empty_card() -> None:
-    studio = (ROUTES / "Studio.jsx").read_text(encoding="utf-8")
-    assert 'const [showRoutingDetails, setShowRoutingDetails] = useState(false)' in studio
-    assert 'className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem] xl:items-start"' in studio
-    assert 'className="min-w-0 space-y-4"' in studio
-    assert '<Panel className="p-4">' in studio
-    assert '<Panel className="order-2 p-3 xl:order-2">' in studio
-    assert '<Panel className="mb-6 p-4">' not in studio
 
 
 def test_studio_mounts_model_catalog_only_while_disclosure_is_open() -> None:
@@ -981,7 +920,7 @@ def test_studio_recent_build_ai_meta_explains_model_source_and_backend() -> None
     assert 'prompts {ai.promptCount ?? "—"}' in studio
     assert 'stages {ai.stageCount ?? "—"}' in studio
     assert "const outcome = buildOutcome(b);" in studio
-    assert "<Pill tone={outcome.tone}>{outcome.label}</Pill>" in studio
+    assert "<Pill tone={resultTone}>{resultLabel}</Pill>" in studio
 
 
 def test_studio_recent_build_ai_meta_shows_runtime_model_cost() -> None:

@@ -944,7 +944,7 @@ export default function Studio({ stream }) {
     mutationFn: ({ build_id }) =>
       apiPost("/builds/cancel", {
         build_id,
-        reason: "cancelled from Studio",
+        reason: "cancelled from Build",
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["builds"] }),
     onSettled: () => setPendingBuildId(null),
@@ -1044,8 +1044,8 @@ export default function Studio({ stream }) {
   const assetState = secrets.data?.replicate
     ? secrets.data?.asset_gen
       ? {
-          tone: "plasma",
-          label: "assets ready",
+          tone: "ash",
+          label: "assets configured",
           title: `Replicate ${secrets.data?.replicate_model || "default"} is configured for generated assets`,
         }
       : {
@@ -1167,20 +1167,20 @@ export default function Studio({ stream }) {
   return (
     <div>
       <PageHeader
-        eyebrow="Foundry · Build Console"
-        title="Studio"
-        sub="Forge a brief into running software. Watch the line ignite as the swarm works."
+        eyebrow="Foundry"
+        title="Build"
+        sub="Describe what you need, choose a profile, and build. Expert controls stay available in Advanced build options."
         actions={
           <span className="badge border-hairline text-ash">
-            forge line ·{" "}
-            <span className={`ml-1 ${running ? "text-ember" : "text-plasma"}`}>
-              {running ? "live" : "idle"}
+            build progress ·{" "}
+            <span className={`ml-1 ${running ? "text-ember" : "text-ash"}`}>
+              {streamStale ? "updates unavailable" : running ? "working" : "idle"}
             </span>
           </span>
         }
       />
 
-      <div className="mb-6 grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem] xl:items-start">
+      <div className="mb-6">
         <div className="min-w-0 space-y-4">
           <Panel className="p-4">
             <form
@@ -1227,6 +1227,20 @@ export default function Studio({ stream }) {
                   value={brief}
                   onChange={(e) => setBrief(e.target.value)}
                 />
+              </div>
+              <div>
+                <label htmlFor="build-profile" className="block text-sm font-semibold text-bone">2. Choose a build profile</label>
+                <select id="build-profile" className="field mt-2" value={buildProfile} onChange={(event) => chooseBuildProfile(event.target.value)}>
+                  {BUILD_PROFILES.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
+                </select>
+                <p className="mt-1 text-xs text-ash">{BUILD_PROFILES.find((profile) => profile.id === buildProfile)?.hint} This build only.</p>
+                {buildProfile === "manual" ? <p className="mt-1 text-xs text-ash">Set the optional model override in Advanced build options. Without a pin, profile routing applies.</p> : null}
+              </div>
+              <div className="rounded border border-hairline bg-void/30 p-3 text-xs text-ash" aria-label="Execution summary">
+                <p className="font-semibold text-bone">{routingSecrets.backend === "stub" || selectedFoundryBackend === "stub" ? "Offline demo generation — not live AI" : `Generation engine: ${routingSecrets.backend || "not checked"}`}</p>
+                <p className="mt-1">{routingSecrets.backend === "stub" || selectedFoundryBackend === "stub" ? "Deterministic demo output; no provider generation." : usesCliBackend ? `${cliExecutionLabel}; account billing, price unknown here.` : `Model: ${activeModelOverride || "selected by profile"}. Catalog estimates are not final charges.`}</p>
+                <p className="mt-1">Verification: not checked until this build runs. Generated output and a connected dashboard do not prove requested behavior.</p>
+                {selectedFoundryUnavailable ? <p className="mt-1 text-ember">Selected generation engine or codegen override unavailable. Open Advanced build options → Global defaults, or Settings.</p> : null}
               </div>
               {/* "Build from a picture": attach one reference image (screenshot,
                   drawing, or diagram) that the design/architecture agents match. */}
@@ -1281,10 +1295,14 @@ export default function Studio({ stream }) {
                   }
                   className="btn-ember min-w-[10rem] disabled:opacity-50"
                 >
-                  {submit.isPending ? "Forging…" : "Forge build"}
+                  {submit.isPending ? "Starting build…" : "Build"}
                 </button>
               </div>
             </form>
+            {submit.isError ? <ErrorText className="mt-3 max-h-28">{String(submit.error.message)}</ErrorText> : null}
+            <details className="mt-4 border-t border-hairline pt-3">
+              <summary className="cursor-pointer text-sm font-semibold text-bone">Advanced build options</summary>
+              <p className="mt-2 text-xs text-ash">This build: advisors, model override, full app, and multi-stack comparison. Global defaults are labeled separately and change future builds.</p>
             {/* Mixture-of-Agents advisors for THIS build. Tool-free models that
                 read the brief and advise the coding agent — they never write
                 files and never gate the verdict. An unavailable CLI stays
@@ -1318,9 +1336,9 @@ export default function Studio({ stream }) {
                   </label>
                 ))}
                 <span className="font-mono text-[11px] text-ash">
-                  {effectiveAdvisors.size === 0
-                    ? "none — council off for this build"
-                    : `${effectiveAdvisors.size} selected`}
+                  {advisorSel === null
+                    ? "Profile/default policy — checked slots are defaults, not a promise all will run"
+                    : effectiveAdvisors.size === 0 ? "No advisors for this build" : `${effectiveAdvisors.size} explicitly selected for this build`}
                 </span>
                 {advisorSel ? (
                   <button
@@ -1333,21 +1351,16 @@ export default function Studio({ stream }) {
                 ) : null}
               </div>
             ) : null}
-            {submit.isError ? (
-              <ErrorText className="mt-3 max-h-28">
-                {String(submit.error.message)}
-              </ErrorText>
-            ) : null}
 
             <div className="mt-3 border-t border-hairline pt-3">
               <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
                 <div className="grid gap-3 border-b border-hairline pb-3 md:col-span-2 md:grid-cols-[minmax(14rem,22rem)_minmax(0,1fr)] md:items-start">
                   <label className="min-w-0">
                     <span className="mb-1 block font-mono text-[10px] uppercase text-ash">
-                      Foundry execution backend
+                      Global defaults · execution backend
                     </span>
                     <select
-                      aria-label="Foundry execution backend"
+                      aria-label="Global default execution backend"
                       value={selectedFoundryBackend}
                       onChange={(event) => foundryBackendMut.mutate(event.target.value)}
                       disabled={foundryBackendMut.isPending}
@@ -1372,7 +1385,7 @@ export default function Studio({ stream }) {
                   </label>
                   <div className="min-w-0 text-[11px] text-ash">
                     <p>
-                      Persisted globally for all future Foundry runs. Requested{" "}
+                      Saved immediately for this and all future builds. Requested{" "}
                       <span className="font-mono text-bone">{selectedFoundryBackend}</span>; active{" "}
                       <span className="font-mono text-bone">
                         {routingSecrets.backend || routingSecrets.routing?.active || "checking"}
@@ -1382,13 +1395,9 @@ export default function Studio({ stream }) {
                       <>
                         <p className={`mt-1 ${selectedFoundryStatus.available ? "text-plasma" : "text-ember"}`}>
                           {selectedFoundryStatus.available
-                            ? `${selectedFoundryOption.label} command available${
-                                selectedFoundryStatus.detail?.path
-                                  ? ` at ${selectedFoundryStatus.detail.path}`
-                                  : ""
-                              }.`
+                            ? `${selectedFoundryOption.label} command available${selectedFoundryStatus.detail?.path ? ` at ${selectedFoundryStatus.detail.path}` : ""}. Authentication and generation are not checked by command discovery.`
                             : selectedFoundryStatus.checked
-                              ? `${selectedFoundryOption.label} command not found on PATH. Choose another backend before forging.`
+                              ? `${selectedFoundryOption.label} command not found on PATH. Choose another backend before building.`
                               : llmBackends.isError
                                 ? `${selectedFoundryOption.label} availability could not be checked.`
                                 : `${selectedFoundryOption.label} availability is being checked.`}
@@ -1396,7 +1405,7 @@ export default function Studio({ stream }) {
                         <p className="mt-1">{cliAccountBillingText(selectedFoundryBackend)}</p>
                         <p className="mt-1 text-ash/80">
                           An explicit CLI does not silently switch to OpenRouter; a missing
-                          command resolves to the offline stub, and Studio blocks the build here.
+                          command resolves to the offline stub, and Build blocks the build here.
                         </p>
                       </>
                     ) : null}
@@ -1410,13 +1419,13 @@ export default function Studio({ stream }) {
                     {selectedFoundryOpenRouterMissing ? (
                       <p className="mt-1 text-ember">
                         OpenRouter is selected but its API key is missing. Choose an
-                        installed CLI, configure the key, or use the offline stub before forging.
+                        installed CLI, configure the key, or use the offline stub before building.
                       </p>
                     ) : null}
                     {codegenCliUnavailable ? (
                       <p className="mt-1 text-ember">
                         The codegen-only {codegenCliProvider} CLI override is unavailable.
-                        Clear it in Settings or install the command before forging.
+                        Clear it in Settings or install the command before building.
                       </p>
                     ) : null}
                     {foundryBackendMut.isPending ? (
@@ -1428,27 +1437,6 @@ export default function Studio({ stream }) {
                       </ErrorText>
                     ) : null}
                   </div>
-                </div>
-                <div className="flex flex-wrap gap-2 md:col-span-2">
-                  {BUILD_PROFILES.map((p) => {
-                    const on = buildProfile === p.id;
-                    return (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => chooseBuildProfile(p.id)}
-                        title={p.hint}
-                        aria-pressed={on}
-                        className={`rounded-full border px-3 py-1 font-mono text-[11px] transition-colors ${
-                          on
-                            ? "border-plasma/50 bg-plasma/10 text-plasma"
-                            : "border-hairline text-ash hover:border-plasma/30 hover:text-bone"
-                        }`}
-                      >
-                        {p.label}
-                      </button>
-                    );
-                  })}
                 </div>
                 <div className="flex min-w-0 flex-col gap-1">
                   <input
@@ -1637,7 +1625,7 @@ export default function Studio({ stream }) {
                       className="accent-plasma"
                     />
                     <span className={routingFreeOnly ? "text-plasma" : ""}>
-                      {usesCliBackend ? "OpenRouter routing inactive" : "OpenRouter · Free only"}
+                      {usesCliBackend ? "Global OpenRouter routing inactive" : "Global default · OpenRouter free only"}
                     </span>
                   </label>
                   <label
@@ -1650,7 +1638,7 @@ export default function Studio({ stream }) {
                       onChange={(e) => toggleFullApp(e.target.checked)}
                       className="accent-plasma"
                     />
-                    <span className={fullApp ? "text-plasma" : ""}>Full app</span>
+                    <span className={fullApp ? "text-plasma" : ""}>Full app · this build</span>
                   </label>
                 </div>
               </div>
@@ -1673,7 +1661,6 @@ export default function Studio({ stream }) {
                 </div>
               ) : null}
             </div>
-          </Panel>
           <Panel className="p-4">
           <div className="order-3 min-w-0 xl:col-start-1 xl:row-start-2">
             {/* Example briefs: clickable starters that fill the brief box. */}
@@ -1685,7 +1672,7 @@ export default function Studio({ stream }) {
                     key={ex}
                     type="button"
                     onClick={() => useExample(ex)}
-                    title="Fill the brief with this example — then edit and forge"
+                    title="Fill the brief with this example — then edit and build"
                     className="rounded-full border border-hairline px-3 py-1 text-left text-[11px] text-ash transition-colors hover:border-ember/40 hover:text-bone"
                   >
                     {ex}
@@ -1697,7 +1684,7 @@ export default function Studio({ stream }) {
             {/* Spec 4: fan the same brief out across divergent stacks, pick a winner */}
             <div className="mt-3 border-t border-hairline pt-3">
               <div className="flex flex-col gap-1">
-                <span className="font-mono text-[11px] text-ash">Fan out across stacks:</span>
+                <span className="font-mono text-[11px] text-ash">Multi-stack comparison (fan-out) · this build:</span>
                 <span className="text-[11px] text-ash/70">
                   Optional — skyn3t auto-picks a stack from your brief. Use fan-out to
                   build across several and compare.
@@ -1773,11 +1760,10 @@ export default function Studio({ stream }) {
             ) : null}
           </div>
           </Panel>
-        </div>
           <Panel className="order-2 p-3 xl:order-2">
             <div className="mb-3 border-b border-hairline pb-3">
               <div className="flex items-start justify-between gap-2">
-                <div className="eyebrow text-[9px]">Routing estimate</div>
+                <div className="eyebrow text-[9px]">Model routing and global defaults</div>
                 {routingRows.length ? (
                   <button
                     type="button"
@@ -1848,9 +1834,9 @@ export default function Studio({ stream }) {
                     onClick={() => clearRoutingLocks.mutate()}
                     disabled={clearRoutingLocks.isPending}
                     className="btn-ghost py-0.5 text-[9px]"
-                    title="Clear preferred model, per-tier pins, and codegen model overrides"
+                    title="Clear global preferred model, per-tier pins, codegen overrides, and this build's model override"
                   >
-                    {clearRoutingLocks.isPending ? "clearing locks…" : "clear routing locks"}
+                    {clearRoutingLocks.isPending ? "clearing locks…" : "Clear global routing locks"}
                   </button>
                 </div>
               ) : null}
@@ -1888,7 +1874,7 @@ export default function Studio({ stream }) {
               </div>
             )}
             <SignalGrid
-              label="Command deck"
+              label="Build configuration"
               items={[
                 { label: "backend", value: buildIntent.backend },
                 { label: "mode", value: buildIntent.mode },
@@ -1905,12 +1891,15 @@ export default function Studio({ stream }) {
               valueClassName="text-[11px]"
             />
           </Panel>
+            </details>
+          </Panel>
+        </div>
       </div>
 
       {fanout.cands.length > 0 || fanout.active ? (
         <Panel className="mb-6 overflow-hidden">
           <PanelHead
-            label="Fan-out exploration"
+            label="Multi-stack comparison"
             right={
               fanout.done ? (
                 <span className="font-mono text-[11px] text-plasma">
@@ -1937,8 +1926,8 @@ export default function Studio({ stream }) {
                   <div className="flex items-center gap-3 font-mono text-[11px]">
                     <Pill tone={verdictTone(c.verdict)}>{c.verdict}</Pill>
                     <span className="text-ash">score {c.score ?? "—"}</span>
-                    <span className={c.proof_passed ? "text-plasma" : "text-ember"}>
-                      {c.proof_passed ? "proof ✓" : "proof ✕"}
+                    <span className={c.proof_passed === true ? "text-plasma" : c.proof_passed === false ? "text-ember" : "text-ash"}>
+                      {c.proof_passed === true ? "proof passed" : c.proof_passed === false ? "proof failed" : "proof not checked"}
                     </span>
                   </div>
                 </div>
@@ -1954,15 +1943,17 @@ export default function Studio({ stream }) {
       {/* bench runs execute in isolated state — surface them on the build console */}
       <GoldenBenchCard />
 
+      <details className="mb-6">
+        <summary className="cursor-pointer py-3 text-sm font-semibold text-bone">Technical build details · stages, agents, preview, and files</summary>
       <Panel className="mb-6 overflow-hidden">
         <PanelHead
-          label="Forge line"
+          label="Build progress"
           right={
             <span className="font-mono text-[11px] text-ash">
               {running ? (
-                <span className="text-ember">{running} igniting</span>
+                <span className="text-ember">{running} working</span>
               ) : (
-                <span className="text-plasma">{done}/{pipeline.length} cooled</span>
+                <span className="text-ash">{done}/{pipeline.length} stages complete</span>
               )}
             </span>
           }
@@ -2012,6 +2003,7 @@ export default function Studio({ stream }) {
           <FilesSoFar events={events} />
         </Panel>
       </div>
+      </details>
 
       <Panel>
         <PanelHead
@@ -2058,7 +2050,7 @@ export default function Studio({ stream }) {
           </ErrorText>
         ) : null}
         {recentBuilds.length === 0 ? (
-          <Empty icon="⬡">No builds yet. Submit a brief to fire the forge.</Empty>
+          <Empty icon="⬡">No builds yet. Submit a brief to start building.</Empty>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left">
@@ -2084,6 +2076,21 @@ export default function Studio({ stream }) {
                   const buildKey = b.build_id || b.slug;
                   const active = isActiveBuild(b.status);
                   const outcome = buildOutcome(b);
+                  const proofStatus = ai.proof === true ? "passed" : ai.proof === false ? "failed" : "not_checked";
+                  const demo = ai.backend === "stub";
+                  const interact = b.quality_scorecard?.web_interact || b.manifest?.extra?.web_interact || null;
+                  const interactStatus = interact?.skipped === true ? "not_checked" : ["passed", "failed", "not_checked"].includes(interact?.status) ? interact.status : "not_checked";
+                  const coverage = interact?.summary && typeof interact.summary === "object" ? interact.summary : null;
+                  const coverageCounts = coverage && Number.isInteger(coverage.required) ? {
+                    required: coverage.required,
+                    passed: Number(coverage.passed || 0),
+                    failed: Number(coverage.failed || 0),
+                    notChecked: Number(coverage.not_checked || 0),
+                  } : null;
+                  const verified = proofStatus === "passed" && interactStatus === "passed";
+                  const verificationFailed = proofStatus === "failed" || interactStatus === "failed";
+                  const resultLabel = b.approval_pending ? "Needs your decision" : outcome.active ? outcome.label : demo && outcome.delivered ? "Offline demo output" : outcome.shippable ? verificationFailed ? "Verification failed" : verified ? "Checked output" : "Saved, not fully verified" : outcome.label;
+                  const resultTone = demo ? "ash" : outcome.shippable ? verificationFailed ? "ember" : verified ? "plasma" : "ash" : outcome.tone;
                   return (
                     <tr key={buildKey}>
                       <td className="px-4 py-2 font-mono text-xs text-bone">
@@ -2125,13 +2132,21 @@ export default function Studio({ stream }) {
                         </div>
                       </td>
                       <td className="px-4 py-2">
-                        <Pill tone={outcome.tone}>{outcome.label}</Pill>
+                        <Pill tone={resultTone}>{resultLabel}</Pill>
                         <div
                           className="mt-1 max-w-[11rem] font-mono text-[10px] text-ash/70"
                           title={outcome.title}
                         >
                           {outcome.detail}
                         </div>
+                        <div className="mt-1 text-xs text-ash">Build proof: {proofStatus.replaceAll("_", " ")}</div>
+                        <div className="mt-1 text-xs text-ash">Requested behavior: {interactStatus.replaceAll("_", " ")}{coverageCounts ? ` · required ${coverageCounts.required}: ${coverageCounts.passed} passed, ${coverageCounts.failed} failed, ${coverageCounts.notChecked} not checked` : ""}{interact?.fresh === false ? " · evidence stale" : ""}</div>
+                        <div className="mt-1 font-mono text-[10px] text-ash/70">Confidence: {resultLabel}</div>
+                        <details className="mt-1 max-w-[18rem] text-xs text-ash">
+                          <summary className="cursor-pointer">Verification scope</summary>
+                          <p className="mt-1">Interaction evidence is advisory and covers only the recorded flow, not every product requirement. Missing, legacy (zero required outcomes), or skipped evidence is not counted as a pass.</p>
+                          {typeof interact?.reason === "string" ? <p className="mt-1">{interact.reason}</p> : null}
+                        </details>
                       </td>
                       <td className="px-4 py-2 font-mono text-xs text-ash">
                         {b.score ?? "—"}

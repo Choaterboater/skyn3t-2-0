@@ -18,7 +18,7 @@ test("navigation contains every dashboard route once", () => {
 
 test("page filtering searches labels, descriptions, and paths", () => {
   assert.deepEqual(filterPages("provider").map((item) => item.to), ["/settings"]);
-  assert.deepEqual(filterPages("foundry").map((item) => item.to), ["/studio"]);
+  assert.deepEqual(filterPages("build").map((item) => item.to), ["/studio"]);
   assert.equal(filterPages("").length, 10);
 });
 

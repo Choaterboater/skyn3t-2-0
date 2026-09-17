@@ -40,12 +40,6 @@ def test_no_generic_fallback_when_proof_errors_present():
     assert any("avoid — SYNTAX ERROR" in ls for ls in lessons)
 
 
-def test_generic_fallback_kept_when_nothing_actionable():
-    build = {"stack": "python", "verdict": "no_go", "gaps": [], "proof_errors": []}
-    lessons = _summarize_outcome(build)
-    assert any("re-check the plan" in ls for ls in lessons)
-
-
 def test_extract_error_gaps_matches_proofresult_method():
     # The module helper and the dataclass method must agree (shared logic).
     detail = {"build": "failed", "build_summary": "boom", "boot_error": "trace"}

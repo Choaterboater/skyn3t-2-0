@@ -30,6 +30,7 @@ def _candidate(
             license="MIT",
             content_hash=content_hash or content_sha256(evidence),
             source_path=source_path,
+            evidence_path=library.retain_source_evidence(evidence),
         ),
     )
 
@@ -64,6 +65,7 @@ def test_promote_external_unquarantines_and_persists_an_evidenced_candidate(tmp_
     skills_dir = tmp_path / "skills"
     library = SkillLibrary(skills_dir)
     candidate = _candidate(library)
+    assert library.evaluate_candidate(candidate.slug)["status"] == "passed"
 
     promoted = library.promote_external(candidate.slug)
 

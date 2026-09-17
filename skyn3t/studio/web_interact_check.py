@@ -15,8 +15,8 @@ localized to SkyN3t's advisory posture:
   2. HARVEST the app's visible, hydrated interaction surface in Chromium,
      supplemented by bounded source fallbacks and API/state endpoints from
      liveness' route enumerator.
-  3. Ask ONE LLM call for a SHORT declarative JSON action plan driving ONE
-     real user flow end to end through a closed action set.
+  3. Derive outcomes from the saved product's active must requirements. Author
+     at most eight short closed-action flows; retain all unexecuted outcomes.
   4. RUN the validated plan with sync Playwright in a worker thread (the sync API
      raises inside a live event loop — the qa_playtest/liveness solution).
 
@@ -27,10 +27,9 @@ helper. URL checks remain optional and never substitute for visible UI evidence.
 
 ADVISORY-FIRST and NEVER-RAISES, mirroring ``qa_playtest``:
 
-  * a REAL broken interaction (failed selector, assertion mismatch, uncaught
-    console error mid-flow) records ``ok=False`` with evidence — it NEVER
-    flips the build verdict (the runner only records it under
-    ``manifest.extra["web_interact"]``);
+  * executed assertion defects in required flows block release posture but
+    remain advisory in lab; optional exploratory flows remain advisory;
+  * source-bound evidence is invalidated if authored source changes;
   * everything that prevents an honest run SOFT-SKIPS instead of failing:
     phaser (qa_playtest's turf) / non-web stacks, no Playwright, no non-stub
     LLM backend ($0: the skip is decided BEFORE anything is served), an
@@ -56,17 +55,78 @@ from skyn3t.core.stacks import GAME_STACKS, WEB_STACKS
 from skyn3t.studio.liveness import _SKIP_PARTS, enumerate_routes
 from skyn3t.studio.qa_playtest import _dedup_cap
 from skyn3t.studio.visual_check import playwright_available
+from skyn3t.studio.product_spec import ProductSpecV1
+from skyn3t.studio.requirement_trace import INACTIVE_REQUIREMENT_STATUSES
+from skyn3t.worktree import source_tree_snapshot
 
 # Every HTTP-served stack except the game stack (which qa_playtest drives).
 _INTERACT_STACKS = WEB_STACKS - GAME_STACKS
 
 _MAX_SCRIPT_CHARS = 6000
 _MAX_STEPS = 40
+_MAX_REQUIRED_FLOWS = 8
+
+
+def required_outcomes(product: ProductSpecV1 | None) -> list[dict[str, Any]]:
+    """Derive obligations from the saved contract, never from generated plans."""
+    outcomes = []
+    for requirement in product.requirements if product is not None else ():
+        if requirement.priority.casefold() != "must" or requirement.status.casefold() in INACTIVE_REQUIREMENT_STATUSES:
+            continue
+        kinds = ["primary"]
+        text = requirement.text.casefold()
+        if re.search(r"persist|reload|refresh|retain|survive|durab", text):
+            kinds.append("persistence")
+        if re.search(r"invalid|validation|validate|reject|empty input|blank input", text):
+            kinds.append("invalid_input")
+        for kind in kinds:
+            outcomes.append({
+                "outcome_id": f"{requirement.id}:{kind}",
+                "requirement_id": requirement.id,
+                "acceptance_ids": list(requirement.acceptance_ids),
+                "text": requirement.text, "kind": kind, "required": True,
+                "status": "not_checked", "reason": "bounded flow budget not reached",
+            })
+    return outcomes
+
+
+def _summarize_outcomes(result: dict[str, Any]) -> dict[str, Any]:
+    outcomes = result.get("outcomes", [])
+    summary = {"required": len(outcomes), "passed": 0, "failed": 0, "not_checked": 0}
+    for outcome in outcomes:
+        summary[outcome["status"]] += 1
+    result["summary"] = summary
+    if outcomes:
+        status = "failed" if summary["failed"] else "not_checked" if summary["not_checked"] else "passed"
+        result.update(status=status, ok=status != "failed", skipped=status == "not_checked")
+    result["blocks_delivery"] = any(
+        outcome["status"] == "failed" and outcome.get("reliable") is True
+        for outcome in outcomes
+    )
+    return result
+
+
+def refresh_web_interact(result: dict[str, Any], project_dir: str | Path) -> dict[str, Any]:
+    """Invalidate evidence when authored source differs from its observed identity."""
+    before = result.get("source_identity")
+    after = source_tree_snapshot(project_dir)
+    fresh = bool(isinstance(before, dict) and before.get("valid") is True
+                 and after.get("valid") is True and all(before.get(key) == after.get(key)
+                     for key in ("algorithm", "sha256", "file_count", "byte_count")))
+    result["fresh"] = fresh
+    if not fresh:
+        result.update(status="not_checked", ok=True, skipped=True,
+                      reason=result.get("reason") or "source identity changed or is unavailable",
+                      blocks_delivery=False)
+        for outcome in result.get("outcomes", []):
+            outcome.update(status="not_checked", reason=result["reason"], reliable=False)
+    return _summarize_outcomes(result)
 
 
 def _skip(reason: str, *, checked: list[str] | None = None) -> dict[str, Any]:
     """A could-not-run result: never a failure, always with the reason."""
     return {
+        "status": "not_checked",
         "ok": True,
         "skipped": True,
         "reason": reason,
@@ -498,6 +558,9 @@ def _drive_interaction(
         "passed": False,
         "error": "",
         "script_error": False,
+        "completed_interactions": 0,
+        "completed_clicks": 0,
+        "failed_op": "",
         "steps": steps,
         "console_errors": [],
         "backend_probes": 0,
@@ -564,8 +627,11 @@ def _drive_interaction(
                     timeout = int(action.get("timeout_ms", action_timeout_ms))
                     if op == "click":
                         _locator(page, action).click(timeout=timeout)
+                        out["completed_interactions"] += 1
+                        out["completed_clicks"] += 1
                     elif op == "fill":
                         _locator(page, action).fill(action["value"], timeout=timeout)
+                        out["completed_interactions"] += 1
                     elif op == "expect_visible":
                         from playwright.sync_api import expect
                         expect(_locator(page, action)).to_be_visible(timeout=timeout)
@@ -605,6 +671,9 @@ def _drive_interaction(
                 browser.close()
     except Exception as exc:  # noqa: BLE001 - assertion/timeout/nav = evidence
         out["error"] = f"{type(exc).__name__}: {str(exc)[:500]}"
+        out["failed_op"] = action["op"] if "action" in locals() else ""
+        if not steps:
+            out["script_error"] = True
     out["console_errors"] = _dedup_cap(raw_errors)
     out["backend_probes"] = probes["count"]
     if not out["error"]:
@@ -646,6 +715,7 @@ def _score(
         ]
         scored = {
             "ok": False,
+            "status": "failed",
             "skipped": False,
             "reason": "",
             "issues": issues,
@@ -661,6 +731,7 @@ def _score(
     if console:
         scored = {
             "ok": False,
+            "status": "failed",
             "skipped": False,
             "reason": "",
             "issues": [
@@ -694,6 +765,7 @@ def _score(
         return skipped
     scored = {
         "ok": True,
+        "status": "passed",
         "skipped": False,
         "reason": "",
         "issues": [],
@@ -705,7 +777,7 @@ def _score(
     return scored
 
 
-async def check_web_interact(
+async def _check_flow(
     project_dir: str | Path,
     stack: str = "",
     *,
@@ -714,6 +786,7 @@ async def check_web_interact(
     app_runner: Any | None = None,
     drive_fn: Callable[..., Any] | None = None,
     brief: str = "",
+    outcome: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Serve the delivered web app, drive ONE LLM-authored declarative Playwright flow
     through it, and assert BOTH surfaces (UI + backend). ADVISORY and
@@ -767,6 +840,17 @@ async def check_web_interact(
             if not (surface["links"] or surface["forms"] or surface["buttons"] or surface["inputs"]):
                 return _skip("no interactive surface found in rendered app", checked=checked)
             prompt = _build_script_prompt(url, surface, brief)
+            if outcome is not None:
+                prompt += (
+                    "\nRequired outcome (fixed product contract, not editable): "
+                    + json.dumps(outcome, ensure_ascii=False)
+                    + "\nExercise this exact requirement, not an easier navigation flow. "
+                    "Use expect_text for the visible result. For saving use a distinctive filled "
+                    "value and assert that value in the result. Persistence requires reload AFTER "
+                    "submission and a visible text assertion of that same value after reload. "
+                    "Invalid-input requires filling invalid/blank input, clicking submit, then "
+                    "asserting the visible rejection message. Do not replace any missing flow."
+                )
             try:
                 raw = llm_fn(prompt)
                 if inspect.isawaitable(raw):
@@ -779,6 +863,8 @@ async def check_web_interact(
             _, validation_error = _validated_actions(
                 script, require_backend=bool(surface["apis"]),
             )
+            if not validation_error and outcome is not None:
+                validation_error = _validate_required_flow(script, outcome["kind"])
             if validation_error:
                 skipped = _skip(f"generated action plan unusable: {validation_error}", checked=checked)
                 skipped.update({"surface": surface, "plan": script, "coverage": {"ui_assertions": 0, "backend_assertions": 0, "reloads": 0}})
@@ -799,6 +885,76 @@ async def check_web_interact(
                 cleanup_serve(app)
             except Exception:  # noqa: BLE001
                 pass
-        return _score(surface, result, checked, script)
+        scored = _score(surface, result, checked, script)
+        scored["reliable"] = bool(
+            result.get("completed_clicks", 0) > 0
+            and result.get("failed_op") in {"expect_text", "expect_visible", "fetch_expect"}
+            and not result.get("script_error")
+        )
+        return scored
     except Exception as exc:  # noqa: BLE001 - a checker must never break a build
         return _skip(f"web interact error: {exc}"[:300])
+
+
+def _validate_required_flow(plan: dict[str, Any], kind: str) -> str:
+    actions = plan["actions"]
+    clicks = [i for i, action in enumerate(actions) if action["op"] == "click"]
+    if not clicks:
+        return "required outcome needs a submitted user action"
+    last_click = max(clicks)
+    assertions = [a for a in actions[last_click + 1:] if a["op"] == "expect_text"]
+    if not assertions:
+        return "required outcome needs visible result text after submission"
+    fills = [a["value"] for a in actions[:last_click] if a["op"] == "fill"]
+    if kind == "invalid_input":
+        if not fills:
+            return "invalid-input outcome needs invalid input before submission"
+    elif fills and not any(value.strip() and value in a["contains"] for value in fills for a in assertions):
+        return "required outcome must assert the submitted value, not generic success text"
+    if kind == "persistence":
+        reloads = [i for i, a in enumerate(actions) if a["op"] == "reload" and i > last_click]
+        if not reloads or not fills:
+            return "persistence outcome needs submitted data and reload"
+        if not any(a["op"] == "expect_text" and any(v.strip() and v in a["contains"] for v in fills)
+                   for a in actions[max(reloads) + 1:]):
+            return "persistence outcome needs submitted value visible after reload"
+    return ""
+
+
+async def check_web_interact(
+    project_dir: str | Path, stack: str = "", *, settings: Any,
+    llm: Callable[[str], Any] | None = None, app_runner: Any | None = None,
+    drive_fn: Callable[..., Any] | None = None, brief: str = "",
+    product_spec: ProductSpecV1 | None = None,
+) -> dict[str, Any]:
+    """Verify a bounded set of saved must requirements, retaining unchecked obligations."""
+    try:
+        product = product_spec if product_spec is not None else ProductSpecV1.load(project_dir)
+        outcomes = required_outcomes(product)
+        source = source_tree_snapshot(project_dir)
+        kwargs = dict(settings=settings, llm=llm, app_runner=app_runner, drive_fn=drive_fn, brief=brief)
+        if not outcomes:
+            result = await _check_flow(project_dir, stack, **kwargs)
+            result.update(outcomes=[], source_identity=source)
+            return refresh_web_interact(result, project_dir)
+        results = []
+        for outcome in outcomes[:_MAX_REQUIRED_FLOWS]:
+            flow = await _check_flow(project_dir, stack, outcome=outcome, **kwargs)
+            outcome.update({key: flow.get(key) for key in ("status", "reason", "reliable")})
+            outcome["evidence"] = flow
+            results.append(flow)
+        result = {
+            "outcomes": outcomes, "source_identity": source,
+            "issues": [issue for flow in results for issue in flow.get("issues", [])],
+            "warnings": [warning for flow in results for warning in flow.get("warnings", [])],
+            "interactions": [step for flow in results for step in flow.get("interactions", [])],
+            "checked": list(dict.fromkeys(path for flow in results for path in flow.get("checked", []))),
+            "reason": "; ".join(dict.fromkeys(str(o.get("reason") or "") for o in outcomes if o["status"] == "not_checked")),
+            "coverage": {key: sum(flow.get("coverage", {}).get(key, 0) for flow in results)
+                         for key in ("ui_assertions", "backend_assertions", "reloads")},
+        }
+        return refresh_web_interact(result, project_dir)
+    except Exception as exc:  # noqa: BLE001 - contract/source failures are not app failures
+        result = _skip(f"web interact contract unavailable: {exc}"[:300])
+        result.update(outcomes=[], fresh=False, blocks_delivery=False)
+        return _summarize_outcomes(result)

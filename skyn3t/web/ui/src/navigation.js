@@ -4,12 +4,12 @@ export const NAV_GROUPS = [
     items: [
       { to: "/overview", label: "Overview", description: "Home, status, and recent work", icon: "home" },
       { to: "/projects", label: "Projects", description: "Find, run, and ship projects", icon: "projects" },
-      { to: "/studio", label: "Build", navLabel: "Build / Foundry", description: "Create software from a brief", icon: "build" },
+      { to: "/studio", label: "Build", description: "Create software from a brief", icon: "build" },
       { to: "/workspace", label: "Workspace", description: "Preview and improve a project", icon: "workspace" },
     ],
   },
   {
-    label: "Intelligence",
+    label: "Learning",
     items: [
       { to: "/agents", label: "Agents", description: "Agent availability and work", icon: "agents" },
       { to: "/cortex", label: "Cortex", description: "Review learning proposals", icon: "cortex" },

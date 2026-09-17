@@ -49,6 +49,8 @@ _ALWAYS_BLOCKING = frozenset(
         "delivery",  # nothing was delivered
         "entrypoint",  # no runnable entrypoint
         "final_consistency",  # a later stage broke imports/exports
+        "code_degraded",  # generation explicitly failed or never completed
+        "mcp_verification",  # MCP deliveries need an actual protocol check
     }
 )
 # Deliberately NOT a member: "native_build". A failed npm/swift/wheel build is
@@ -64,7 +66,6 @@ _RELEASE_ONLY = frozenset(
     {
         "ai_native",
         "checklist",
-        "code_degraded",
         "critic",
         # Release-only by CLASSIFICATION, but forced blocking in every posture
         # while the game_quality_gates_verdict master switch is ON (see

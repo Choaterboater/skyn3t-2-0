@@ -124,7 +124,7 @@ async def test_build_intelligence_explicitly_records_disabled_research(tmp_path)
         settings=settings,
         build_id="build-456",
         slug="offline-tool",
-        brief="Build an offline Python tool",
+        brief="Build an offline\r\n\tPython tool",
         stack="python_cli",
         personas=[],
         github_client=github,
@@ -135,6 +135,7 @@ async def test_build_intelligence_explicitly_records_disabled_research(tmp_path)
     assert result.research.status == "unavailable"
     assert result.research.error == "GitHub similarity research is disabled"
     assert result.product.version == 1
+    assert result.product.requirements[0].text == "Build an offline Python tool"
     assert github.searches == []
 
 

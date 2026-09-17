@@ -23,6 +23,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from skyn3t.studio.product_spec import (
+    ProductSpecValidationError,
+    normalize_requirement_text,
+)
 from skyn3t.worktree import SOURCE_TREE_DIGEST_ALGORITHM
 
 REQUIREMENT_TRACE_SCHEMA_VERSION = 1
@@ -250,7 +254,9 @@ def _schema_version(value: Any, expected: int) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value == expected
 
 
-def _bounded_text(value: Any, *, label: str, maximum: int) -> str:
+def _bounded_text(
+    value: Any, *, label: str, maximum: int, prose: bool = False,
+) -> str:
     if not isinstance(value, str):
         raise RequirementTraceValidationError(f"{label} must be a string")
     text = value.strip()
@@ -258,6 +264,11 @@ def _bounded_text(value: Any, *, label: str, maximum: int) -> str:
         raise RequirementTraceValidationError(f"{label} must be a non-empty string")
     if len(text) > maximum:
         raise RequirementTraceValidationError(f"{label} exceeds {maximum} characters")
+    if prose:
+        try:
+            return normalize_requirement_text(value, path=label)
+        except ProductSpecValidationError as exc:
+            raise RequirementTraceValidationError(str(exc)) from exc
     if any(ord(character) < 32 or ord(character) == 127 for character in text):
         raise RequirementTraceValidationError(f"{label} contains control characters")
     return text
@@ -443,6 +454,7 @@ def _requirements(product_spec: Any) -> tuple[Mapping[str, Any], list[_Requireme
             record.get("text"),
             label=f"{label}.text",
             maximum=MAX_REQUIREMENT_TEXT_LENGTH,
+            prose=True,
         )
         priority = _bounded_text(
             record.get("priority", "must"),

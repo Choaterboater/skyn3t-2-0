@@ -185,3 +185,43 @@ def test_gate_posture_and_lab_policy_are_independent_axes():
     assert GatePosture(posture="lab").blocks("security") is False
     assert LabAutonomyPolicy(enabled=True).approval_required("remote_deploy") is True
     assert LabAutonomyPolicy(enabled=True).approval_required("write_secret") is True
+
+
+def test_incomplete_mcp_generation_cannot_be_delivered_as_go(tmp_path):
+    from skyn3t.studio.runner import _final_build_status
+
+    runner = _runner(tmp_path, build_posture="lab")
+    manifest = BuildManifest(slug="mist", brief="Mist MCP integration", stack="mcp")
+    verdict = runner._gate_outcome(
+        manifest, "code_degraded", False, "go",
+        "agentic build incomplete after retry: turn stalled; planned implementation missing",
+        posture=GatePosture(posture="lab"),
+    )
+
+    assert verdict == "no_go"
+    assert _final_build_status(True, verdict) == "completed_no_go"
+    assert _findings(manifest, "code_degraded")[0]["blocked"] is True
+
+
+def test_mcp_unavailable_verification_withholds_go_without_claiming_app_failure(tmp_path):
+    runner = _runner(tmp_path, build_posture="lab")
+    manifest = BuildManifest(slug="mist", brief="Mist MCP integration", stack="mcp")
+    manifest.extra["mcp_check"] = {
+        "ok": False, "skipped": True, "reason": "mcp SDK not importable", "issues": [],
+    }
+    verdict = runner._apply_ai_native_gates(manifest, "go", posture=GatePosture(posture="lab"))
+    assert verdict == "no_go"
+    assert manifest.extra["mcp_check"]["skipped"] is True
+    assert manifest.extra["mcp_check"]["issues"] == []
+    assert manifest.extra["verification_unavailable"] == "mcp SDK not importable"
+
+
+def test_invalid_requirement_trace_withholds_delivery_without_binding(tmp_path):
+    manifest = BuildManifest(slug="mist", brief="Mist MCP integration", stack="mcp")
+    manifest.extra["requirement_trace"] = {"mode": "invalid", "go_eligible": False}
+    manifest.extra["requirement_trace_error"] = "requirement trace compilation failed"
+    _, verdict = StudioRunner._settle_requirement_trace_delivery(
+        manifest, tmp_path, "mcp", {}, 90.0, "go", 74.0,
+    )
+    assert verdict == "no_go"
+    assert manifest.extra["requirement_trace"]["blocks_delivery"] is True

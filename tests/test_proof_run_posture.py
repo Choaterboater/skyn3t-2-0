@@ -1,10 +1,9 @@
 """proof_run under lab posture: quality failures record, integrity failures block.
 
 The split this encodes: "the app does not run" (syntax errors, dead entrypoint,
-unresolved imports, a failed native build) is not negotiable in any posture.
-"the app is not good enough" (a failing LLM-authored test, a ruff style
-complaint, thin checklist coverage) is a repair signal, and in a lab it must not
-make a working app undeliverable.
+unresolved imports, a failed native build or an executed test failure) is not
+negotiable in any posture. A ruff style complaint or thin checklist coverage
+remains a quality repair signal in lab posture, not a behavioral failure.
 
 Critically, advisory must still mean REPAIRED: `detail` is populated identically
 either way so `error_gaps()` keeps feeding the fix loop.
@@ -13,6 +12,8 @@ either way so `error_gaps()` keeps feeding the fix loop.
 from __future__ import annotations
 
 from pathlib import Path
+
+import pytest
 
 import skyn3t.studio.proof_run as proof_mod
 from skyn3t.studio.proof_run import proof_run
@@ -34,9 +35,8 @@ def _ruff_project(root: Path) -> None:
     )
 
 
-def test_failing_generated_tests_are_advisory_in_lab_but_still_produce_gaps(
-    tmp_path, monkeypatch
-):
+@pytest.mark.parametrize("posture", ["lab", "release"])
+def test_failing_generated_tests_block_and_produce_gaps(tmp_path, monkeypatch, posture):
     _python_project(tmp_path)
     monkeypatch.setattr(
         proof_mod,
@@ -50,36 +50,64 @@ def test_failing_generated_tests_are_advisory_in_lab_but_still_produce_gaps(
         run_tests=True,
         execution_backend="inline",
         install_python_deps=False,
-        posture="lab",
-    )
-
-    assert result.passed is True
-    assert result.detail["tests"] == "failed"  # evidence intact
-    assert "tests" in result.advisory_failures
-    # The repair signal must survive the demotion, or "advisory" would silently
-    # mean "no longer fixed".
-    assert any("TEST" in gap.upper() for gap in result.error_gaps())
-
-
-def test_failing_generated_tests_still_block_in_release(tmp_path, monkeypatch):
-    _python_project(tmp_path)
-    monkeypatch.setattr(
-        proof_mod,
-        "_run_generated_tests",
-        lambda *_a, **_k: (True, False, "1 failed"),
-    )
-
-    result = proof_run(
-        tmp_path,
-        stack="python",
-        run_tests=True,
-        execution_backend="inline",
-        install_python_deps=False,
-        posture="release",
+        posture=posture,
     )
 
     assert result.passed is False
-    assert result.advisory_failures == []
+    assert result.detail["tests"] == "failed"
+    assert "<tests>" in result.missing
+    assert "tests" not in result.advisory_failures
+    assert any("TEST" in gap.upper() for gap in result.error_gaps())
+
+
+@pytest.mark.parametrize("posture", ["lab", "release"])
+def test_failing_node_tests_block_and_produce_gaps(tmp_path, monkeypatch, posture):
+    _python_project(tmp_path)
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "node --test"}}')
+    monkeypatch.setattr(
+        proof_mod, "_run_generated_tests", lambda *_a, **_k: (False, False, "no Python tests"),
+    )
+    monkeypatch.setattr(
+        proof_mod, "_run_node_tests",
+        lambda *_a, **_k: (True, False, "AssertionError: expected 4 to equal 5"),
+    )
+
+    result = proof_run(
+        tmp_path, stack="python", run_tests=True, execution_backend="inline",
+        install_python_deps=False, posture=posture,
+    )
+
+    assert result.passed is False
+    assert result.detail["node_tests"] == "failed"
+    assert "<node-tests>" in result.missing
+    assert "node_tests" not in result.advisory_failures
+    assert any("AssertionError" in gap for gap in result.error_gaps())
+
+
+@pytest.mark.parametrize("posture", ["lab", "release"])
+def test_unavailable_test_runners_remain_skipped(tmp_path, monkeypatch, posture):
+    _python_project(tmp_path)
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "node --test"}}')
+    monkeypatch.setattr(
+        proof_mod, "_run_generated_tests",
+        lambda *_a, **_k: (False, False, "pytest not installed — tests skipped"),
+    )
+    monkeypatch.setattr(
+        proof_mod, "_run_node_tests",
+        lambda *_a, **_k: (False, False, "node not installed — tests skipped"),
+    )
+
+    result = proof_run(
+        tmp_path, stack="python", run_tests=True, execution_backend="inline",
+        install_python_deps=False, posture=posture,
+    )
+
+    assert result.passed is True
+    assert result.detail["tests"] == "skipped"
+    assert result.detail["node_tests"] == "skipped"
+    assert "<tests>" not in result.missing
+    assert "<node-tests>" not in result.missing
+    assert not any("TESTS FAILED" in gap for gap in result.error_gaps())
 
 
 def test_ruff_failure_is_advisory_in_lab(tmp_path, monkeypatch):
@@ -181,19 +209,6 @@ def test_thin_checklist_coverage_is_advisory_in_lab(tmp_path):
     assert lab.missing == release.missing
 
 
-def test_advisory_failures_round_trip_through_to_dict(tmp_path, monkeypatch):
-    _python_project(tmp_path)
-    monkeypatch.setattr(
-        proof_mod, "_run_generated_tests", lambda *_a, **_k: (True, False, "1 failed")
-    )
-
-    payload = proof_run(
-        tmp_path, stack="python", run_tests=True, execution_backend="inline",
-        install_python_deps=False, posture="lab",
-    ).to_dict()
-
-    assert payload["advisory_failures"] == ["tests"]
-    assert payload["passed"] is True
 
 
 def test_posture_defaults_to_the_setting_and_release_on_error(tmp_path, monkeypatch):

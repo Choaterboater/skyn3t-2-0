@@ -222,7 +222,7 @@ def render_test_file(
         "    names = {p.name for p in sources}",
         "    rels = {p.relative_to(PROJECT_DIR).as_posix() for p in sources}",
         "    entry_names = {'main.py', 'app.py', 'index.js', 'index.ts', 'index.html', ",
-        "                   'server.js', 'main.ts', 'index.astro', 'App.vue', ",
+        "                   'server.py', 'server.js', 'main.ts', 'index.astro', 'App.vue', ",
         "                   '+page.svelte', 'App.svelte', 'MainApp.swift', 'App.swift', 'main.swift'}",
         "    entry_paths = {'src/pages/index.astro', 'src/App.vue', ",
         "                   'src/routes/+page.svelte', 'Sources/App/MainApp.swift', 'App/App.swift'}",

@@ -363,3 +363,186 @@ def test_cleanup_refuses_a_tampered_worktree_path(tmp_path: Path) -> None:
 
     assert Path(report.worktree_path).exists()
     assert engine.cleanup_candidate(report) is True
+
+
+@pytest.mark.parametrize("strategy", ["ff-only", "squash"])
+def test_rollback_creates_revert_and_preserves_integration_history(
+    tmp_path: Path, strategy: str,
+) -> None:
+    repo = _repo(tmp_path)
+    runner = ProofRunner()
+    engine = _engine(tmp_path, repo, auto_merge=True, merge_strategy=strategy, runner=runner)
+    report = engine.run(_allowed_patch, [VerificationCommand(("pytest", "-q"))])
+
+    # Rollback works after cleanup and after constructing a fresh engine.
+    restarted = _engine(tmp_path, repo, auto_merge=False, runner=runner)
+    rolled_back = restarted.rollback_candidate(report.candidate_id, reason="operator rejected change")
+
+    assert rolled_back.status is CandidateStatus.ROLLED_BACK
+    assert rolled_back.rollback_status == "reverted"
+    assert rolled_back.after_sha == report.after_sha
+    assert _git(repo, "rev-parse", "HEAD") == rolled_back.rollback_sha
+    assert _git(repo, "rev-parse", "HEAD^") == report.after_sha
+    assert _git(repo, "rev-parse", "HEAD^{tree}") == _git(repo, "rev-parse", f"{report.before_sha}^{{tree}}")
+    assert not (repo / "skyn3t/studio/candidate_feature.py").exists()
+    payload = json.loads(Path(report.report_path).read_text())
+    assert payload["rollback_sha"] == rolled_back.rollback_sha
+    assert payload["rollback_reason"] == "operator rejected change"
+    assert rolled_back.rollback_sha in Path(report.report_path).with_suffix(".md").read_text()
+    assert not any(call[1] in {"reset", "push", "fetch", "pull"} for call in runner.calls)
+    with pytest.raises(CandidateSafetyError, match="already"):
+        restarted.rollback_candidate(report.candidate_id)
+    assert _git(repo, "rev-parse", "HEAD") == rolled_back.rollback_sha
+
+
+@pytest.mark.parametrize("change", ["tracked", "untracked", "later_commit"])
+def test_rollback_refuses_dirty_tree_or_later_commit(tmp_path: Path, change: str) -> None:
+    repo = _repo(tmp_path)
+    engine = _engine(tmp_path, repo, auto_merge=True)
+    report = engine.run(_allowed_patch, [VerificationCommand(("pytest", "-q"))])
+    target = repo / ("notes.txt" if change == "untracked" else "README.md")
+    target.write_text("operator work\n")
+    if change == "later_commit":
+        _git(repo, "add", "README.md")
+        _git(repo, "commit", "-m", "unrelated later work")
+    tip = _git(repo, "rev-parse", "HEAD")
+
+    with pytest.raises(CandidateSafetyError, match="dirty|later commits"):
+        engine.rollback_candidate(report.candidate_id)
+
+    assert _git(repo, "rev-parse", "HEAD") == tip
+    assert target.read_text() == "operator work\n"
+    assert json.loads(Path(report.report_path).read_text())["rollback_status"] == "refused"
+
+
+@pytest.mark.parametrize("tamper", ["identity", "sha", "proof", "symlink"])
+def test_rollback_refuses_invalid_authoritative_report(tmp_path: Path, tamper: str) -> None:
+    repo = _repo(tmp_path)
+    engine = _engine(tmp_path, repo, auto_merge=True)
+    report = engine.run(_allowed_patch, [VerificationCommand(("pytest", "-q"))])
+    path = Path(report.report_path)
+    payload = json.loads(path.read_text())
+    if tamper == "identity":
+        payload["repo_path"] = str(tmp_path)
+    elif tamper == "sha":
+        payload["after_sha"] = "HEAD"
+    elif tamper == "proof":
+        payload["commands"] = [row for row in payload["commands"] if row["phase"] != "verification"]
+    if tamper == "symlink":
+        outside = tmp_path / "outside.json"
+        path.rename(outside)
+        path.symlink_to(outside)
+    else:
+        path.write_text(json.dumps(payload))
+
+    with pytest.raises(CandidateSafetyError, match="report"):
+        engine.rollback_candidate(report.candidate_id)
+    assert _git(repo, "rev-parse", "HEAD") == report.after_sha
+
+
+def test_review_exists_with_proof_before_merge_and_final_shas(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+
+    class ReviewRunner(ProofRunner):
+        def __call__(self, argv: tuple[str, ...], *, cwd: Path, timeout_seconds: float) -> RunnerResult:
+            if argv[:3] == ("git", "merge", "--ff-only"):
+                records = list((tmp_path / "reports").glob("*.json"))
+                payload = json.loads(records[0].read_text())
+                review = records[0].with_suffix(".md").read_text()
+                assert payload["status"] == "ready"
+                assert payload["candidate_sha"] == argv[3]
+                assert "proof passed" in review
+                assert "skyn3t/studio/candidate_feature.py" in review
+                assert "manual operator action" in review
+            return super().__call__(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    engine = _engine(tmp_path, repo, auto_merge=True, runner=ReviewRunner())
+    report = engine.run(_allowed_patch, [VerificationCommand(("pytest", "-q"))])
+    assert report.status is CandidateStatus.MERGED
+    review = Path(report.report_path).with_suffix(".md").read_text()
+    for sha in (report.before_sha, report.candidate_sha, report.after_sha, report.verified_tree_sha):
+        assert sha in review
+    assert "Post-merge integrity: passed" in review
+
+
+def test_squash_integrity_failure_reverts_only_its_commit(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+
+    class ChangedCommitRunner(ProofRunner):
+        def __call__(self, argv: tuple[str, ...], *, cwd: Path, timeout_seconds: float) -> RunnerResult:
+            if cwd == repo and "commit" in argv:
+                # Model a commit hook changing the tree before the squash commit.
+                (repo / "README.md").write_text("unexpected committed content\n")
+                _git(repo, "add", "README.md")
+            return super().__call__(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+
+    engine = _engine(tmp_path, repo, auto_merge=True, merge_strategy="squash", runner=ChangedCommitRunner())
+    report = engine.run(_allowed_patch, [VerificationCommand(("pytest", "-q"))])
+
+    assert report.status is CandidateStatus.MERGE_FAILED
+    assert report.merge_integrity == "failed"
+    assert report.rollback_status == "reverted"
+    assert _git(repo, "rev-parse", "HEAD^") == report.after_sha
+    assert _git(repo, "rev-parse", "HEAD^{tree}") == _git(repo, "rev-parse", f"{report.before_sha}^{{tree}}")
+
+
+def test_agent_adaptation_does_not_grant_control_plane_or_security_access(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    engine = _engine(tmp_path, repo, auto_merge=False)
+    assert engine.validate_changed_paths({"skyn3t/agents/code_improver.py"}) == {}
+    assert engine.validate_changed_paths({
+        "skyn3t/cortex/candidate_engine.py", "skyn3t/cortex/candidate_service.py",
+        "skyn3t/cortex/bootstrap.py", "skyn3t/agents/security_helper.py",
+        "skyn3t/config/settings.py",
+    }) == {
+        "skyn3t/cortex/candidate_engine.py": "automation_control_plane",
+        "skyn3t/cortex/candidate_service.py": "automation_control_plane",
+        "skyn3t/cortex/bootstrap.py": "automation_control_plane",
+        "skyn3t/agents/security_helper.py": "forbidden_subsystem",
+        "skyn3t/config/settings.py": "outside_allowlist",
+    }
+
+
+def test_legacy_report_without_new_fields_can_authorize_rollback(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    engine = _engine(tmp_path, repo, auto_merge=True)
+    report = engine.run(_allowed_patch, [VerificationCommand(("pytest", "-q"))])
+    path = Path(report.report_path)
+    payload = json.loads(path.read_text())
+    for key in (
+        "verified_tree_sha", "merge_integrity", "rollback_status", "rollback_sha",
+        "rollback_reason", "rollback_error", "rollback_at", "review_path",
+        "manual_publishing_required",
+    ):
+        payload.pop(key)
+    path.write_text(json.dumps(payload))
+
+    result = engine.rollback_candidate(report.candidate_id)
+
+    assert result.rollback_status == "reverted"
+    assert _git(repo, "rev-parse", "HEAD^") == report.after_sha
+    assert (repo / "README.md").read_text() == "base\n"
+
+
+def test_integrity_failure_never_reverts_a_later_unrelated_commit(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+
+    class ConcurrentCommitRunner(ProofRunner):
+        def __call__(self, argv: tuple[str, ...], *, cwd: Path, timeout_seconds: float) -> RunnerResult:
+            result = super().__call__(argv, cwd=cwd, timeout_seconds=timeout_seconds)
+            if argv[:3] == ("git", "merge", "--ff-only") and result.returncode == 0:
+                (repo / "README.md").write_text("later unrelated work\n")
+                _git(repo, "add", "README.md")
+                _git(repo, "commit", "-m", "concurrent operator change")
+            return result
+
+    runner = ConcurrentCommitRunner()
+    engine = _engine(tmp_path, repo, auto_merge=True, runner=runner)
+    report = engine.run(_allowed_patch, [VerificationCommand(("pytest", "-q"))])
+
+    assert report.status is CandidateStatus.MERGE_FAILED
+    assert report.merge_integrity == "failed"
+    assert report.rollback_status == "refused"
+    assert (repo / "README.md").read_text() == "later unrelated work\n"
+    assert _git(repo, "rev-parse", "HEAD^") == report.candidate_sha
+    assert not any("revert" in call for call in runner.calls)

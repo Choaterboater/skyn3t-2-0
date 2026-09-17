@@ -45,14 +45,15 @@ def _candidate_prompt(goal: str) -> str:
 {goal}
 
 Work only in this isolated candidate checkout. Make a coherent, production-
-quality implementation, including focused tests and concise docs where useful.
-Do not commit, change branches, push, deploy, publish, install dependencies, or
-edit dependency manifests/lockfiles. Do not touch APIs/routes/migrations,
-CI/release configuration, secrets/security/deploy code, or generated build
-output. The allowed scope is Studio/Cortex/orchestration internals, generated-
-app templates/scaffolds, product-facing UI source, docs, and tests. Preserve
-existing behavior unless the goal explicitly changes it. Never copy source from
-researched repositories. Finish only after reviewing the actual diff.
+quality implementation, including focused tests and change documentation.
+Install adapted agents as local source modules using existing dependencies;
+never run installers or commands copied from research. Do not commit, change
+branches, push, deploy, publish, or edit dependency manifests/lockfiles. Do not
+touch APIs/routes/migrations, CI/release configuration, secrets/security/deploy
+code, autonomy controls, or generated output. Allowed scope: agents, Studio,
+orchestration, templates/scaffolds, product UI source, docs, and tests. Preserve
+existing behavior unless the goal changes it. Never copy source from researched
+repositories. Finish only after reviewing the actual diff.
 """
 
 

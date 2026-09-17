@@ -97,6 +97,8 @@ _OFFLINE_SEEDS: list[dict[str, Any]] = [
 # anymore"). This broader, varied pool — paired with per-topic pagination — keeps
 # discovery surfacing new repos. Aligned with the kinds of apps SkyN3t builds.
 _SCOUT_TOPICS: tuple[str, ...] = (
+    "agent skills automation",
+    "coding agent framework",
     "react dashboard",
     "fastapi service",
     "python cli tool",
@@ -430,7 +432,7 @@ class RepoScout:
                     "scout_receipt": receipt.to_dict(),
                 },
                 confidence=self._score(repo),
-                safe=False,  # external ingest always gated
+                safe=False,  # automatic research still uses bounded identity checks
                 dedupe_key=f"ingest:{name}",
             )
             proposals.append(prop)

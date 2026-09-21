@@ -10,1699 +10,2123 @@
   "files": {
     ".skill_retirements.json": {
       "sha256": "22e5239abce4dc3c1fd7149e66263fe6bfdfed91012b8850e2dcb330ee350f01",
-      "kind": "retirements"
+      "kind": "retirements",
+      "size_bytes": 108508
     },
     "2d-game-engineering.md": {
       "sha256": "8febaaebe894830b61faa94f1478df30f4de2a00a0161a14b4c8878257498fdf",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3447
     },
     "accessible-forms-with-react-hook-form-zod-and-semantic-html.md": {
       "sha256": "a3885f572ada43c9794efec57fc7b7605ad32e1e305f9c7f3e80a427c206eba7",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3163
     },
     "agent-persona-pack-contract.md": {
       "sha256": "69fd18739c51eeba9029925ef83c489b4b958d8137f862ae555f5c140fca9969",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2201
     },
     "agent-workflow-contract.md": {
       "sha256": "b91ec9cae34a940ce54dd8a10f2131d7d80b4a54f3a7d3e188084227920644d3",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 497
     },
     "api-and-interface-design.md": {
-      "sha256": "4b1914390078fa085bb1ff20b0386ee57deda8b44e423d3a97157ce84e02c177",
-      "kind": "skill"
+      "sha256": "40eb998e0aec201633883d6e633500c1ff01ae2b839fddbe5261d9719081174b",
+      "kind": "skill",
+      "size_bytes": 5096
     },
     "astro-visual-delivery.md": {
       "sha256": "37bd5a059408157bacff3762bab0fcefa278ec279b9aec1f2887e324a179b363",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 765
     },
     "block-secrets-with-layered-scanning-pre-commit-ci.md": {
       "sha256": "4ad8358bb31ecd94d54620f03a962fdb4e2da36f9dbd366accccb852b135bf47",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2146
     },
     "browser-proof-with-playwright.md": {
       "sha256": "54af2cfa30c07cb2d1f474a51db0e146c9e93a5c32892bf4e87a539381bd8ce7",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3177
     },
     "browser-testing-with-devtools.md": {
       "sha256": "ff3f89d3660fee06a78ecc70be00473841c22ae1941b845c2c2588d6338c77a2",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3107
     },
     "centralize-config-in-pydantic-basesettings-hide-docs-in-prod.md": {
       "sha256": "b1785d48349501479fec65cd8dc526cf0da100cea9170cf4268ff80e2f30ddea",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2209
     },
     "centralized-error-handling-with-apierror-catchasync-wrapper.md": {
       "sha256": "0a619ac33215cfce3b81f5c5667ea263dfc01a6d773f9c0fcd237cd8e8a16190",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3269
     },
     "ci-cd-and-automation.md": {
       "sha256": "d37446ce716d5ba0c5765187a25b389245982474bec7bc06303fdc637516ac46",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2616
     },
     "code-review-and-quality.md": {
       "sha256": "ba092f035a8f6e4a3ffea9c595aca5807cad40e08ecb228963685a23f80dd3b1",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3327
     },
     "code-simplification.md": {
       "sha256": "c33042bbd3e31d95044a7f9c4a884f075dfabb989b29198c97d9a1f5eb4e5d99",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2639
     },
     "consolidate-quality-gates-on-ruff-mypy-pytest.md": {
       "sha256": "fc49ac4100cabc1a0a27fb0357f9181a239552d31ab5106a59d7f416cee7cfcd",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3014
     },
     "context-engineering.md": {
       "sha256": "6f661c4426da7bb6794fede248c125baeffbf709b385a2bcea3b061d096532dc",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2927
     },
     "debugging-and-error-recovery.md": {
       "sha256": "e980376c59c5ecd8743631d67430fcf7fe825029481203a14adb3d06051a5555",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2683
     },
     "deprecation-and-migration.md": {
       "sha256": "fd42bcb0fbee478f66a35973ef014e533e214861be8ac681c5bd169854560aff",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2635
     },
     "desktop-app-theming.md": {
       "sha256": "d7ce922e349a7649eecdfe48a351d45c123d7069128beb74d3c4ce94d67b77e6",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3719
     },
     "desktop-editor-layout.md": {
       "sha256": "b2cb3e35f026e7682dd84aa5925774278a322af04f27daa23f03def8944bef46",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2353
     },
     "dockerize-fastapi-with-layer-cached-deps-and-one-process-per-container.md": {
       "sha256": "bbc5269f478718728d1fabc086d76a6363a1a119230262d8b0478c06b5c1a764",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2378
     },
     "documentation-and-adrs.md": {
       "sha256": "6977ab77d69c2b26216ff9ecd3c36a85e32e94baa23ed23c6b7d88872cdbfb11",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2564
     },
     "doubt-driven-development.md": {
       "sha256": "8926b27294f2f8ee0a5b1bd69bed8f3608c2e95b741d994622c9d323db64a201",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2668
     },
     "evidence/reviewed/00694d0c69bbde674d0e39de24052d90afea32d9fef9553eaee21a50a7e9b8cf.source": {
       "sha256": "00694d0c69bbde674d0e39de24052d90afea32d9fef9553eaee21a50a7e9b8cf",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 21717
     },
     "evidence/reviewed/051761f79b67d9f7122c93b3af472e747ccf5e9a6b5df65a6114d36c233349bb.source": {
       "sha256": "051761f79b67d9f7122c93b3af472e747ccf5e9a6b5df65a6114d36c233349bb",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 13052
     },
     "evidence/reviewed/06479d4305f286d23cfb99f5dc85695896785269664e1f6a8d800e3b71e70c10.source": {
       "sha256": "06479d4305f286d23cfb99f5dc85695896785269664e1f6a8d800e3b71e70c10",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 21008
     },
     "evidence/reviewed/0ab0eea8fafa00b5fd27233b5d1a743f7b428e6e906b28362496655384e5a0f8.source": {
       "sha256": "0ab0eea8fafa00b5fd27233b5d1a743f7b428e6e906b28362496655384e5a0f8",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 5498
     },
     "evidence/reviewed/0ca5418780b0f2d2e272801424d0d5cddea7cf9c155c9e6db6983d3305be971e.source": {
       "sha256": "0ca5418780b0f2d2e272801424d0d5cddea7cf9c155c9e6db6983d3305be971e",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 20831
     },
     "evidence/reviewed/0d2eaee0bba6ad693e26f2656c21c91fa8143602edf47ba66054d28d7db1d5f7.license": {
       "sha256": "0d2eaee0bba6ad693e26f2656c21c91fa8143602edf47ba66054d28d7db1d5f7",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1069
     },
     "evidence/reviewed/0ed1ad839b444176154085f26bb08792d3244b56cfd50b8b35fcc53c76e497aa.source": {
       "sha256": "0ed1ad839b444176154085f26bb08792d3244b56cfd50b8b35fcc53c76e497aa",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 3401
     },
     "evidence/reviewed/0f4592dcb53cf2b5d6b7febee6b4152018b565551a1c29e3c612f57b218ab295.source": {
       "sha256": "0f4592dcb53cf2b5d6b7febee6b4152018b565551a1c29e3c612f57b218ab295",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 9092
     },
     "evidence/reviewed/12f54cfa718d9e559bad918120a4ca4f11c933167713d1b9c5f99872eddaf749.source": {
       "sha256": "12f54cfa718d9e559bad918120a4ca4f11c933167713d1b9c5f99872eddaf749",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 16114
     },
     "evidence/reviewed/1392005054efb0a5c9cbbd83811f95ac30d34e5228a1f6837baf59fb7d588017.source": {
       "sha256": "1392005054efb0a5c9cbbd83811f95ac30d34e5228a1f6837baf59fb7d588017",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 14228
     },
     "evidence/reviewed/1680e579140b1f23ef9530a43d50663ef58e31541c3016a404f8ed36f6285da7.license": {
       "sha256": "1680e579140b1f23ef9530a43d50663ef58e31541c3016a404f8ed36f6285da7",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1150
     },
     "evidence/reviewed/16cbbc63c3a06343e99e537907b71ddfb4c2cbbe0df13df26f3f6d22b4f28857.license": {
       "sha256": "16cbbc63c3a06343e99e537907b71ddfb4c2cbbe0df13df26f3f6d22b4f28857",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1073
     },
     "evidence/reviewed/18228139612c555dbb4a53b74039dadb53cb1163507dd9325a4fcfa3326e475d.source": {
       "sha256": "18228139612c555dbb4a53b74039dadb53cb1163507dd9325a4fcfa3326e475d",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 15636
     },
     "evidence/reviewed/195fca6a0fd98c0af3b1f9fdf581d1f24cb1d4b791ff8870757b47c4854b0463.license": {
       "sha256": "195fca6a0fd98c0af3b1f9fdf581d1f24cb1d4b791ff8870757b47c4854b0463",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1065
     },
     "evidence/reviewed/1a609c93bff3eea9ab99fed93c0334c851fdc39fb6ac5335551bfb87c171d57c.source": {
       "sha256": "1a609c93bff3eea9ab99fed93c0334c851fdc39fb6ac5335551bfb87c171d57c",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 12726
     },
     "evidence/reviewed/209cd458d3fbc8a2830265252714f5ac09abe93100b3b2582034fa7ea1a0568c.source": {
       "sha256": "209cd458d3fbc8a2830265252714f5ac09abe93100b3b2582034fa7ea1a0568c",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 2597
     },
     "evidence/reviewed/210b803e2aaa698b79d232072601ede86b4db088eeb6a0d62a4cb66187ca8719.source": {
       "sha256": "210b803e2aaa698b79d232072601ede86b4db088eeb6a0d62a4cb66187ca8719",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 15227
     },
     "evidence/reviewed/21d60bc4c6e5a6c47c42c30d7dcab825306e206ccc6969c7f1a523c5041b54b3.license": {
       "sha256": "21d60bc4c6e5a6c47c42c30d7dcab825306e206ccc6969c7f1a523c5041b54b3",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1093
     },
     "evidence/reviewed/21f3960f5d7ae2cc95c40896545004dbbcbbd752ea65fc2d53962554d4174220.source": {
       "sha256": "21f3960f5d7ae2cc95c40896545004dbbcbbd752ea65fc2d53962554d4174220",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 10913
     },
     "evidence/reviewed/2597d854122b77ddc71971564ca2350a37608575ce324adc5650a2b2051c8f18.license": {
       "sha256": "2597d854122b77ddc71971564ca2350a37608575ce324adc5650a2b2051c8f18",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 20731
     },
     "evidence/reviewed/27ffc66c93029a3496495157fe17490c22034a1167410a743d210243b39e8912.source": {
       "sha256": "27ffc66c93029a3496495157fe17490c22034a1167410a743d210243b39e8912",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 559
     },
     "evidence/reviewed/2adc9fd30f124fd006d6ae1e3c8cf48baf10c08e1758fdcb04cf0b0b233f6270.source": {
       "sha256": "2adc9fd30f124fd006d6ae1e3c8cf48baf10c08e1758fdcb04cf0b0b233f6270",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 66677
     },
     "evidence/reviewed/2b74ac4862be3902ec918dceac9366a6fe83b9e003601c0deaf6be09c1766aca.source": {
       "sha256": "2b74ac4862be3902ec918dceac9366a6fe83b9e003601c0deaf6be09c1766aca",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 10711
     },
     "evidence/reviewed/2bd41829eb031a0c7f39cfc6acba1001071cd947321812a6cb4c504025f36f3d.source": {
       "sha256": "2bd41829eb031a0c7f39cfc6acba1001071cd947321812a6cb4c504025f36f3d",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 1417
     },
     "evidence/reviewed/2bf957b69cadaff1fea15609739cfc78460148f69c616d5775a0293ddd2f1d66.license": {
       "sha256": "2bf957b69cadaff1fea15609739cfc78460148f69c616d5775a0293ddd2f1d66",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1069
     },
     "evidence/reviewed/2e3860bb1a16aa2253c34d16060abd96222463fe7bb9cdc6b0af64c4c74737d9.source": {
       "sha256": "2e3860bb1a16aa2253c34d16060abd96222463fe7bb9cdc6b0af64c4c74737d9",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 1994
     },
     "evidence/reviewed/30787ef2c77bf1a4729fffed0f6523ba6fcbe81bdc436b36371b78c21394d3c3.source": {
       "sha256": "30787ef2c77bf1a4729fffed0f6523ba6fcbe81bdc436b36371b78c21394d3c3",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 10446
     },
     "evidence/reviewed/30dc4cd3dcd10ff668b080f896eab33158b8ff31716f21b6dd08698c8860789b.license": {
       "sha256": "30dc4cd3dcd10ff668b080f896eab33158b8ff31716f21b6dd08698c8860789b",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1085
     },
     "evidence/reviewed/3226560e76fae0a061d973aee04d87fc5e3f4c4b41d94777ab622c4b19aa4067.source": {
       "sha256": "3226560e76fae0a061d973aee04d87fc5e3f4c4b41d94777ab622c4b19aa4067",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 3646
     },
     "evidence/reviewed/32554ec7ef5890a5bdb45de92c7a0b6deacf8a96399502bd22234f6259c9ec27.source": {
       "sha256": "32554ec7ef5890a5bdb45de92c7a0b6deacf8a96399502bd22234f6259c9ec27",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 23898
     },
     "evidence/reviewed/33c6adffb94202de0fd15e325edec656e98e7a2f7e73cb3b11cfd2f392e6a844.source": {
       "sha256": "33c6adffb94202de0fd15e325edec656e98e7a2f7e73cb3b11cfd2f392e6a844",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 1404
     },
     "evidence/reviewed/36ffd9dc085d529a7e60e1276d73ae5a030b020313e6c5408593a6ae2af39673.license": {
       "sha256": "36ffd9dc085d529a7e60e1276d73ae5a030b020313e6c5408593a6ae2af39673",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 6555
     },
     "evidence/reviewed/3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986.license": {
       "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 35149
     },
     "evidence/reviewed/3c0c48ec1eeb12a4697bf1bf28ece68593de2a5de22c6d4bb493fbab46d25119.source": {
       "sha256": "3c0c48ec1eeb12a4697bf1bf28ece68593de2a5de22c6d4bb493fbab46d25119",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 3394
     },
     "evidence/reviewed/3c1bffb3b6746470efedd8289c761bbdd725f17f149e964e12fe02b711660e70.license": {
       "sha256": "3c1bffb3b6746470efedd8289c761bbdd725f17f149e964e12fe02b711660e70",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1493
     },
     "evidence/reviewed/3df221cbb94c1f0d41e80405a8dcd30ee80ed0952fccadea711a79e6a9bf7df6.source": {
       "sha256": "3df221cbb94c1f0d41e80405a8dcd30ee80ed0952fccadea711a79e6a9bf7df6",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 16149
     },
     "evidence/reviewed/417207ad44993d1d40963a1ae453da6638ba766e96a5a3301b660a7c1c1be071.source": {
       "sha256": "417207ad44993d1d40963a1ae453da6638ba766e96a5a3301b660a7c1c1be071",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 1885
     },
     "evidence/reviewed/468b168f63014cfd0089b6a43990639e2b4faeb633173cf2cfeb7bb01be96ef2.license": {
       "sha256": "468b168f63014cfd0089b6a43990639e2b4faeb633173cf2cfeb7bb01be96ef2",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1071
     },
     "evidence/reviewed/49c5f9c7097c9a940ff663a54c27a4c60e379df6cc2b3052df0d37a09a85df93.license": {
       "sha256": "49c5f9c7097c9a940ff663a54c27a4c60e379df6cc2b3052df0d37a09a85df93",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1106
     },
     "evidence/reviewed/4aa7a433a0a8042f47197f05893343bd9d1cc02a9179537ef3437c05c49b385d.source": {
       "sha256": "4aa7a433a0a8042f47197f05893343bd9d1cc02a9179537ef3437c05c49b385d",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 27993
     },
     "evidence/reviewed/4b0308da42f956847af8fb50e6ab958ada4d204d8915d85f1c339bd2cc067b7e.source": {
       "sha256": "4b0308da42f956847af8fb50e6ab958ada4d204d8915d85f1c339bd2cc067b7e",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 7332
     },
     "evidence/reviewed/4b0f5c4807d4b4f428536d765d878d6f690047bb928868546e8b282c217dd4cb.source": {
       "sha256": "4b0f5c4807d4b4f428536d765d878d6f690047bb928868546e8b282c217dd4cb",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 14211
     },
     "evidence/reviewed/4b4b864dbe45253425d0c925337180ec07e204295179f80f59551216f466f618.source": {
       "sha256": "4b4b864dbe45253425d0c925337180ec07e204295179f80f59551216f466f618",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 229
     },
     "evidence/reviewed/4cb67ffbf8e57f2e5b380b0beb4242528b513723ce314a2c2ffcf083bd4203d7.source": {
       "sha256": "4cb67ffbf8e57f2e5b380b0beb4242528b513723ce314a2c2ffcf083bd4203d7",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 1441
     },
     "evidence/reviewed/4e3aacd6a380cd25bc6c2d67fdd1c926a9b22535b8a62109ecd33cefd909e3d9.source": {
       "sha256": "4e3aacd6a380cd25bc6c2d67fdd1c926a9b22535b8a62109ecd33cefd909e3d9",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 14539
     },
     "evidence/reviewed/5168dce8dc77e3aa03e82473945ab2b6846783a214eadae49454d70a2d418257.source": {
       "sha256": "5168dce8dc77e3aa03e82473945ab2b6846783a214eadae49454d70a2d418257",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 10828
     },
     "evidence/reviewed/54cb9b6e54a1c64b79d707ee26593b179363d67b17e9f7fb213004f76192ba4e.license": {
       "sha256": "54cb9b6e54a1c64b79d707ee26593b179363d67b17e9f7fb213004f76192ba4e",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1098
     },
     "evidence/reviewed/54e8b7d821cf730b5765c0f565ee7f077bc828fe49eac7084e816a7772c1c7fd.source": {
       "sha256": "54e8b7d821cf730b5765c0f565ee7f077bc828fe49eac7084e816a7772c1c7fd",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 8311
     },
     "evidence/reviewed/5775e290d87203a6c88241fbe8429b0ad2154b243ec14cb2a243ca9aa26e8ffe.source": {
       "sha256": "5775e290d87203a6c88241fbe8429b0ad2154b243ec14cb2a243ca9aa26e8ffe",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 220011
     },
     "evidence/reviewed/583bfb0784ea77886c55408bcac054d8a8faad2fd8908009d137bdeb4f8197fe.source": {
       "sha256": "583bfb0784ea77886c55408bcac054d8a8faad2fd8908009d137bdeb4f8197fe",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 7375
     },
     "evidence/reviewed/58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd.license": {
       "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 11357
     },
     "evidence/reviewed/5a775e6411f790f518dbc9c1fa7c50a89e6873502d9a3530a6eb223a590bcfe8.source": {
       "sha256": "5a775e6411f790f518dbc9c1fa7c50a89e6873502d9a3530a6eb223a590bcfe8",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 7760
     },
     "evidence/reviewed/5b26444cd70bd3d0f0f5725da15dfbd23de30c162320a1e7c4eb853f768fca6e.source": {
       "sha256": "5b26444cd70bd3d0f0f5725da15dfbd23de30c162320a1e7c4eb853f768fca6e",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 2093
     },
     "evidence/reviewed/5cb8980fedcf4a016fa1019a0719ff30929411f86930b40cb708d0cbe19f2cdc.source": {
       "sha256": "5cb8980fedcf4a016fa1019a0719ff30929411f86930b40cb708d0cbe19f2cdc",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 364
     },
     "evidence/reviewed/5d954a9368beff1225c953d854cad1d72622055d2e2bd9c9d6fdedb870987f19.source": {
       "sha256": "5d954a9368beff1225c953d854cad1d72622055d2e2bd9c9d6fdedb870987f19",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 1988
     },
     "evidence/reviewed/5dafd0c44a3aabf11cae5bcb34f6fcc24dfa5c01ba6e0d3176bce997f4d68bc8.source": {
       "sha256": "5dafd0c44a3aabf11cae5bcb34f6fcc24dfa5c01ba6e0d3176bce997f4d68bc8",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 14884
     },
     "evidence/reviewed/5e8e5036383ac3d764a03e785cc7127ee8c10718edf61a6ff0ca28854d66f370.license": {
       "sha256": "5e8e5036383ac3d764a03e785cc7127ee8c10718edf61a6ff0ca28854d66f370",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1071
     },
     "evidence/reviewed/61b098d905d9799fc4f4625b476dac117630a1740a02e032594ff2fccbbb6206.license": {
       "sha256": "61b098d905d9799fc4f4625b476dac117630a1740a02e032594ff2fccbbb6206",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 18525
     },
     "evidence/reviewed/623873ee3885786b39570faf53c38bba90260749fe7f5b6053130ba9a1c4fc67.license": {
       "sha256": "623873ee3885786b39570faf53c38bba90260749fe7f5b6053130ba9a1c4fc67",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1067
     },
     "evidence/reviewed/630c98e47fc12aa26d6612985dd7e5bc98add3c738f14a8b3eb1994cf33d072b.license": {
       "sha256": "630c98e47fc12aa26d6612985dd7e5bc98add3c738f14a8b3eb1994cf33d072b",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1070
     },
     "evidence/reviewed/6493f2db400f4166ca0956cf192a41aa092bd1396ff463e7fdaf51f257c10497.license": {
       "sha256": "6493f2db400f4166ca0956cf192a41aa092bd1396ff463e7fdaf51f257c10497",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1068
     },
     "evidence/reviewed/689263791f3366c5c71f52879c03072cb6550bf286333e7223b3b4ffb62acd37.source": {
       "sha256": "689263791f3366c5c71f52879c03072cb6550bf286333e7223b3b4ffb62acd37",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 1258
     },
     "evidence/reviewed/68ee0cff21fcb7ef0d231299cfcfc3137c0be09f03cbfab19ba0e4a259877a5d.source": {
       "sha256": "68ee0cff21fcb7ef0d231299cfcfc3137c0be09f03cbfab19ba0e4a259877a5d",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 17359
     },
     "evidence/reviewed/692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54.license": {
       "sha256": "692057af3d664cbb79ac38293eb50aa3c4987f8182e2a440136e59e08f1b4a54",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1101
     },
     "evidence/reviewed/6a624f942e09c69863a4219b9bd5d56975026b67b0c70bc83385ffd2120b6142.source": {
       "sha256": "6a624f942e09c69863a4219b9bd5d56975026b67b0c70bc83385ffd2120b6142",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 12642
     },
     "evidence/reviewed/6b8749833d92be29d11598fffcb6863ae32421c88b16299af808f7de3faf7d85.source": {
       "sha256": "6b8749833d92be29d11598fffcb6863ae32421c88b16299af808f7de3faf7d85",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 8057
     },
     "evidence/reviewed/6cd1609c9c12233507cdd2ce0d32e9a721e3c27494951be06b90090deeeb7af2.license": {
       "sha256": "6cd1609c9c12233507cdd2ce0d32e9a721e3c27494951be06b90090deeeb7af2",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1068
     },
     "evidence/reviewed/6d9855976ab22d9f093999542ef75af841c54b619382a1ffc32f213bafa2c2c3.source": {
       "sha256": "6d9855976ab22d9f093999542ef75af841c54b619382a1ffc32f213bafa2c2c3",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 2490
     },
     "evidence/reviewed/6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7.license": {
       "sha256": "6f202f8bd568cd730dbb2b0d1f8e243bc74c2fa1f64dbce9b2c7ea08bd5c9fd7",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1068
     },
     "evidence/reviewed/6fa1fcd8420c28daf7e53c5b08b0f20b907911efd2a6d9bce0b9740da20a4008.source": {
       "sha256": "6fa1fcd8420c28daf7e53c5b08b0f20b907911efd2a6d9bce0b9740da20a4008",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 16647
     },
     "evidence/reviewed/71061bb6b41a09dbdcf3ef212c38cefe77a1faa0481d3245d5086130b570983e.license": {
       "sha256": "71061bb6b41a09dbdcf3ef212c38cefe77a1faa0481d3245d5086130b570983e",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1068
     },
     "evidence/reviewed/72b77b6a7cfe2041a297549d628cdd55bc10512eb928f28b39f7421d52b3a51a.source": {
       "sha256": "72b77b6a7cfe2041a297549d628cdd55bc10512eb928f28b39f7421d52b3a51a",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 5611
     },
     "evidence/reviewed/745d23ff537f1c70e5e9eeb06f6a329ff436f30d324a57fb4a6ec45460963ec0.license": {
       "sha256": "745d23ff537f1c70e5e9eeb06f6a329ff436f30d324a57fb4a6ec45460963ec0",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1069
     },
     "evidence/reviewed/74642f747fcbd0adc884c4713858a4b5e88330fb9725c2c69b92cc86052c0ba8.source": {
       "sha256": "74642f747fcbd0adc884c4713858a4b5e88330fb9725c2c69b92cc86052c0ba8",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 3031
     },
     "evidence/reviewed/74b629b24865e1e83c5277ee84590b7937644d6fd959d0c7bdce758676cd2ced.license": {
       "sha256": "74b629b24865e1e83c5277ee84590b7937644d6fd959d0c7bdce758676cd2ced",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1294
     },
     "evidence/reviewed/750f7f25acc4e6143a6ff4daacffbcd5daf64370540a75e7b3a4f3b4b1aa462c.source": {
       "sha256": "750f7f25acc4e6143a6ff4daacffbcd5daf64370540a75e7b3a4f3b4b1aa462c",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 1400
     },
     "evidence/reviewed/79c531e95ca4d96a7de920c28c127c2c09ec55cd452a92222267d2954580be23.source": {
       "sha256": "79c531e95ca4d96a7de920c28c127c2c09ec55cd452a92222267d2954580be23",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 8259
     },
     "evidence/reviewed/79e773058963adc7646b0115b4f8a4afc974c5ff95843e4ef1cafff3cb51899e.source": {
       "sha256": "79e773058963adc7646b0115b4f8a4afc974c5ff95843e4ef1cafff3cb51899e",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 8111
     },
     "evidence/reviewed/7a82a91ab412c6bc572f1b10218a1de5e43a3f8bdb69b5fea302b3bdbbb77d74.source": {
       "sha256": "7a82a91ab412c6bc572f1b10218a1de5e43a3f8bdb69b5fea302b3bdbbb77d74",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 856
     },
     "evidence/reviewed/7b2b9901cc61ccf1ed15d19743f0dda3856625f84fe00a16d11d9fded855c523.source": {
       "sha256": "7b2b9901cc61ccf1ed15d19743f0dda3856625f84fe00a16d11d9fded855c523",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 3972
     },
     "evidence/reviewed/7b9a6edc7fa924a2586b59afbfdf7993de2950d5ea3fcc2c997352e8a16a2e1f.license": {
       "sha256": "7b9a6edc7fa924a2586b59afbfdf7993de2950d5ea3fcc2c997352e8a16a2e1f",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1071
     },
     "evidence/reviewed/7c0c6ac057c19d7f8be65d9f49c3a638703b868f4625c78b70da5439d5d74fca.source": {
       "sha256": "7c0c6ac057c19d7f8be65d9f49c3a638703b868f4625c78b70da5439d5d74fca",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 16517
     },
     "evidence/reviewed/7eb48c5e355c0e8853a1a1bcd3102914dbcf96aa383afaf240d050dddd6956a8.license": {
       "sha256": "7eb48c5e355c0e8853a1a1bcd3102914dbcf96aa383afaf240d050dddd6956a8",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1133
     },
     "evidence/reviewed/821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6.license": {
       "sha256": "821556e6336796450ab852d375117b48a4887e71d255794fd6318d99982a5ab6",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1070
     },
     "evidence/reviewed/83e5089c2d67df7e6a085655e75dca674ba7a27a20278994036c7309a253d054.license": {
       "sha256": "83e5089c2d67df7e6a085655e75dca674ba7a27a20278994036c7309a253d054",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1071
     },
     "evidence/reviewed/8588fefa7cea5b5d72f99d5a476d90cd3cef21ece827e695a1cf0778ca7e9454.license": {
       "sha256": "8588fefa7cea5b5d72f99d5a476d90cd3cef21ece827e695a1cf0778ca7e9454",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1074
     },
     "evidence/reviewed/87ae44a0c7bb3eefc2131a9d11caabcc14e4d8dcb27d66a3a675551ee2ce1671.source": {
       "sha256": "87ae44a0c7bb3eefc2131a9d11caabcc14e4d8dcb27d66a3a675551ee2ce1671",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 9848
     },
     "evidence/reviewed/88cf086bf98ba865d2e9d0579974e1366b14157619d6a93e7da77be91084e4a5.source": {
       "sha256": "88cf086bf98ba865d2e9d0579974e1366b14157619d6a93e7da77be91084e4a5",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 1382
     },
     "evidence/reviewed/890d26781b3fc50a702492ff6cb92955c7f8b89c83c5a47f82ebcf5eff233960.license": {
       "sha256": "890d26781b3fc50a702492ff6cb92955c7f8b89c83c5a47f82ebcf5eff233960",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 18710
     },
     "evidence/reviewed/89411b435fc9f45cec0dd7437419e6bac64b7ddf43108791978647d453010a61.source": {
       "sha256": "89411b435fc9f45cec0dd7437419e6bac64b7ddf43108791978647d453010a61",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 12238
     },
     "evidence/reviewed/8b70443f23ca9e3abd77d974f900930414326c01036f0d410363aaa9a8749690.source": {
       "sha256": "8b70443f23ca9e3abd77d974f900930414326c01036f0d410363aaa9a8749690",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 378
     },
     "evidence/reviewed/8c99479f8a2d22a636c38e274537aac3610879e26f34e0709825077c4576f427.source": {
       "sha256": "8c99479f8a2d22a636c38e274537aac3610879e26f34e0709825077c4576f427",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 21663
     },
     "evidence/reviewed/8d10e3a7e0709a35003e32bd8d6a77f1b5aa17b382bf71e773d33c8491d5cd1c.source": {
       "sha256": "8d10e3a7e0709a35003e32bd8d6a77f1b5aa17b382bf71e773d33c8491d5cd1c",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 5386
     },
     "evidence/reviewed/8d17111371634dc6ca1f0a241999d9a410156d1c79b42ff901bfda7c586ad178.license": {
       "sha256": "8d17111371634dc6ca1f0a241999d9a410156d1c79b42ff901bfda7c586ad178",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1067
     },
     "evidence/reviewed/8f3cabca581bbf7cb5f0add3f7454e7a4523f9d4353a6a4a217e6fa515309612.source": {
       "sha256": "8f3cabca581bbf7cb5f0add3f7454e7a4523f9d4353a6a4a217e6fa515309612",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 20555
     },
     "evidence/reviewed/8f5fd8e5cddb015b5627e45e68b256356586144288a4a0a3db87e38bcb0c9155.license": {
       "sha256": "8f5fd8e5cddb015b5627e45e68b256356586144288a4a0a3db87e38bcb0c9155",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1076
     },
     "evidence/reviewed/90dde64a17b65905953f8d292d93393b4490293389729ed579bf47aa0d50619f.source": {
       "sha256": "90dde64a17b65905953f8d292d93393b4490293389729ed579bf47aa0d50619f",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 10141
     },
     "evidence/reviewed/944a12ee3e16aefc26a583280bb092f34c534694068c0247183a6f67960f2ae5.license": {
       "sha256": "944a12ee3e16aefc26a583280bb092f34c534694068c0247183a6f67960f2ae5",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 11350
     },
     "evidence/reviewed/954d13ac5aab243f9dd4cf37d0d00052f885f9bb000fe46672c4d5100c919fef.source": {
       "sha256": "954d13ac5aab243f9dd4cf37d0d00052f885f9bb000fe46672c4d5100c919fef",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 4079
     },
     "evidence/reviewed/9559a1eb512f8e681feb04690c16394b015d15691007157339a895904b392e89.license": {
       "sha256": "9559a1eb512f8e681feb04690c16394b015d15691007157339a895904b392e89",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1061
     },
     "evidence/reviewed/97d6051f421d49ef43b6e13da6794f562f448615e1487cf38085ed44d003cf14.source": {
       "sha256": "97d6051f421d49ef43b6e13da6794f562f448615e1487cf38085ed44d003cf14",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 25233
     },
     "evidence/reviewed/991004659921571ce4224ff84ec4d29d166693a3fe37b06a266d187521330046.source": {
       "sha256": "991004659921571ce4224ff84ec4d29d166693a3fe37b06a266d187521330046",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 13911
     },
     "evidence/reviewed/9a6950f8f80cda27a3cd9f56a879d7df3209105c4e4765caa82490b48288ef92.license": {
       "sha256": "9a6950f8f80cda27a3cd9f56a879d7df3209105c4e4765caa82490b48288ef92",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 11310
     },
     "evidence/reviewed/9a7110fc2d2f964038e5dc49128f908f29f47a574c961cba16085914e879cbda.license": {
       "sha256": "9a7110fc2d2f964038e5dc49128f908f29f47a574c961cba16085914e879cbda",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 11552
     },
     "evidence/reviewed/9ec1530f343d5e03f2dfc92956ac27ec291171216e931681702637c54befa5c9.license": {
       "sha256": "9ec1530f343d5e03f2dfc92956ac27ec291171216e931681702637c54befa5c9",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1060
     },
     "evidence/reviewed/a1546b56b8ce135a5f2a70a5db329b6f4446a83742df7ae26ed06837653d1631.source": {
       "sha256": "a1546b56b8ce135a5f2a70a5db329b6f4446a83742df7ae26ed06837653d1631",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 3763
     },
     "evidence/reviewed/a183fe16e695b8959abd902b0e0cd87e3e050d61e66ae134c74f4a347071e67b.source": {
       "sha256": "a183fe16e695b8959abd902b0e0cd87e3e050d61e66ae134c74f4a347071e67b",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 8888
     },
     "evidence/reviewed/a25921f335181eae59193882604f4df83eb3684c38eb124dcc80a9079506fa4d.source": {
       "sha256": "a25921f335181eae59193882604f4df83eb3684c38eb124dcc80a9079506fa4d",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 17117
     },
     "evidence/reviewed/a405ee70c632bb938acb7ac5f210e814409b3760ea9d2329d8ed8ffcfd11a0e7.license": {
       "sha256": "a405ee70c632bb938acb7ac5f210e814409b3760ea9d2329d8ed8ffcfd11a0e7",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1079
     },
     "evidence/reviewed/a596d19da01dcb443a134a4de12af822af69bc05a427658bac7d5c4be52e5e7d.source": {
       "sha256": "a596d19da01dcb443a134a4de12af822af69bc05a427658bac7d5c4be52e5e7d",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 4870
     },
     "evidence/reviewed/a6c4ef34e82f016f1439e453e5242dc25261f5aabc6ed4e9f7f00a84edee91b9.license": {
       "sha256": "a6c4ef34e82f016f1439e453e5242dc25261f5aabc6ed4e9f7f00a84edee91b9",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1074
     },
     "evidence/reviewed/a6ed8ed56456b01ff8314c44eefc69897d9905ae4e06bb2b7036286efb79b5f0.source": {
       "sha256": "a6ed8ed56456b01ff8314c44eefc69897d9905ae4e06bb2b7036286efb79b5f0",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 11332
     },
     "evidence/reviewed/aa9382a3d37081455505133d1199a65693ef265e3c0b8141c15e31d4c9666c6c.source": {
       "sha256": "aa9382a3d37081455505133d1199a65693ef265e3c0b8141c15e31d4c9666c6c",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 2443
     },
     "evidence/reviewed/ab3f647e4cc1427354a1924cff7f1b2c2a1e2e17df4ffbfbc1cd26581a462afb.license": {
       "sha256": "ab3f647e4cc1427354a1924cff7f1b2c2a1e2e17df4ffbfbc1cd26581a462afb",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 11361
     },
     "evidence/reviewed/ab85ce6e399023c8085058c4fb6d22f2ca39a6c9b3dee7cd15b59be5d1721816.source": {
       "sha256": "ab85ce6e399023c8085058c4fb6d22f2ca39a6c9b3dee7cd15b59be5d1721816",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 6279
     },
     "evidence/reviewed/accessible-forms-with-react-hook-form-zod-and-semantic-html.receipt.json": {
       "sha256": "8a09700cc73dec450aeb3e321753a6815e1fd953d6b75a6122727da87a84015c",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 2830
     },
     "evidence/reviewed/ad65e776f45e761bafc609d3f506c77c1032225aa65e0c4c02f241b8071e5855.source": {
       "sha256": "ad65e776f45e761bafc609d3f506c77c1032225aa65e0c4c02f241b8071e5855",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 3231
     },
     "evidence/reviewed/af610cf4892db7eab2e91c899e33feba90e1000bac4528b2f8dde930816ac125.source": {
       "sha256": "af610cf4892db7eab2e91c899e33feba90e1000bac4528b2f8dde930816ac125",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 11404
     },
     "evidence/reviewed/afacb1981b53049e15b70b86a4fc0f0534f0a9480d52324526759e3b52c26df0.license": {
       "sha256": "afacb1981b53049e15b70b86a4fc0f0534f0a9480d52324526759e3b52c26df0",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1062
     },
     "evidence/reviewed/afd0bb103eb362cf78f40dfd13405299d304b83b3a5b1eaf955d69e521464eb4.license": {
       "sha256": "afd0bb103eb362cf78f40dfd13405299d304b83b3a5b1eaf955d69e521464eb4",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1065
     },
     "evidence/reviewed/api-and-interface-design.receipt.json": {
       "sha256": "1302865e8a0bad2433bc7c39004763c5538219715e5174c860d20249e8a99e47",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 2973
     },
     "evidence/reviewed/b65e575eb4f04a13c187d64e958321298e2ab84d67aa8428819f362056ba292c.license": {
       "sha256": "b65e575eb4f04a13c187d64e958321298e2ab84d67aa8428819f362056ba292c",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1065
     },
     "evidence/reviewed/b7465d187935c52546d39fdc7bd6ac36d94eda25a9500ef8c18b767d2eb116ea.source": {
       "sha256": "b7465d187935c52546d39fdc7bd6ac36d94eda25a9500ef8c18b767d2eb116ea",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 14141
     },
     "evidence/reviewed/baf40be927280792705785268764527371cd6a0b28ef268fb244010aad0a1f3c.license": {
       "sha256": "baf40be927280792705785268764527371cd6a0b28ef268fb244010aad0a1f3c",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1068
     },
     "evidence/reviewed/bbc8d19430f6078d23c0ccb751fe8e0837657aeac91a6cc9cc834332fa3b74d6.source": {
       "sha256": "bbc8d19430f6078d23c0ccb751fe8e0837657aeac91a6cc9cc834332fa3b74d6",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 329
     },
     "evidence/reviewed/bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362.license": {
       "sha256": "bc6b3af2f331cbc7fb0da1344efb2cbe5877a31498b4d70dbc7000f3405a1362",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 11345
     },
     "evidence/reviewed/bdbee0927862ffb76cf04a667b90fbb6db14ba6caf58ca4322ed3473a99a9983.license": {
       "sha256": "bdbee0927862ffb76cf04a667b90fbb6db14ba6caf58ca4322ed3473a99a9983",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1114
     },
     "evidence/reviewed/be28a1e1c27d1196397da3f2b356b7f8dacaba17ecb0047978ecb8cfac99e1aa.license": {
       "sha256": "be28a1e1c27d1196397da3f2b356b7f8dacaba17ecb0047978ecb8cfac99e1aa",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1061
     },
     "evidence/reviewed/be56d7884629b349eb3050c753586cdb12dce9e9bc0c0f27ad79409bb9dcbef7.license": {
       "sha256": "be56d7884629b349eb3050c753586cdb12dce9e9bc0c0f27ad79409bb9dcbef7",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1080
     },
     "evidence/reviewed/block-secrets-with-layered-scanning-pre-commit-ci.receipt.json": {
       "sha256": "e285b2c157c5592838dffa233828e1e9f0e7e71210411d4fb058466e9791936d",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 951
     },
     "evidence/reviewed/browser-proof-with-playwright.receipt.json": {
       "sha256": "cec596613cd67eb2835829141ab5a8df0f05e59f69f898f55a000e1175cc6517",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 2923
     },
     "evidence/reviewed/browser-testing-with-devtools.receipt.json": {
       "sha256": "5ac6d630f82d0c598b2271ec66059265b7a227b4f492cbab1779f90bf3c7ccb4",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1579
     },
     "evidence/reviewed/c380805f277e9d6c4ca5af3da3f8c50d3a57122854221b1ac6a0d007d3839898.source": {
       "sha256": "c380805f277e9d6c4ca5af3da3f8c50d3a57122854221b1ac6a0d007d3839898",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 2730
     },
     "evidence/reviewed/c59faf851377f0eeda45306398d16eb96d77ab1c2fd3e1a7fb58e9a0af33c1e9.source": {
       "sha256": "c59faf851377f0eeda45306398d16eb96d77ab1c2fd3e1a7fb58e9a0af33c1e9",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 10038
     },
     "evidence/reviewed/c9d9adcc4cbff26409f633d36304f6ff50c2792bf78a1a899e7e4efb684181d2.source": {
       "sha256": "c9d9adcc4cbff26409f633d36304f6ff50c2792bf78a1a899e7e4efb684181d2",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 2285
     },
     "evidence/reviewed/cb79a899ccfaed4fa544034440138f34982b18752248066af98feeb50e43f35d.source": {
       "sha256": "cb79a899ccfaed4fa544034440138f34982b18752248066af98feeb50e43f35d",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 11374
     },
     "evidence/reviewed/cc79352a90f66bb27020bc40cb7481e661de807875e4ece5533ee4d4d9d20616.license": {
       "sha256": "cc79352a90f66bb27020bc40cb7481e661de807875e4ece5533ee4d4d9d20616",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1064
     },
     "evidence/reviewed/ce974ebd7f4b34f6d075ca20fb3251a9f41a1c89a35072220f3d767ee1d72338.license": {
       "sha256": "ce974ebd7f4b34f6d075ca20fb3251a9f41a1c89a35072220f3d767ee1d72338",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1322
     },
     "evidence/reviewed/cef8d2e0891d4f3b0b0d1fec06f74d54f245dc6850f475e7ceb4194e10307e54.source": {
       "sha256": "cef8d2e0891d4f3b0b0d1fec06f74d54f245dc6850f475e7ceb4194e10307e54",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 90869
     },
     "evidence/reviewed/centralize-config-in-pydantic-basesettings-hide-docs-in-prod.receipt.json": {
       "sha256": "b7a4a1d07dd2a0b3aa23744849a1eb12f70a6a9a599f5db6e0ac4f46924a54ff",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1013
     },
     "evidence/reviewed/centralized-error-handling-with-apierror-catchasync-wrapper.receipt.json": {
       "sha256": "21729ae2eacf14339d7ddafcefe03e0f0e37207687f8d15007a5bbf4cc8dd82c",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 3495
     },
     "evidence/reviewed/ci-cd-and-automation.receipt.json": {
       "sha256": "e1328762d70414bafcb5283a2050b91735f8ad59a7a3453635288df7fc97bd4a",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1543
     },
     "evidence/reviewed/cloudflare-skills-THIRD_PARTY_NOTICES.notice": {
       "sha256": "a8ff7a84dee9dfb42ab448de281784387ceafdf63881b7c070ee2de7f6ed865c",
-      "kind": "third-party-notice"
+      "kind": "third-party-notice",
+      "size_bytes": 46162
     },
     "evidence/reviewed/code-review-and-quality.receipt.json": {
       "sha256": "aa90a857dde82300e1a33eb0fc6be346fb15c2cdda6e44b5568d16169c63198e",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 4303
     },
     "evidence/reviewed/code-simplification.receipt.json": {
       "sha256": "00b433905455e7f31988dbb979af02f94745434ec6c705634f892922cb2b5503",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1539
     },
     "evidence/reviewed/consolidate-quality-gates-on-ruff-mypy-pytest.receipt.json": {
       "sha256": "00e27e745da1e512457cce479dc3bbc8ff6a1d17bbcdd4c722e1f2c47c5bbc75",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 2410
     },
     "evidence/reviewed/context-engineering.receipt.json": {
       "sha256": "076cd60c5a2bd6f89e1b99526291f47404f918bca3c8e3c162b2893d6178ee78",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1539
     },
     "evidence/reviewed/d039eb55cfbaa379d308ff42c1e459dea355edb869ec0a4d6f488759d2156aec.source": {
       "sha256": "d039eb55cfbaa379d308ff42c1e459dea355edb869ec0a4d6f488759d2156aec",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 4908
     },
     "evidence/reviewed/d06ab473ef2ec146979e967b0edd8db2b26cf43ee8a22c2a31d1fa3ce56001d7.license": {
       "sha256": "d06ab473ef2ec146979e967b0edd8db2b26cf43ee8a22c2a31d1fa3ce56001d7",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1079
     },
     "evidence/reviewed/d0ac09e8df2b54625ea1606dfae75d5b6af1cbc5d28a17eca1350be9c367175c.license": {
       "sha256": "d0ac09e8df2b54625ea1606dfae75d5b6af1cbc5d28a17eca1350be9c367175c",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1067
     },
     "evidence/reviewed/d1e4ae98265f1aff5ca44652d2063a9137be656f6a89bca59fc9c26648df5420.license": {
       "sha256": "d1e4ae98265f1aff5ca44652d2063a9137be656f6a89bca59fc9c26648df5420",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1086
     },
     "evidence/reviewed/d39cdbba709a4fd2078d7abb45398fdb5042d5589d3196f9cdbcf322a953e9df.license": {
       "sha256": "d39cdbba709a4fd2078d7abb45398fdb5042d5589d3196f9cdbcf322a953e9df",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1060
     },
     "evidence/reviewed/d51aa750f4f34265374dc7270bcd66965b5837320ed03270f37e384a66341ba4.source": {
       "sha256": "d51aa750f4f34265374dc7270bcd66965b5837320ed03270f37e384a66341ba4",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 10715
     },
     "evidence/reviewed/da72a33a3f298145f56885bcbdddcaf29971cb82231ad8f2ebba240680c9bebc.source": {
       "sha256": "da72a33a3f298145f56885bcbdddcaf29971cb82231ad8f2ebba240680c9bebc",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 13421
     },
     "evidence/reviewed/da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768.license": {
       "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 7651
     },
     "evidence/reviewed/db547374834635a9c0fe3da14be0ba0f677e8c3b78bfdb22c6e3d5445a978d7f.source": {
       "sha256": "db547374834635a9c0fe3da14be0ba0f677e8c3b78bfdb22c6e3d5445a978d7f",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 16017
     },
     "evidence/reviewed/dba15dad8f5a5cbae464ec8457e6dd014a7bcb3ad13a360a6908d54991a5415e.source": {
       "sha256": "dba15dad8f5a5cbae464ec8457e6dd014a7bcb3ad13a360a6908d54991a5415e",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 5851
     },
     "evidence/reviewed/de5e1c383b2c2c6177bacea4b777c79f402b30775b515ee736ec49b0834e68ff.source": {
       "sha256": "de5e1c383b2c2c6177bacea4b777c79f402b30775b515ee736ec49b0834e68ff",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 11940
     },
     "evidence/reviewed/debugging-and-error-recovery.receipt.json": {
       "sha256": "21a0080aef24f7f522b69865602ad7d06a2e05fe2ded80920f95e6bdffc8d23a",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1575
     },
     "evidence/reviewed/deprecation-and-migration.receipt.json": {
       "sha256": "d1cd6448def25360ee1259019c1e5d3d15c53f22c020889aa7e435cee1045a10",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1563
     },
     "evidence/reviewed/df66536610071727feae1ca95f3c391c248ad828041750ccd3699cce763aa00b.source": {
       "sha256": "df66536610071727feae1ca95f3c391c248ad828041750ccd3699cce763aa00b",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 9629
     },
     "evidence/reviewed/dockerize-fastapi-with-layer-cached-deps-and-one-process-per-container.receipt.json": {
       "sha256": "3fc5c46bf57fd7ef4d0d4975aa0a01eb99a89219689ca1fda48cd60a04178082",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 833
     },
     "evidence/reviewed/documentation-and-adrs.receipt.json": {
       "sha256": "3c297fd49bbd189e33c974db9530625d1feae83a1ff52ec1d52975d3d9dde77d",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1550
     },
     "evidence/reviewed/doubt-driven-development.receipt.json": {
       "sha256": "0e8af719ee37a9a7f154d0fea269f320789299e684fc0b14d4b46d4a321e9ea3",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1559
     },
     "evidence/reviewed/e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee.license": {
       "sha256": "e008c5e25a6be382593089c29bfabbc553c6378eee02895aec46ce396cc404ee",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 731
     },
     "evidence/reviewed/e08b6ba44f4ffa355f0906208e7e5ea450032ecfb7996d62de8dcb3c2fb92c60.source": {
       "sha256": "e08b6ba44f4ffa355f0906208e7e5ea450032ecfb7996d62de8dcb3c2fb92c60",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 15278
     },
     "evidence/reviewed/e22a7bff31a73a9a82722c771326acf13121622a8caca6221fcbea111c9bf88d.source": {
       "sha256": "e22a7bff31a73a9a82722c771326acf13121622a8caca6221fcbea111c9bf88d",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 7625
     },
     "evidence/reviewed/e2d9108b76c30aefb22113146b6801792de5ad204c8fdcd0678d2b3ddc5cba33.license": {
       "sha256": "e2d9108b76c30aefb22113146b6801792de5ad204c8fdcd0678d2b3ddc5cba33",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1078
     },
     "evidence/reviewed/e2e8edff4cd1b2a37818287afc35ac08a2fe8e9ee2fff36fc92a032b87451d56.license": {
       "sha256": "e2e8edff4cd1b2a37818287afc35ac08a2fe8e9ee2fff36fc92a032b87451d56",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1069
     },
     "evidence/reviewed/e5f7d016a95d976774d7f26a80be07acf204306aa874f60d6f501aec141c6ceb.source": {
       "sha256": "e5f7d016a95d976774d7f26a80be07acf204306aa874f60d6f501aec141c6ceb",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 3243
     },
     "evidence/reviewed/e7fcb0820306d46268de9594d676ad98e35040858926c412b7000faa52a61f87.source": {
       "sha256": "e7fcb0820306d46268de9594d676ad98e35040858926c412b7000faa52a61f87",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 13948
     },
     "evidence/reviewed/e89b4045e924ea7d150b1e12daf39aa8fc2f881ccc01da67a55842e69f431d0d.source": {
       "sha256": "e89b4045e924ea7d150b1e12daf39aa8fc2f881ccc01da67a55842e69f431d0d",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 2884
     },
     "evidence/reviewed/eaaaa7b82d797b43b7f8b9e8d9b875cdd299fd0ef04922f1fcc377ee8db1a35a.source": {
       "sha256": "eaaaa7b82d797b43b7f8b9e8d9b875cdd299fd0ef04922f1fcc377ee8db1a35a",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 4691
     },
     "evidence/reviewed/ed0f90cc5951ddd4bcab7f871f64efec93a49af9279ef93bc470da77ad8da3f7.source": {
       "sha256": "ed0f90cc5951ddd4bcab7f871f64efec93a49af9279ef93bc470da77ad8da3f7",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 10564
     },
     "evidence/reviewed/ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224.license": {
       "sha256": "ee765244e2d59f5234d474f62e0766fa0c8b99af967fdd4c0cb8dcb0c76ea224",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1079
     },
     "evidence/reviewed/ef75cd57fafd08208ab91ef668ed691fd9a1c1f468e34b71e40bb71f8f379e33.license": {
       "sha256": "ef75cd57fafd08208ab91ef668ed691fd9a1c1f468e34b71e40bb71f8f379e33",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 7220
     },
     "evidence/reviewed/expo-native-interface.receipt.json": {
       "sha256": "7a1467ad4e851a66ca8d15933d03ad55e7c5823b49c0b202a316518f513c5387",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1556
     },
     "evidence/reviewed/expo-native-networking.receipt.json": {
       "sha256": "dae9c0ef7c314c776da4f3655e432066655e0e04a7fb972e3c59e8d0587e4196",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 3004
     },
     "evidence/reviewed/expose-clis-via-project-scripts-entry-points-not-main-hacks.receipt.json": {
       "sha256": "1b5f368450e7d0c33a649c83a2d3ef164eb2ad4b1ba9a5d7a261114637a16edf",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 866
     },
     "evidence/reviewed/f067f73bdf7d0e4aab01b997719d409a6facca6ba676443d2a257b27a39fdd08.license": {
       "sha256": "f067f73bdf7d0e4aab01b997719d409a6facca6ba676443d2a257b27a39fdd08",
-      "kind": "third-party-license"
+      "kind": "third-party-license",
+      "size_bytes": 1064
     },
     "evidence/reviewed/f0c5ed754057eb0c1e027e2587f59de816651feb5e837242296c43ea21cf621d.source": {
       "sha256": "f0c5ed754057eb0c1e027e2587f59de816651feb5e837242296c43ea21cf621d",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 13545
     },
     "evidence/reviewed/f27c0bd9423f920c3b3215d0406ad4ece8e0b3a565e54ba3790ba7619534ce7f.source": {
       "sha256": "f27c0bd9423f920c3b3215d0406ad4ece8e0b3a565e54ba3790ba7619534ce7f",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 33316
     },
     "evidence/reviewed/f2b5a031467677d4f1d06d06cf3cca45ff84704b58ad4f3a0cc700dd94f1f016.source": {
       "sha256": "f2b5a031467677d4f1d06d06cf3cca45ff84704b58ad4f3a0cc700dd94f1f016",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 201064
     },
     "evidence/reviewed/f4567b73f0a719a6309e748cee6b61485c4be2f11c3bb11bbab7665ce06e847b.source": {
       "sha256": "f4567b73f0a719a6309e748cee6b61485c4be2f11c3bb11bbab7665ce06e847b",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 4293
     },
     "evidence/reviewed/f7a610f948210d12eec77094eb618999dad336074e2535a8cb8d661a2243ddbc.source": {
       "sha256": "f7a610f948210d12eec77094eb618999dad336074e2535a8cb8d661a2243ddbc",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 2085
     },
     "evidence/reviewed/f94a3bc08fb59358689a84d9d6a2838154dc96904e53457e068d00df5b0671ef.source": {
       "sha256": "f94a3bc08fb59358689a84d9d6a2838154dc96904e53457e068d00df5b0671ef",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 3425
     },
     "evidence/reviewed/fb931e65e6b1cb5fa85fdff4e5179112c17ef294706ad8444c043112b5b087cd.source": {
       "sha256": "fb931e65e6b1cb5fa85fdff4e5179112c17ef294706ad8444c043112b5b087cd",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 1964
     },
     "evidence/reviewed/feature-based-project-structure-with-unidirectional-imports.receipt.json": {
       "sha256": "e08732f5a575d6fde9ca2acbd8f0dd5b347967b17c56fb34c5daca445563d287",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1058
     },
     "evidence/reviewed/ff57f3e2c4b940175d332a6636062e2222e476018678f9118473aae50c5945c9.source": {
       "sha256": "ff57f3e2c4b940175d332a6636062e2222e476018678f9118473aae50c5945c9",
-      "kind": "third-party-source"
+      "kind": "third-party-source",
+      "size_bytes": 32176
     },
     "evidence/reviewed/frontend-ui-engineering.receipt.json": {
       "sha256": "226de74339fdab5dc15cf019d7cced1eb689beb9f2e313461471d04b909ff638",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 2850
     },
     "evidence/reviewed/gate-every-build-with-a-fast-smoke-test.receipt.json": {
       "sha256": "9b6880aec7648e56e2077c90e4400f9202ab520a44a2bcb0bde1fabab2d25516",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 952
     },
     "evidence/reviewed/gh-absadiki-subsai.receipt.json": {
       "sha256": "94bd35a18ec038de3c4ff4628388772dedcadba3a8ce85b2669d100a1769379b",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 928
     },
     "evidence/reviewed/gh-adilmoujahid-donorschoose-visualization.receipt.json": {
       "sha256": "526940ec4be3e6931986bca0390ce5d957903ae80bb766d174b2750b0c56a3c7",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 674
     },
     "evidence/reviewed/gh-adilmoujahid-kaggle-talkingdata-visualization.receipt.json": {
       "sha256": "c1d5cee6a3c431ae958a3fdef4bf90c37b99990eea29a7c18191f2671344edcc",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 686
     },
     "evidence/reviewed/gh-aichbauer-express-rest-api-boilerplate.receipt.json": {
       "sha256": "b15ef493b32da0f6de45659678fb09570c7cf4f19598edaff57518b7ca4bce2a",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 966
     },
     "evidence/reviewed/gh-alexflipnote-discord-bot-py.receipt.json": {
       "sha256": "037e74932c6cff2f547a310f6f07be9cc3e785b0d05b261e909d74b524887d34",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 944
     },
     "evidence/reviewed/gh-alfinauzikri-ui.receipt.json": {
       "sha256": "e5b63b10853c08a31b5b087d967ea574daac2815179247b63d14ae847f0cbfb2",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 920
     },
     "evidence/reviewed/gh-alirezamika-autoscraper.receipt.json": {
       "sha256": "569052271aef44e64a63ad8fb595746247c491ad4f93899f4fba1e6ad936da53",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 936
     },
     "evidence/reviewed/gh-amxv-mcp-manager.receipt.json": {
       "sha256": "872b8c5f424bded4b379d2c757ed298d691fbf4e23cbf08403b4ac4cc84804c6",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 936
     },
     "evidence/reviewed/gh-andregardi-jwt-express-typeorm.receipt.json": {
       "sha256": "c34f41c7170d9052c43ada099451a0546f918ef72e7f879d5a124dc37d2da9af",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 656
     },
     "evidence/reviewed/gh-antoineross-hikari.receipt.json": {
       "sha256": "9786d94d55e6f7a4db0a32cc9c29bd2a4a1fe6f74349109a0b914fad9a4c831e",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 926
     },
     "evidence/reviewed/gh-artzub-githubvisualizer.receipt.json": {
       "sha256": "ad7f7a9edab0e5af9226caf437b5fadf31022409301f1be16052215d110c14cb",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 954
     },
     "evidence/reviewed/gh-auth0-developer-hub-auth0-b2b-saas-starter.receipt.json": {
       "sha256": "10da5be6f6fb304aa3344e34805cb2677953adaf1ef53f8c7cc3f49c044de81f",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 974
     },
     "evidence/reviewed/gh-baugarten-node-restful.receipt.json": {
       "sha256": "84cf8653d5ad75c29f2320e55bf50e8aea7b272cde494a2dbb1f4316b99ed106",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 640
     },
     "evidence/reviewed/gh-benny-yahoo-ticker-symbol-downloader.receipt.json": {
       "sha256": "85e544295e2a992497885dd61ef90bd1c3b0d2479865210943a1cbcaf920cdf8",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 986
     },
     "evidence/reviewed/gh-bhbs-viject.receipt.json": {
       "sha256": "29d15a5a2b45a291bca119c6ec3ae0d8578423a02cb7188dc42c777092010a97",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 912
     },
     "evidence/reviewed/gh-brillout-awesome-react-components.receipt.json": {
       "sha256": "cdaf1c577cb28dd45263091dfd3c4ab5465ea45ba06b3aa487ebbf3a88e7034e",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 964
     },
     "evidence/reviewed/gh-chocomeow-vocard.receipt.json": {
       "sha256": "ba4ffc9f2042c94c6368230454ca8c26598802df9075ea77571b462f35df5a48",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 922
     },
     "evidence/reviewed/gh-cloud9c-taro.receipt.json": {
       "sha256": "a5130b5456782c43d585d4c0c4ecf022a0f7bbc2dd723653f355f4ac96407298",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 914
     },
     "evidence/reviewed/gh-crinibus-scraper.receipt.json": {
       "sha256": "315524b46fc9b4a1cfeccc45c747440118fd3aa104433ac8e759f5d0ffc1426b",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 922
     },
     "evidence/reviewed/gh-csnw-d3-compose.receipt.json": {
       "sha256": "626a718df29454dfc4806da4e0eb352f28735c970a582f44e0f57f44862d04ba",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 920
     },
     "evidence/reviewed/gh-d3-d3-hierarchy.receipt.json": {
       "sha256": "3baea5fe0f6c2eb7cf07cd76cc3fa9365013270cc951940ee76d4bbf872cd5c1",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 920
     },
     "evidence/reviewed/gh-dalenguyen-rest-api-node-typescript.receipt.json": {
       "sha256": "40fa4e07d56eab562c6fd5f6f3b9b61c3968204a3c41a6ffedd52ddbf4fd5caf",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 666
     },
     "evidence/reviewed/gh-developit-express-es6-rest-api.receipt.json": {
       "sha256": "ddfda95aba00c7be39d6fedfd45735042fb9685b1f90e5955f3421ef211f4458",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 950
     },
     "evidence/reviewed/gh-dicklesworthstone-swiss-army-llama.receipt.json": {
       "sha256": "20aa123c6b11199aa219d1a4e5885cd2cf7c80d31a8c11f8034b93777b14cd47",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 664
     },
     "evidence/reviewed/gh-donnemartin-dev-setup.receipt.json": {
       "sha256": "cf021c22a9d2a26072e1601d3d721fd17411b45785cddd161ecb2c661986ca2f",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 948
     },
     "evidence/reviewed/gh-dosisod-refurb.receipt.json": {
       "sha256": "5d16bd02ce4ea352b573e4297110c84747eabff4fd95141594021bcbce282279",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 926
     },
     "evidence/reviewed/gh-ekafyi-johnnydecimal-index-generator.receipt.json": {
       "sha256": "b9c3aa88d1e350e0d1c1dd2453b6345cf048b549bb834ac6b86cdc8fe6386007",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 962
     },
     "evidence/reviewed/gh-elenchev-order-book-heatmap.receipt.json": {
       "sha256": "3320b46fc9eb684b8fccb60e3edf3beeca1b0c654be13220b47a1f2e4eac7939",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 962
     },
     "evidence/reviewed/gh-elibroftw-modern-desktop-app-template.receipt.json": {
       "sha256": "b3b65021c4076e1ed4ab163ae534eac4df8d2b9d066696fda53f001e05c80a09",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 975
     },
     "evidence/reviewed/gh-end3r-gamedev-canvas-workshop.receipt.json": {
       "sha256": "d5b47b8c5636de867f7e17f7050a578e929dafd4e1d5908ebdb27e85a768ef26",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 964
     },
     "evidence/reviewed/gh-ericjmarti-inventory-hunter.receipt.json": {
       "sha256": "f9f8c835b38a414fb0d04ec44fafe181eaf88ac39ab431eb0b30f6dfcaedfb74",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 944
     },
     "evidence/reviewed/gh-erickks-vite-deploy.receipt.json": {
       "sha256": "5a46cffb9eb07ddbb12ee8c8858a22800e0b9772940d2aff074275728064b34c",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 634
     },
     "evidence/reviewed/gh-essamamdani-search-result-scraper-markdown.receipt.json": {
       "sha256": "bd56d4930a6e5f05ce4be85b43070a170cf5163b46f0574f4296071c0ba99510",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 974
     },
     "evidence/reviewed/gh-felipeall-transfermarkt-api.receipt.json": {
       "sha256": "eba77209be812ebd394500a552758bad742b6533739cbf26af6d8ec2a7cde654",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 944
     },
     "evidence/reviewed/gh-flo-bit-ui-kit.receipt.json": {
       "sha256": "a33a14b64ffc0a1fbedaa3ec42751aad9396f299e419ecd69cfc108f2109569b",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 918
     },
     "evidence/reviewed/gh-flrs-visavail.receipt.json": {
       "sha256": "d70087c352a624554a261c94556f8a9576a8a1b349df7f4212e7a96b1228a53c",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 919
     },
     "evidence/reviewed/gh-foalts-foal.receipt.json": {
       "sha256": "be2105dd2f68babbfd7a8bc6816898a940b2ebe6df8b5848e723f37ec7e91101",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 912
     },
     "evidence/reviewed/gh-formidablelabs-react-game-kit.receipt.json": {
       "sha256": "f8687d9ab0020f8c3dca7ff7b05a520f6b71ecdbc44fd24aafd77f221046c805",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 950
     },
     "evidence/reviewed/gh-freedmand-semantra-python.receipt.json": {
       "sha256": "138ad3ec1f49f3ccdb6e1493dc6f0c99f8b1b939650ba07a60c911a9ad45bf3b",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 940
     },
     "evidence/reviewed/gh-frontendmasters-api-design-node-v3.receipt.json": {
       "sha256": "c2d2388418299ef863232f78128c38b1d541e839ff0658e7b55e9f8be4cf7f11",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 664
     },
     "evidence/reviewed/gh-geoffrich-svelte-adapter-azure-swa.receipt.json": {
       "sha256": "373d1bd5cc95cdaa376c8a2a3a11fd188679525aa143c91c4f8d6acbbbddfc74",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 958
     },
     "evidence/reviewed/gh-georgegriff-react-dnd-kit-tailwind-shadcn-ui.receipt.json": {
       "sha256": "b55ef22e032728a337468ec96b9e5c9dbb043c8ac0aa6de4271e7983138ac62b",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 978
     },
     "evidence/reviewed/gh-gloomyson-sc-js.receipt.json": {
       "sha256": "64d2528d40bd53cd28db7371337abecea16726e5086f150fc6800957b514814b",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 923
     },
     "evidence/reviewed/gh-hfrost0-bilix.receipt.json": {
       "sha256": "9a5d61276e2458008c878b4118e1748a8fc7db47d009fa1c8f5aea2fb882868d",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 930
     },
     "evidence/reviewed/gh-hoangsonww-claude-code-agent-monitor.receipt.json": {
       "sha256": "5870fda15bb3401bf847a700f2c928e1f4e4bf6b214447af2b89f9025c3623a3",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 962
     },
     "evidence/reviewed/gh-huakunshen-wol-web.receipt.json": {
       "sha256": "c196d7897799be6ef4e77cae3ea204ead7d3a9754359c6f7ae04cda547afc910",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 926
     },
     "evidence/reviewed/gh-huginn-huginn.receipt.json": {
       "sha256": "a34711068d83dbc83cc86298335719520b8b47acfeca275026cdd1b542cd864e",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 916
     },
     "evidence/reviewed/gh-ippa-jaws.receipt.json": {
       "sha256": "d18115d6d0c2d3dbc238cbad3ca2c9e13f88ba377cf441cae230a077ecd6b1c7",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 920
     },
     "evidence/reviewed/gh-ixartz-saas-boilerplate.receipt.json": {
       "sha256": "41279e943562a4123da54135d5fc3a85f8cd651acaf537013f992dec292498b8",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 936
     },
     "evidence/reviewed/gh-jamesturk-spatula.receipt.json": {
       "sha256": "0a4ee9bcdc9f30899a9f4f71a63c462b7eae9a70e27410fdbd63b55c66378e37",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 924
     },
     "evidence/reviewed/gh-jazelly-agentic-react.receipt.json": {
       "sha256": "a1a15279a652b9059f7674f9e0b3cc1d90fe5f3d154b711cea2c21d9f6d935c6",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 932
     },
     "evidence/reviewed/gh-johnpapa-shopathome.receipt.json": {
       "sha256": "106806c2b1ab271117ec4464dcf8de4fb2e51ac76f319ac25b770107ece9805f",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 928
     },
     "evidence/reviewed/gh-kellyjonbrazil-jc.receipt.json": {
       "sha256": "d8cdd9f87c176f50adb70f0bd2c4c6f31a12388353ced92af54dd5ed36f369dc",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 927
     },
     "evidence/reviewed/gh-kinngh-shopify-node-express-mongodb-app.receipt.json": {
       "sha256": "4595281a7088a5f6134b8d00b58e3d6e7f77ee80429734276611a47f55bfd11e",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 968
     },
     "evidence/reviewed/gh-tretapey-svelte-pwa.receipt.json": {
       "sha256": "38433224bffed6823d348a6c171174b65824fed3e72289426b1c1efbe9edc65b",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 634
     },
     "evidence/reviewed/gh-visini-abstracting-fastapi-services.receipt.json": {
       "sha256": "b2c724d24c83037a93c2b6ff142c825f7c40e8d76cdb083547448ede2c80cc30",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 960
     },
     "evidence/reviewed/git-workflow-and-versioning.receipt.json": {
       "sha256": "973f7d1a97a589e61cd4e0d93c87730754248b11f58cfda440cd38c665c8b915",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1571
     },
     "evidence/reviewed/idea-refine.receipt.json": {
       "sha256": "d916753914e91b845437ffc245f09eea1cbae7955afb58ad8aa4475677e8cfa5",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1506
     },
     "evidence/reviewed/incremental-implementation.receipt.json": {
       "sha256": "8835dd7a9d62c79c3823f46dd892fea374b83beb5887301d01bc5cccde59c3c9",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1566
     },
     "evidence/reviewed/layered-error-boundaries-plus-react-query-error-strategy.receipt.json": {
       "sha256": "35d58a9879f34bdc4c5373759fb48616877a9af4840efcc22c477651e64b45f5",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 823
     },
     "evidence/reviewed/layered-express-api-routes-controllers-services-models.receipt.json": {
       "sha256": "ae1d69755e6d6efff9135240824aa0cd78096569d63a8c08d13a74a518eefe0d",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1004
     },
     "evidence/reviewed/manage-the-project-with-uv-and-commit-the-lockfile.receipt.json": {
       "sha256": "ac95199c169b8a77f07a10789b6f30d084fa9940e03d2ced8b389dd8deeff2d9",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 3290
     },
     "evidence/reviewed/match-async-sync-route-style-to-the-work-never-block-the-event-loop.receipt.json": {
       "sha256": "fb554c2e18b60aec4aff1e00e085be20c37601267dc56381395b2e96db0e5f96",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1020
     },
     "evidence/reviewed/mcp-implementation-and-evaluation.receipt.json": {
       "sha256": "c6226d25631dc422d42a4b20f15f3b88b76656a0c0954f03a646bc57007af7ad",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 2972
     },
     "evidence/reviewed/nextjs-framework-browser-proof.receipt.json": {
       "sha256": "8d6fb4d4323265fbb48e9149f36db88168372045be57eeab4aa83dbf84ce88cd",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1504
     },
     "evidence/reviewed/observability-and-instrumentation.receipt.json": {
       "sha256": "5da00c3e06a26ca0cea24eb01d4650704eb0c893fb4637e51cc8aad8c1cf49d2",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1595
     },
     "evidence/reviewed/organize-the-backend-by-domain-not-by-file-type.receipt.json": {
       "sha256": "43440cd60245f4410c04e05e17d4d97271118275ab430cafe575c7d3b03ac7b5",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1000
     },
     "evidence/reviewed/performance-optimization.receipt.json": {
       "sha256": "23063ddbd53a476ad4085fe95576715470577a06c765923af5fb5c9842b05fc5",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 2827
     },
     "evidence/reviewed/pick-the-right-state-tool-per-state-category.receipt.json": {
       "sha256": "266036438615afbe2c236532cdd146dae849ee723a579b7f7387daf6c48c68f5",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1040
     },
     "evidence/reviewed/planning-and-task-breakdown.receipt.json": {
       "sha256": "336556cf9029eb3857915363e4280ad4806b6cad623d27d1eed1b9d5853e1396",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1571
     },
     "evidence/reviewed/postgres-query-and-schema-engineering.receipt.json": {
       "sha256": "2621194965d36a7bd160170f6b79463118c17942c49b0e20f9370e8b64ddb763",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 4426
     },
     "evidence/reviewed/production-dockerfile-multi-stage-minimal-non-root.receipt.json": {
       "sha256": "3899ad8d35e9a076727ea65085d2de2d7affebb825312f12c95fde46450c34e7",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 827
     },
     "evidence/reviewed/push-validation-into-pydantic-schemas-and-a-shared-basemodel.receipt.json": {
       "sha256": "b6616d0189dd8d7d616bd5c1fe73533e119d6d992fc2c154e3513a1866c1ff6f",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1013
     },
     "evidence/reviewed/pyproject-toml-as-the-single-source-of-project-truth.receipt.json": {
       "sha256": "ade5ef3cc4ef56b9712d164736ac3d3fe4d12fc45f5c6eeeefb95768199e67e0",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 859
     },
     "evidence/reviewed/rag-retrieval-and-grounding-evaluation.receipt.json": {
       "sha256": "9707997446b3eda0fc51aa51bd14fbb70520a704d0173cdd135b935ade1bc03d",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 2883
     },
     "evidence/reviewed/root-cause-first-a-four-phase-debugging-discipline.receipt.json": {
       "sha256": "7b91f99bc90c1c5a70271985591a43ab40a14869c914c756b3cd601f21652d80",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1050
     },
     "evidence/reviewed/route-level-code-splitting-and-targeted-memoization.receipt.json": {
       "sha256": "e6815f69346d6bc6634a3aa8af9b5fed0d5dabf8182d62d88a67178a4c6d82cd",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 5884
     },
     "evidence/reviewed/security-and-hardening.receipt.json": {
       "sha256": "a755a5cd1e146358a9a5f3d53412cba437cce0f19f05848a98046be63bf68cb6",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1551
     },
     "evidence/reviewed/share-types-between-client-and-server-via-a-shared-module.receipt.json": {
       "sha256": "48c6bca5da00a9f4414c8a9714eda5797ff29fed0706f27f3f4c252a16af5831",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 995
     },
     "evidence/reviewed/ship-a-env-example-and-load-env-in-dev-only.receipt.json": {
       "sha256": "abf3d8fb2a3af397ed612c343372fafbb16b1774524106e98b65e4e5e9426d5b",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 3864
     },
     "evidence/reviewed/shipping-and-launch.receipt.json": {
       "sha256": "9a362715ef7b7b22efdfcd8276dd3182f9ca8457a953d04264a557e0efbf6ae7",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1539
     },
     "evidence/reviewed/single-typed-api-client-with-colocated-query-mutation-hooks.receipt.json": {
       "sha256": "c4c104b3deb6798b09a53c545f967b0028f752ed4568251cd3b53f7cff12a4af",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 3284
     },
     "evidence/reviewed/source-driven-development.receipt.json": {
       "sha256": "b05f894df4cbe8dabbe5cb699b06ba477bbfc8d08b457a00706f58ea9a3d1d16",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1563
     },
     "evidence/reviewed/spec-driven-development.receipt.json": {
       "sha256": "bac3c9b6b8a1f6ac6898af5c8fdb2e8a16ead7aa779366d5bbe221c97bbd49d4",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1555
     },
     "evidence/reviewed/store-all-config-in-environment-variables-12-factor.receipt.json": {
       "sha256": "7c97edaa883ac17f4914ae6dd6179201f23ddb9be868e37278e64e362966354e",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 774
     },
     "evidence/reviewed/swift-async-state-and-test-isolation.receipt.json": {
       "sha256": "ed1618f7a3b6cf678a3b9e98faf1227f156bffaf2236004c50c5fc43a5daedea",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 5860
     },
     "evidence/reviewed/test-driven-development.receipt.json": {
       "sha256": "5cc8ea890c66c3ecd6c6f1d300cb68c0e29fd41600a6e09d98868b7b8a1fd0d3",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1555
     },
     "evidence/reviewed/two-tier-client-server-layout-with-dev-proxy-and-unified-prod-serving.receipt.json": {
       "sha256": "372e8c9218458850773f9f1e49f0f1f971522efb1960c92837cf84afd10c06d3",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 3851
     },
     "evidence/reviewed/use-annotated-dependencies-with-yield-for-db-sessions-and-chained-auth.receipt.json": {
       "sha256": "d8f675d181a0ee754dd5548f2d589b81d2caf84e9e12f78bd3b31d5d8ed3901e",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 841
     },
     "evidence/reviewed/use-src-layout-for-any-installable-or-tested-python-package.receipt.json": {
       "sha256": "24021062e6bff0c9e4dc370e7e5f873ff9dc88d5c83f02de07020fe528cd5555",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 882
     },
     "evidence/reviewed/using-agent-skills.receipt.json": {
       "sha256": "b86f5718c3da13fe9103a89d10bc435d130ba82cbfc33fc35def921dee78ba0b",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1535
     },
     "evidence/reviewed/validate-environment-config-at-startup-fail-fast.receipt.json": {
       "sha256": "376ddc1c476f3f1031eb1ea9d3dcecd340e3a197250da82d53d7ad842ebbb0e0",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 929
     },
     "evidence/reviewed/won-nextjs-shape.receipt.json": {
       "sha256": "c5b59732c8579ea6a5c6c6a48b38d0a7f7ed97a7dd217b9453bed6cab64331d6",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 1806
     },
     "evidence/reviewed/won-react-shape.receipt.json": {
       "sha256": "7a88105c11ee8cb643fe395d7163fcb49ad3f2c077cc9d7bc452d15eb55406a9",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 4586
     },
     "evidence/reviewed/write-a-readme-a-stranger-can-run-in-10-minutes.receipt.json": {
       "sha256": "7845663d6784200f0f5dcb70e3499d0159a19908db69fde0516848cb64bfdd1f",
-      "kind": "source-receipt"
+      "kind": "source-receipt",
+      "size_bytes": 852
     },
     "expo-native-interface.md": {
       "sha256": "9b1027f91dbcbe1942e7dc1c5a843a77c369913324a545030ad9b193d25e3695",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3080
     },
     "expo-native-networking.md": {
       "sha256": "5bdb3f77127bb64b94f8d4de4b40cab62b7dbe4f63f4dba3c4d5c9fe44efa15d",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3041
     },
     "expose-clis-via-project-scripts-entry-points-not-main-hacks.md": {
       "sha256": "52f00e52240d293a26eed37e787abe859dcb59e462f06a8996232345dd1e95f8",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2033
     },
     "fastapi-service-shape.md": {
       "sha256": "07e2d7fe3801c6acdce98d830f16eacb7b905a3c4436739f2cc031a4a91cd1c7",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 458
     },
     "feature-based-project-structure-with-unidirectional-imports.md": {
       "sha256": "258ea3432e4a3f21168ddb2c3706154ce89d92ad65b4a331a03d0a2a7888d101",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2461
     },
     "frontend-ui-engineering.md": {
       "sha256": "8e91e79bd51c4b0d98dadfeaf266946d674cafb9379ee666657cc3a7a7433b1a",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3460
     },
     "game-feel-juice.md": {
       "sha256": "4404f31a7e0873be0a2aadec3c6aa8fc093e74046c85b9cd292cc85329e766e6",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 11715
     },
     "gate-every-build-with-a-fast-smoke-test.md": {
       "sha256": "258ea7c2c5e72eb6ce9f8d218246d01e00e18ba682d78fd06e899ab810ad3a76",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2241
     },
     "gh-absadiki-subsai.md": {
-      "sha256": "0916baab2598717ebeb95c4ff00c8560046ed46d48571f422a007a55a1e4ce22",
-      "kind": "skill"
+      "sha256": "97047447ddba13db13340406b60e834978297cae05e7e80b15d3aa60a7df41e8",
+      "kind": "skill",
+      "size_bytes": 4012
     },
     "gh-adilmoujahid-donorschoose-visualization.md": {
-      "sha256": "71d14e69e82eaed17eca625ba875e263bb62b22e59f04751edc5897e1934d009",
-      "kind": "skill"
+      "sha256": "8bd48b93cbef68633d805dd47ea9ead3f7dc46d5c5c75deebb12b4e36a4aebb9",
+      "kind": "skill",
+      "size_bytes": 3001
     },
     "gh-adilmoujahid-kaggle-talkingdata-visualization.md": {
-      "sha256": "e6e3c3f615d1ab1419e52e09e23f6c33bc6dfc61f279ed8a8f50863777083c61",
-      "kind": "skill"
+      "sha256": "c6c8b4fae4b23ea78203df36603795ffc8bb0104a1d39073a8a2a99047ff962e",
+      "kind": "skill",
+      "size_bytes": 2915
     },
     "gh-aichbauer-express-rest-api-boilerplate.md": {
       "sha256": "083dfc17abd9746faaa29035b97bfa1c1932151c3926572dc4afa014f0794e52",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2979
     },
     "gh-alexflipnote-discord-bot-py.md": {
       "sha256": "d81807467429251d3c1556f965edea89ae4def0153d02728608c6fc07e29ace2",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2725
     },
     "gh-alfinauzikri-ui.md": {
       "sha256": "bdaeb0338a9554cb922696d9f64e12515f563b872af61da7ea2f42299c260b2e",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3052
     },
     "gh-alirezamika-autoscraper.md": {
       "sha256": "649acb7d188ecbb242463b7c9033e9c30f0deb6296994161a3dcecb9dc154c38",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2897
     },
     "gh-amxv-mcp-manager.md": {
       "sha256": "dac2caf20ec91a749a5f92f80b7f497a018992570b69bcc309bfa94a993f37d7",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3437
     },
     "gh-andregardi-jwt-express-typeorm.md": {
-      "sha256": "bcc37febe50ae75dd6936c4cf6d682b052841392a36c8436167696ee1511a6b4",
-      "kind": "skill"
+      "sha256": "40f5214b499a36367f1a691a11879c5c26305b0df1ebcf88c237d95c3bb76715",
+      "kind": "skill",
+      "size_bytes": 3454
     },
     "gh-antoineross-hikari.md": {
-      "sha256": "de552d93c5a82ac7da1ed1f16534c7a97a09c64b599b9120429fb62c3776d06f",
-      "kind": "skill"
+      "sha256": "9c0de215984031d788d192a30cf5db3e330614b3a389a53029e8a945c43e800a",
+      "kind": "skill",
+      "size_bytes": 2998
     },
     "gh-artzub-githubvisualizer.md": {
-      "sha256": "9dfdeaed2e0a740f0e4b625da12492557250c1a14d98407c18ce55a81236a53e",
-      "kind": "skill"
+      "sha256": "9921faa30abe6ced1c3d6b26c1c7610bdca41226d2520673704b096c88fd8360",
+      "kind": "skill",
+      "size_bytes": 2780
     },
     "gh-auth0-developer-hub-auth0-b2b-saas-starter.md": {
-      "sha256": "f73621093525b72fc98e656077ccce33ae45e55118aef223cb66250853825ecc",
-      "kind": "skill"
+      "sha256": "ca7dcee8e56862c83592f7edde54bd09b677a013c95ff9dc309296072b36e2af",
+      "kind": "skill",
+      "size_bytes": 3915
     },
     "gh-baugarten-node-restful.md": {
-      "sha256": "9825d6ab58853ed33f0569cae83a9cd52af7b71ee69e80c137a13631ad0008ca",
-      "kind": "skill"
+      "sha256": "1b7987495574e09a83e26abcdfab33dbaa822c1421aae68cab1871a1c38f1cf4",
+      "kind": "skill",
+      "size_bytes": 3734
     },
     "gh-benny-yahoo-ticker-symbol-downloader.md": {
-      "sha256": "7032fcc4692ed802a5936c92b41e2e368bb63923a4a46ea49d6e29f4017e6fa4",
-      "kind": "skill"
+      "sha256": "38c211a879723d1294b6ce7818463382b2bdb66feb99a2ba62f3a62a543a1bf4",
+      "kind": "skill",
+      "size_bytes": 3280
     },
     "gh-bhbs-viject.md": {
       "sha256": "da79c1ad4febd5cfd356ac9640b187783f6f6ca26373d3987074052fbf387afc",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3190
     },
     "gh-brillout-awesome-react-components.md": {
-      "sha256": "61957012b861e66c7d570469e323fc2c5d80ba1bbdc76e4e4f04dd9597f0f37d",
-      "kind": "skill"
+      "sha256": "7056468f188ae857e37c42e18c68f61102231df6e3e9f2af9f520e25ad9a9c4c",
+      "kind": "skill",
+      "size_bytes": 2604
     },
     "gh-chocomeow-vocard.md": {
-      "sha256": "55eb4e0b8c9a4c468f208b741c114596f8e54de24f9044ba2d372a1883002fb8",
-      "kind": "skill"
+      "sha256": "967eaffd5c4906564e57d81a1e8f6b1d4177f4101bb965cbe578d2b829fc9ed8",
+      "kind": "skill",
+      "size_bytes": 2883
     },
     "gh-cloud9c-taro.md": {
-      "sha256": "464d1e243fe4955be4bf241c94ee4c5a320a6ff7b2d5f2c5ebcf381345a00cde",
-      "kind": "skill"
+      "sha256": "eecbd740e6b6b4f20da2875692ea688c5e9e1c4e3076026d43600dbe1a9f8719",
+      "kind": "skill",
+      "size_bytes": 3820
     },
     "gh-crinibus-scraper.md": {
       "sha256": "ed8793eed4f7350e5b0d8abe83c5ebbb9ceec6c612ffaa79bc4795f60a7143bb",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2707
     },
     "gh-csnw-d3-compose.md": {
-      "sha256": "3e6e1e0f21b81403bcd68a5893e0bd3f006a0b1681f361b3eee56bc401f24dcb",
-      "kind": "skill"
+      "sha256": "3c97f9be11f4778ea0bd86d203cb12bff8efe97d8c6a50014ed8d88b8f4a378f",
+      "kind": "skill",
+      "size_bytes": 3483
     },
     "gh-d3-d3-hierarchy.md": {
-      "sha256": "62328760be87f66f76bda47ac2310d5be776934353327e7b75470168378fb535",
-      "kind": "skill"
+      "sha256": "15f4e32b4d9d8bb3c363cebedd30f054a246cbd73d78f5a015f5d367177078b5",
+      "kind": "skill",
+      "size_bytes": 3317
     },
     "gh-dalenguyen-rest-api-node-typescript.md": {
-      "sha256": "931a053905cb7089c6a1103852b68ff820457f6c98183b5b2040068a360acba8",
-      "kind": "skill"
+      "sha256": "897291420be8a90fe74ab00e3dcdb7f3355f186ced43dc97ce30c8c6ba8ead84",
+      "kind": "skill",
+      "size_bytes": 3381
     },
     "gh-developit-express-es6-rest-api.md": {
-      "sha256": "4388343b196baaf175d4d1221e3a809cc7f55fbfb64e9b31b1040c967c2d1a38",
-      "kind": "skill"
+      "sha256": "57e8467355fa00f34d8b9f6f874e06b432b359f04aac73c22fa759bb36168b24",
+      "kind": "skill",
+      "size_bytes": 3378
     },
     "gh-dicklesworthstone-swiss-army-llama.md": {
-      "sha256": "b5f3108e36d3d514905dc39b0e3205c06852adb801c3faedd3eb50e389a06de2",
-      "kind": "skill"
+      "sha256": "0f2879cbb224c88764378b98c8dcffc533660072e8798c2ddfd58bf64897fafb",
+      "kind": "skill",
+      "size_bytes": 3420
     },
     "gh-donnemartin-dev-setup.md": {
-      "sha256": "29fc68d6dc466af94baee75ebaf59304a782a9758814f2ff37d40f3a76f9e200",
-      "kind": "skill"
+      "sha256": "22e288c7998cbb1b0bb0f1f6e10697d098f5b11efe681082777573d1f0e09543",
+      "kind": "skill",
+      "size_bytes": 3571
     },
     "gh-dosisod-refurb.md": {
       "sha256": "71431802c4ef253f1dcc93d3898364c54e87755025f0ce96eec9fc5ba9421d2d",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3648
     },
     "gh-ekafyi-johnnydecimal-index-generator.md": {
-      "sha256": "dcb0a8dfa19c754b45c4e9acc905b5ce9fa28fe0e2c125750e6f14c200d5e42a",
-      "kind": "skill"
+      "sha256": "6aab318315792122fc27e3a4dad92a29e8d863ffdc762fd477946eb393ab9367",
+      "kind": "skill",
+      "size_bytes": 3755
     },
     "gh-elenchev-order-book-heatmap.md": {
       "sha256": "16d371055ae0340d33f6f9ecd178b71cdce67fe501b000635391c0e223228d37",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2759
     },
     "gh-elibroftw-modern-desktop-app-template.md": {
       "sha256": "d6bab056ff152891237a774a8052af78a93c920a2d07b8e35cea73d25e5bc294",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2652
     },
     "gh-end3r-gamedev-canvas-workshop.md": {
-      "sha256": "7c65bb1af99034bff1c67fba30ffb369d14e1d2d42a776ced28c2bfa200731f3",
-      "kind": "skill"
+      "sha256": "310f88d3513090b938a74b20bc799e1e81a4a56c74253d65837b715f2b447ac6",
+      "kind": "skill",
+      "size_bytes": 3029
     },
     "gh-ericjmarti-inventory-hunter.md": {
       "sha256": "6bb42930aed8d46e7c092c42efd09e2d489206a6170aff268c5c7efa1d3da5d0",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2865
     },
     "gh-erickks-vite-deploy.md": {
-      "sha256": "b8183b6964820e46d6f34fe6233795eb854a81930f6ea39b795f9a81b64af8b4",
-      "kind": "skill"
+      "sha256": "d8ba435164e485d58e3a6ee8958f7429b746375fa8592a983072974d809c9833",
+      "kind": "skill",
+      "size_bytes": 2130
     },
     "gh-essamamdani-search-result-scraper-markdown.md": {
       "sha256": "91beca0c1da81765c1b684bbdbb2c249f64af0dc550170ecdde27ca2e022686a",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2892
     },
     "gh-felipeall-transfermarkt-api.md": {
       "sha256": "30d81c08f4a3f745594eee285df96a0fea411d0882eb5ecea7c302ddceea5749",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2749
     },
     "gh-flo-bit-ui-kit.md": {
-      "sha256": "d8c15ebeb18b5524dd112ed8e80b5144bf26510020465c548619e85dfe943dd3",
-      "kind": "skill"
+      "sha256": "97725ae8d88b4df56154806ffdb60c300491bce5bc7cefe6d52d7a2c70cac1ae",
+      "kind": "skill",
+      "size_bytes": 3448
     },
     "gh-flrs-visavail.md": {
-      "sha256": "749ef47f5d14ef850223bfd1a6bbbdfe304e2522c95b7ef99b915a16713763f5",
-      "kind": "skill"
+      "sha256": "215fec2ae3e3e17e2447532c3f509bcd2b7a9032c01ca6f6f38daa0b968c09ad",
+      "kind": "skill",
+      "size_bytes": 3734
     },
     "gh-foalts-foal.md": {
-      "sha256": "7c36c63e6f59bd08b0fbb0e4f9c2bfbaa48f5f8bd37bacea1fdced0e8637cb8d",
-      "kind": "skill"
+      "sha256": "a31df15cf377d6dd618d4c3825b52f31c9f92c4218923bd519f7f3191db60081",
+      "kind": "skill",
+      "size_bytes": 3082
     },
     "gh-formidablelabs-react-game-kit.md": {
-      "sha256": "d6176cfab5ed2d5ece8d9879cbfe815c75e4c07c10a4f3cdc937a66e95cc1b51",
-      "kind": "skill"
+      "sha256": "a770c279e1ab880300e0d4ac0634536631b35ca1f3c7ad7f511dfc49c04c0353",
+      "kind": "skill",
+      "size_bytes": 3771
     },
     "gh-freedmand-semantra-python.md": {
       "sha256": "c4cdc72249d55f690eff61305a5b298d524dec4893805e72c796ba30680682f3",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2891
     },
     "gh-frontendmasters-api-design-node-v3.md": {
-      "sha256": "39df74693bf76adb4db07d5f083eb1d7b01b1824da97ebfaebe0cd230b3a11e9",
-      "kind": "skill"
+      "sha256": "44a11e8a9406d5c1c83ea89a9a7a1de19e19efe5d66fc303804788e25f2bfcd3",
+      "kind": "skill",
+      "size_bytes": 3314
     },
     "gh-geoffrich-svelte-adapter-azure-swa.md": {
       "sha256": "323fbe268c2d3ec7d032217462ec7f7d93ba2f6804daa6ae0e6967a65e797170",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3365
     },
     "gh-georgegriff-react-dnd-kit-tailwind-shadcn-ui.md": {
-      "sha256": "821fa552408bc76b0351464d0951e93980b3111816a70810680c1b4c18dcc8d3",
-      "kind": "skill"
+      "sha256": "968f7b95de835bae905e22dda12cb202790fdf690fe2cff5949f1374cda5b2b5",
+      "kind": "skill",
+      "size_bytes": 3170
     },
     "gh-gloomyson-sc-js.md": {
-      "sha256": "f32750791feb956a00fe528889c3a93b744f3c07814673ebef41bf121d6084ff",
-      "kind": "skill"
+      "sha256": "8c3cc8d1fe6f4c58f6056ef205b91a43857901bf5d31e71b6307244d907bcbde",
+      "kind": "skill",
+      "size_bytes": 2994
     },
     "gh-hfrost0-bilix.md": {
       "sha256": "62600f9aa0d91af6ecd5642d21beb8a1529569f6cac72f451d89796284235d22",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2691
     },
     "gh-hoangsonww-claude-code-agent-monitor.md": {
       "sha256": "1f194007e018626f04a7c71ae9a9009a2291191008a11d8bdbfde2906b83c225",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3068
     },
     "gh-huakunshen-wol-web.md": {
-      "sha256": "3db08e26c9ce6693141f7d9993c77fe6916772af2de5fc12239382ff6c4d80c4",
-      "kind": "skill"
+      "sha256": "e13569b115a0d077f5250d96eb28686c2a3932d7974296f2c4183e20826487d0",
+      "kind": "skill",
+      "size_bytes": 3810
     },
     "gh-huginn-huginn.md": {
-      "sha256": "3935b215ada61b07075eede9e96c8bddede7302f6256259e3d6ea755cd4904c1",
-      "kind": "skill"
+      "sha256": "740d81a9f711be2810324ac2a6660d1b533e99d588749a0a66bfb5c4c28cedbd",
+      "kind": "skill",
+      "size_bytes": 3290
     },
     "gh-ippa-jaws.md": {
-      "sha256": "2454552c8fa0c921c2e2191549fa2935de0a547e7ac56cdd5c1be7ad269a0abd",
-      "kind": "skill"
+      "sha256": "05268b9a5a760863e07386390c7c68cf68eac84089e8bf498c5fb300adc97244",
+      "kind": "skill",
+      "size_bytes": 3628
     },
     "gh-ixartz-saas-boilerplate.md": {
-      "sha256": "421ba2c7990dd2e639d3fae24939dea46a70bac53bd4f3c0eff0b4a61c4cfae3",
-      "kind": "skill"
+      "sha256": "86198e08f425c56cb4d7cc1f71e79110e0cea5afb1e2f39cc96542ed32a81561",
+      "kind": "skill",
+      "size_bytes": 3304
     },
     "gh-jamesturk-spatula.md": {
-      "sha256": "b061fc5110d2ee9c07bf0c85bd9271f3c677cabce0660de6d212c3e4149d5e21",
-      "kind": "skill"
+      "sha256": "efe1335fca78ba28406c01a73bf7e33ebf1315bdf24d402b0b7537c00abc253f",
+      "kind": "skill",
+      "size_bytes": 3111
     },
     "gh-jazelly-agentic-react.md": {
-      "sha256": "f8aa98edd9cac21de930c46486dc0e8729fee2cb05b8382bb095da166acade06",
-      "kind": "skill"
+      "sha256": "3f04c76ff3931104aa7bfa4f4aa58c731bea7749197ede940136dd6a4d58c1a1",
+      "kind": "skill",
+      "size_bytes": 3523
     },
     "gh-johnpapa-shopathome.md": {
-      "sha256": "14c20b2f2e013b0ed504b8d2c08b05d3d842768e0d160e6bd63a0e6af27561a3",
-      "kind": "skill"
+      "sha256": "c6a60d2da7f2b6764742e26b1fe2944da8cc3624282624411a41a9e6a86fd90a",
+      "kind": "skill",
+      "size_bytes": 3623
     },
     "gh-kellyjonbrazil-jc.md": {
       "sha256": "04bb239f98d884f68dc86813805de7d1510c237310d805bad14ca70a32685cb0",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3026
     },
     "gh-kinngh-shopify-node-express-mongodb-app.md": {
-      "sha256": "756d93e7ad1aa8bb2c1d458860cd0db722533579bbcd149f09e0ad242de06469",
-      "kind": "skill"
+      "sha256": "d87c2b9e7b32b3c8b8e726ed7e0b6d6b37cd74aca13050f8da6ce3cb8cd7eb11",
+      "kind": "skill",
+      "size_bytes": 3186
     },
     "gh-tretapey-svelte-pwa.md": {
-      "sha256": "e9a27b2552a1da5c61d6637b4f02e5f071b313e24210e23363bb2b4c4258259e",
-      "kind": "skill"
+      "sha256": "b6b75bb294ae12098d33b5e9ad52a532286128a5ac573958e4b9878d8284af29",
+      "kind": "skill",
+      "size_bytes": 2964
     },
     "gh-visini-abstracting-fastapi-services.md": {
       "sha256": "feab68d00f6e19db91529e8258e0f32216960250183e3bf41882b3b4f568eefe",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3089
     },
     "git-workflow-and-versioning.md": {
       "sha256": "12fc34e045a7d53b991950f690b48de16b72d2b12a253b9399acd001c3d1f7ab",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2647
     },
     "idea-refine.md": {
       "sha256": "1e099dc480e2a727922da0bd813367ab2ae6b82898d29d1ae461dfa547eb75ad",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2809
     },
     "incremental-implementation.md": {
       "sha256": "f0c1e187f630022c366d0ea3951248b39c5cf204781ae503c0b13504a499c275",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2725
     },
     "layered-error-boundaries-plus-react-query-error-strategy.md": {
       "sha256": "677e59ff1edf1ef3628cb343bbe684d74c6242f7ce13a6ec7923c3ac132c5177",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2371
     },
     "layered-express-api-routes-controllers-services-models.md": {
       "sha256": "a5cbb419d250016459eba118fe8a3cd071f4d0e15fbf6cc969a87776ca37f2d4",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2403
     },
     "manage-the-project-with-uv-and-commit-the-lockfile.md": {
       "sha256": "0c1c4cd7fbebea929cf703abb9f877120ec372fdc7674ecb0a5a482e37fa9f38",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2876
     },
     "match-async-sync-route-style-to-the-work-never-block-the-event-loop.md": {
       "sha256": "3c33fae09455c559e8ed84f7230bc988e20f20dd5940052f9596516c41c0643c",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2405
     },
     "mcp-implementation-and-evaluation.md": {
       "sha256": "27db6fedfd6d4631720662f1c3f5840590b5234aff77daf5a81b89f79e0d50a0",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2935
     },
     "mcp-server-contract.md": {
-      "sha256": "e9836a9472fa75452d0a85f7f671487d7eaf3064a26343df39e051c7c3b2913e",
-      "kind": "skill"
+      "sha256": "9c31ce686616c7a0e3b467ba8ffbb7bc88ac37d020da082e0b5cded5734a6329",
+      "kind": "skill",
+      "size_bytes": 793
     },
     "nextjs-framework-browser-proof.md": {
       "sha256": "07af72087ffe4457074af5e07e0ad1c39408b1d823ed8f50da7188c34504e4a9",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3383
     },
     "observability-and-instrumentation.md": {
       "sha256": "23d3fdd1ee75898c40e6cc1d7098049e9dd696a48c392cb2c802ba08639ee201",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2812
     },
     "organize-the-backend-by-domain-not-by-file-type.md": {
       "sha256": "825f85f25e52f2f2fe9160477fc19d1e77606b325fa25083e4050de13b4ecefc",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2275
     },
     "performance-optimization.md": {
       "sha256": "53ce0f7a4b67e96312e82794ea4d6c67e7624baafab5b8a9f0af20638e5c44c8",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3857
     },
     "phaser-playable-game-shape.md": {
       "sha256": "e233708c56d2c1fd47d0d479b15256284de02080337b325a511fe29b2623f9e1",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 467
     },
     "pick-the-right-state-tool-per-state-category.md": {
       "sha256": "207ddea276ebcd69a5ec7cd5be4ff8ea82445dcb1be537dbce03393192fedde8",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2295
     },
     "planning-and-task-breakdown.md": {
       "sha256": "72cc58f631fcdf155722cca692b19dbb33ce4a444af717912855018970870836",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2833
     },
     "postgres-query-and-schema-engineering.md": {
       "sha256": "ea08834429c0a41c404230f7180a6e67947194a364a3f255ee2ea8ad4618dbb9",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3140
     },
     "production-dockerfile-multi-stage-minimal-non-root.md": {
       "sha256": "6f04ee1087eda9874cd45f9197b86be8c50c994db6463faa5e74e6ecd1386581",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2373
     },
     "push-validation-into-pydantic-schemas-and-a-shared-basemodel.md": {
       "sha256": "4a28e25d49a7ccee7cbea7b4d8516073a67aa04ffd327a2b3a339a965390f170",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2307
     },
     "pyproject-toml-as-the-single-source-of-project-truth.md": {
       "sha256": "620764ab58b5326b40371d980596eef2f11bfef81d6183e105449cb5cd36c21d",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2230
     },
     "python-cli-shape.md": {
       "sha256": "2bb82eb8fcd72487894c9368308582da8afe451f4bbb6461b10e4b4f4efe5ce6",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 399
     },
     "rag-app-contract.md": {
       "sha256": "06efbd442aa7f128efe69aaeeb25cd9c02db0c1511623bd8cf78cec376747895",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 478
     },
     "rag-retrieval-and-grounding-evaluation.md": {
       "sha256": "3fa8ea2be9b0f689af5e2a0c9766ebbba3c20e1aa7f33709d424795ea348c8ef",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 4060
     },
     "root-cause-first-a-four-phase-debugging-discipline.md": {
       "sha256": "cc3f19df5f485a6f0485130da040a2f4cf80a92539c305731516e40163da6e62",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2382
     },
     "route-level-code-splitting-and-targeted-memoization.md": {
       "sha256": "b88de9fcbacdab0d0c3dfe9822634f45dd64068349cfc67509e74643c006772d",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3160
     },
     "security-and-hardening.md": {
       "sha256": "942d8ea75da81cb56886bf6b811e9277604059c6a3ea5d23b79c5aaf79389a5e",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3309
     },
     "share-types-between-client-and-server-via-a-shared-module.md": {
       "sha256": "7b00cf366f7c809af6cb0922e7b8857d09fe60582c3bc5ae8b946aa53f6eb71c",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2221
     },
     "ship-a-env-example-and-load-env-in-dev-only.md": {
       "sha256": "3f30cbec64c099d684f0b62128650cf082f200b8aa9d82a2dff6bd6668d83979",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3034
     },
     "shipping-and-launch.md": {
       "sha256": "b9bf9e47460403993a8e936285c9f09a71a9f3596f8e7eefe7874c7261c3ef0e",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2672
     },
     "single-typed-api-client-with-colocated-query-mutation-hooks.md": {
       "sha256": "5455b86a3c4834a94b25ccf054830271d5446c9635756ef3608970cfe73c9624",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3294
     },
     "source-driven-development.md": {
       "sha256": "ad3530f2c24092b986d3beb7105f9ef0196bd233d98f8c7633b239567ea36852",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2860
     },
     "spec-driven-development.md": {
       "sha256": "280685f25da81cdf5bf1adcddea2f92a672cb13d20c3ca4901373fb995b43207",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2748
     },
     "static-website-shape.md": {
       "sha256": "364d96d37ceca29916668d4ff08cbc5855c673045667f8921bbe742c5d7cb0e8",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 523
     },
     "store-all-config-in-environment-variables-12-factor.md": {
       "sha256": "ce2dac0113e3e3503fc1ba756926e2e51017d2b9713b6b2e4b9c403c5c50ac24",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2296
     },
     "swift-async-state-and-test-isolation.md": {
       "sha256": "6ce306a2a703ef07640af72932c0e95b42fdbac211820dc8be79c35f954dfdae",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3609
     },
     "test-driven-development.md": {
       "sha256": "f5970ab413e9f5d792df6ebf573f9b0529c18577998a1895c3f6fee2c6f5ac54",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2980
     },
     "two-tier-client-server-layout-with-dev-proxy-and-unified-prod-serving.md": {
       "sha256": "f43fe980736eee8fc0814a5515889647d52fdc76cab0f954522bdebc7b5fc35c",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3045
     },
     "use-annotated-dependencies-with-yield-for-db-sessions-and-chained-auth.md": {
       "sha256": "0536600f0d0fcea69f550e412699abf971372b367c8bcf5f7f8986c6a678ab28",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2386
     },
     "use-src-layout-for-any-installable-or-tested-python-package.md": {
       "sha256": "eebc49f21085aeb74dc5c4213e33878acd0ac35b11baeabe64b64af56314c512",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2233
     },
     "using-agent-skills.md": {
       "sha256": "6766834ab7bb6f013166d4e513583d59e0fb2ae31c2ca56711ef516b421ee07c",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2704
     },
     "validate-environment-config-at-startup-fail-fast.md": {
       "sha256": "acf5b880ac006752e6122dd0895200cabbbfb6319fd3dd3c3c99844750d6562e",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2265
     },
     "vite-react-app-shape.md": {
       "sha256": "5d7b216378a8d4875ee40004830d9ea0a4a2a014efa014a7a859564408bf3c3d",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 513
     },
     "won-cli-shape.md": {
       "sha256": "9f18f374abab9850008bd7720757dbf6265f9a610eeb29d2424bc9b355ebde70",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 480
     },
     "won-nextjs-shape.md": {
       "sha256": "09d4d7bf213fb629b17d22738168003ff719937ed24c752cd9eece9dcbedcb88",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2860
     },
     "won-phaser-shape.md": {
       "sha256": "db48c34b0446882302f423617115404522e9158af7f710ff7b5294c4d189f232",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2964
     },
     "won-python-shape.md": {
       "sha256": "1e538e2c584e094c1232a44ded3f1971737fb12ebc694e4d2f2125791d5fa055",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2188
     },
     "won-react-shape.md": {
       "sha256": "44485db436d0f6ee24fa25912bbe09a0da24f1b9aa8337b65e7059afe4d2d3f3",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3270
     },
     "won-static-shape.md": {
       "sha256": "fdca0807c31f9f3874a59e25d4bbeddd0dc5f9b375d65d04002c286f31aaf1e1",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 3859
     },
     "won-tauri-shape.md": {
       "sha256": "27008a5db825818d424afb792a0a41b2b61231f368c261ba32e9ce52025bf60d",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2988
     },
     "write-a-readme-a-stranger-can-run-in-10-minutes.md": {
       "sha256": "49cde2474c448f46cb7822ce81daf7a9b2707ecf250efd914cfa9354cf4fb440",
-      "kind": "skill"
+      "kind": "skill",
+      "size_bytes": 2393
     }
   },
   "local_only_evidence": {

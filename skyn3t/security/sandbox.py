@@ -84,13 +84,50 @@ class SandboxResult:
 
 def _docker_mount_unavailable(result: SandboxResult, cwd: Path | None) -> bool:
     """Whether Docker rejected the requested bind mount before execution."""
-    if cwd is None or result.timed_out or result.exit_code != 125:
-        return False
+    failed, reason = _docker_execution_failed(result, cwd)
+    return failed and "mount" in reason.lower()
+
+
+def _docker_execution_failed(result: SandboxResult, cwd: Path | None) -> tuple[bool, str]:
+    """Whether Docker failed to launch/execute the container and should fall back."""
+    if result.timed_out:
+        return False, ""
     text = f"{result.stdout}\n{result.stderr}".lower()
-    return (
+
+    if cwd is not None and (
         ("createfile" in text or "mount" in text)
-        and ("access is denied" in text or "mounts denied" in text)
-    )
+        and ("access is denied" in text or "mounts denied" in text or "invalid mount" in text)
+    ):
+        return True, "Docker cannot mount this project directory"
+
+    if (
+        "unable to find image" in text
+        or "pull access denied" in text
+        or "repository does not exist" in text
+    ):
+        return True, "Docker image unavailable locally"
+
+    if (
+        "cannot connect to the docker daemon" in text
+        or "is the docker daemon running" in text
+        or "permission denied while trying to connect to the docker daemon socket" in text
+        or "docker daemon is not running" in text
+    ):
+        return True, "Docker daemon unavailable or connection refused"
+
+    if (
+        "failed to create shim" in text
+        or "failed to start container" in text
+        or "oci runtime create failed" in text
+        or "failed to create task for container" in text
+        or "container_linux.go" in text
+    ):
+        return True, "Docker container runtime error"
+
+    if result.exit_code == 125 or (result.backend == "docker" and result.exit_code == 127 and "exec failed" in text):
+        return True, f"Docker container launch failed (exit {result.exit_code})"
+
+    return False, ""
 
 
 @dataclass
@@ -191,18 +228,15 @@ class SandboxRunner:
                 stack=stack, env=clean_env, network=network,
             )
             # ``auto`` promises a loud hardened-host fallback when Docker is
-            # unavailable. A Desktop daemon that rejects this specific source
-            # drive is unavailable for the requested command, even though it
-            # may work for another shared drive. Keep explicit docker mode
-            # strict so callers can require isolation.
-            if (
-                self.settings.execution_backend == "auto"
-                and _docker_mount_unavailable(docker_result, cwd)
-            ):
-                return await self._run_subprocess(
-                    command, cwd=cwd, timeout=timeout, env=clean_env, network=network,
-                    fallback_reason="Docker cannot mount this project directory",
-                )
+            # unavailable or fails to execute the requested container.
+            # Keep explicit docker mode strict so callers can require isolation.
+            if self.settings.execution_backend == "auto":
+                docker_failed, fallback_reason = _docker_execution_failed(docker_result, cwd)
+                if docker_failed:
+                    return await self._run_subprocess(
+                        command, cwd=cwd, timeout=timeout, env=clean_env, network=network,
+                        fallback_reason=fallback_reason,
+                    )
             return docker_result
         return await self._run_subprocess(
             command, cwd=cwd, timeout=timeout, env=clean_env, network=network,

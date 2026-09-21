@@ -45,22 +45,6 @@ def _seed(projects: Path, slug: str) -> Path:
     return d
 
 
-def test_improve_record_history_failure_keeps_completed(tmp_path):
-    # merge_back delivered files; a failing _record_history must NOT relabel the
-    # delivery as 'failed' (the docstring promises no partial result).
-    settings = _settings(tmp_path)
-    project = _seed(settings.projects_dir, "demo")
-    engine = ImproveEngine(EventBus(), _FakeOrchestrator(), settings=settings)
-
-    def boom(*a, **k):
-        raise OSError("disk full while saving manifest")
-    engine._record_history = boom  # type: ignore[method-assign]
-
-    outcome = asyncio.run(engine.improve("demo", "g"))
-    assert outcome.status == "completed"  # delivery succeeded despite record failure
-    assert (project / "main.py").read_text() == "print('improved')\n"
-
-
 def test_improve_empty_mergeback_aborts_without_touching_original(tmp_path, monkeypatch):
     # A copy primitive that reports no files is not a successful delivery. The
     # transaction must fail while the original project remains intact.

@@ -1552,7 +1552,7 @@ def _build_row_web_interact_fresh(row: dict[str, Any], state: AppState) -> None:
         return
     project_dir = _resolve_project_dir(state, str(row.get("slug") or row.get("id") or ""))
     refreshed = _fresh_web_interact({"extra": {"web_interact": stored}}, project_dir)
-    if refreshed:
+    if refreshed and isinstance(extra, dict):
         extra["web_interact"] = refreshed
 
 
@@ -3411,7 +3411,8 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 out.append(_incomplete_project_row(state, d, man, persisted))
                 continue
             m = man or {}
-            extra = m.get("extra") or {}
+            raw_extra = m.get("extra")
+            extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
             skills_used = extra.get("skills_used") or []
             recall_used = extra.get("recall_used") or []
             stage_skills_used = extra.get("stage_skills_used") or {}
@@ -3506,7 +3507,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 getattr(record, "status", "") if record is not None else ""
             )
             fresh_interact = _fresh_web_interact(m, d)
-            if fresh_interact is not None and m.get("extra") is extra:
+            if fresh_interact is not None and isinstance(extra, dict) and m.get("extra") is extra:
                 extra["web_interact"] = fresh_interact
             summary = build_summary(m)
             cached_scorecard = extra.get("quality_scorecard")
@@ -6007,6 +6008,8 @@ async def capability_action(
         if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000:
             raise ValueError("reason must contain 1..2000 characters")
     library = getattr(state, "skills", None)
+    if library is None:
+        raise RuntimeError("capability library is unavailable")
     method = {
         "evaluate": "evaluate_candidate", "evaluations": "candidate_evaluations",
         "activate": "activate_candidate", "rollback": "rollback_candidate",
@@ -6017,8 +6020,9 @@ async def capability_action(
     if library.get(slug) is None:
         raise FileNotFoundError("skill not found")
     try:
+        rollback_kwargs = {"reason": reason.strip()} if action == "rollback" and isinstance(reason, str) else {}
         result = await asyncio.to_thread(
-            operation, slug, **({"reason": reason.strip()} if action == "rollback" else {}),
+            operation, slug, **rollback_kwargs,
         )
         capability = library.capability_status(slug)
     except OSError as exc:
@@ -8397,7 +8401,9 @@ def build_router(state: AppState) -> Any:
                 return await asyncio.to_thread(recovery.list)
             if action == "inspect":
                 return await asyncio.to_thread(recovery.inspect, archive_id)
-            return await asyncio.to_thread(recovery.recover, archive_id, slug=body["slug"])
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=422, detail="recovery requires request body")
+            return await asyncio.to_thread(recovery.recover, archive_id, slug=str(body["slug"]))
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except (FileExistsError, ValueError) as exc:
@@ -9294,7 +9300,7 @@ def build_router(state: AppState) -> Any:
     async def _deploy_rollback(body: dict[str, Any] = empty_body) -> dict[str, Any]:
         raw_index = body.get("deployment_index")
         try:
-            index = None if raw_index in (None, "") else int(raw_index)
+            index = None if raw_index is None or raw_index == "" else int(str(raw_index))
             return await rollback_project_deployment(
                 state,
                 str(body.get("slug", "")),

@@ -10,11 +10,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from skyn3t.intelligence.council import CouncilAdvice
-
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
+from skyn3t.intelligence.council import CouncilAdvice
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.runner import StudioRunner
 

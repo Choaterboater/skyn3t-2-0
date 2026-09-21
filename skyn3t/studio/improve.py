@@ -1806,7 +1806,6 @@ class ImproveEngine:
                             slug=slug,
                             error=str(rec_exc),
                         )
-                        raise
                     delivered = list_files(staged_project)
 
                 _copy_directory_metadata(backup_project, staged_project)

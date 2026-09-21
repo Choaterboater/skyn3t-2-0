@@ -22,6 +22,7 @@ from skyn3t.studio.stack_selector import (
     _TYPESAFE_MIN_CONFIDENCE,
     _TYPESAFE_STACK_INSTRUCTIONS,
     REAL_BUILDER_STACKS,
+    StackChoice,
     _validate_pin,
     keyword_choice,
     typesafe_choice_from_answer,
@@ -216,6 +217,7 @@ def run_benchmark(
         rng.shuffle(cases)
         for case in cases:
             error = None
+            choice: StackChoice | None = None
             raw: dict[str, Any] = {}
             started = time.perf_counter()
             try:

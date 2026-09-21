@@ -6,9 +6,6 @@ from skyn3t.config.settings import Settings
 from skyn3t.memory.store import MemoryStore
 
 
-
-
-
 async def test_recent_lessons_returns_newest_ungraded_rows_first(tmp_path):
     store = MemoryStore(Settings(data_dir=tmp_path))
     await store.init_db()

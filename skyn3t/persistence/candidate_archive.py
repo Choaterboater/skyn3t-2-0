@@ -6,8 +6,8 @@ import hashlib
 import json
 import os
 import re
-import stat
 import shutil
+import stat
 import tempfile
 import uuid
 from collections.abc import Mapping

@@ -1543,8 +1543,8 @@ def test_queued_improve_keeps_submission_time_provider_model_and_backend(
     monkeypatch,
 ):
     from skyn3t.adapters.llm import LLMClient
-    from skyn3t.config.settings import Settings
     from skyn3t.agents.reviewer import ReviewerAgent
+    from skyn3t.config.settings import Settings
 
     async def offline_review(_self, task):
         return SimpleNamespace(
@@ -1650,8 +1650,8 @@ def test_nested_improve_inherits_outer_build_route_after_gui_change(
     monkeypatch,
 ):
     from skyn3t.adapters.llm import LLMClient
-    from skyn3t.config.settings import Settings
     from skyn3t.agents.reviewer import ReviewerAgent
+    from skyn3t.config.settings import Settings
 
     async def offline_review(_self, task):
         return SimpleNamespace(

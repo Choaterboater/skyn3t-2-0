@@ -198,7 +198,7 @@ def test_explicit_selection_preserves_every_advisor_under_bounded(tmp_path):
         llm, _settings(tmp_path), advisors="claude_cli:sonnet,codex_cli,kimi_cli",
         policy="bounded",
     )
-    advice = _advise(engine)
+    _advise(engine)
 
     assert llm.calls == [("claude_cli", "sonnet"), ("codex_cli", ""), ("kimi_cli", "")]
 

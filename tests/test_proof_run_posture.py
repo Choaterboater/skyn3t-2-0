@@ -110,6 +110,18 @@ def test_unavailable_test_runners_remain_skipped(tmp_path, monkeypatch, posture)
     assert not any("TESTS FAILED" in gap for gap in result.error_gaps())
 
 
+def test_missing_declared_module_is_failed_not_unavailable(tmp_path):
+    _python_project(tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.setuptools]\npy-modules = ["application"]\n'
+    )
+    (tmp_path / "test_application.py").write_text("import application\n")
+    ran, passed, summary = proof_mod._run_generated_tests(tmp_path, "python", 30)
+    assert ran is True
+    assert passed is False
+    assert "application" in summary
+
+
 def test_ruff_failure_is_advisory_in_lab(tmp_path, monkeypatch):
     _ruff_project(tmp_path)
     monkeypatch.setattr(

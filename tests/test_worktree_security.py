@@ -213,6 +213,20 @@ def test_source_tree_snapshot_excludes_generated_dirs_at_any_depth(tmp_path):
     assert after["file_count"] == 1
 
 
+def test_wheel_metadata_changes_delivery_but_not_authored_source(tmp_path):
+    (tmp_path / "server.py").write_text("print('source')\n")
+    before = source_tree_snapshot(tmp_path)
+    metadata = tmp_path / "package.egg-info" / "PKG-INFO"
+    metadata.parent.mkdir()
+    metadata.write_text("Generated from README version one")
+    first_delivery = deliverable_tree_snapshot(tmp_path)
+    metadata.write_text("Generated from README version two")
+    assert source_tree_snapshot(tmp_path)["sha256"] == before["sha256"]
+    assert deliverable_tree_snapshot(tmp_path)["sha256"] != first_delivery["sha256"]
+    (tmp_path / "server.py").write_text("print('changed source')\n")
+    assert source_tree_snapshot(tmp_path)["sha256"] != before["sha256"]
+
+
 def test_source_tree_snapshot_excludes_only_runner_proof_output_under_dot_skyn3t(
     tmp_path,
 ):

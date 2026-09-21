@@ -2,7 +2,7 @@
 slug: gh-huakunshen-wol-web
 title: PocketBase-backed Go service: swap hand-rolled REST+ORM for an embeddable BaaS
 stack: go
-tags: backend, docker, go, pocketbase, reference, self-hosted, stack:sveltekit, github-distilled, hygiene:quarantine, review-held
+tags: backend, docker, go, pocketbase, reference, self-hosted, stack:sveltekit, github-distilled, review-held, external-promoted
 uses: 34
 helpful: 20
 quality_sum: 24.5236

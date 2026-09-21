@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiFetch, apiPost, queryFn } from "../api.js";
 import { PageHeader, Panel, PanelHead, Stat, Pill, Empty, ErrorText } from "../components/ui.jsx";
+import { filterSkills, skillFacets, sortSkills } from "../skillBrowser.js";
 
 function SummaryChips({ title, items }) {
   const entries = Object.entries(items || {}).sort((a, b) => b[1] - a[1]).slice(0, 8);
@@ -51,15 +52,15 @@ function EvaluationRow({ evaluation }) {
   const created = evaluation.created_at || evaluation.timestamp;
   const parsed = created ? new Date(created) : null;
   const effect = String(evaluation.effectiveness || "not_checked");
-  const compatibility = String(evaluation.compatibility || "not_checked");
+  const compatibility = String(evaluation.status || "not_checked");
   return (
     <li className="border-b border-hairline/60 py-2 last:border-b-0">
       <div className="flex flex-wrap items-center gap-2">
         <Pill tone={effect === "passed" ? "plasma" : effect === "failed" ? "ember" : "ash"}>
           effectiveness · {effect.replaceAll("_", " ")}
         </Pill>
-        <Pill tone={compatibility === "compatible" ? "plasma" : compatibility === "incompatible" ? "ember" : "ash"}>
-          compatibility · {compatibility.replaceAll("_", " ")}
+        <Pill tone={compatibility === "passed" ? "plasma" : compatibility === "failed" ? "ember" : "ash"}>
+          static checks · {compatibility.replaceAll("_", " ")}
         </Pill>
         <span className="font-mono text-[10px] text-ash/70">
           {parsed && !Number.isNaN(parsed.getTime()) ? parsed.toLocaleString() : "date not recorded"}
@@ -90,7 +91,8 @@ function SkillLifecyclePanel({
   rollbackReason,
   setRollbackReason,
 }) {
-  const normalizedStatus = String(capabilityStatus || "unknown");
+  const capability = capabilityStatus && typeof capabilityStatus === "object" ? capabilityStatus : {};
+  const normalizedStatus = capability.active ? "active" : capability.status || "unknown";
   return (
     <div className="border-t border-hairline pt-2">
       <button
@@ -99,7 +101,7 @@ function SkillLifecyclePanel({
         aria-expanded={expanded}
         className="font-mono text-[11px] text-ash underline decoration-dotted underline-offset-4 hover:text-bone"
       >
-        {expanded ? "Hide capability controls" : "Evaluate / activate / rollback"}
+        {expanded ? "Hide evidence and overrides" : "Evidence / manual overrides"}
       </button>
       {expanded ? (
         <div className="mt-2 space-y-2">
@@ -112,7 +114,7 @@ function SkillLifecyclePanel({
               className="btn-ghost py-0.5 text-[10px]"
               disabled={evaluate.isPending || !slug}
               onClick={() => evaluate.mutate(slug)}
-              title="Run an isolated dry-run receipt for this skill; does not activate anything"
+              title="Refresh local static checks; this is not an effectiveness test"
             >
               {evaluate.isPending ? "Evaluating…" : "Evaluate"}
             </button>
@@ -148,7 +150,7 @@ function SkillLifecyclePanel({
             <button
               type="button"
               className="btn-ember py-0.5 text-[10px]"
-              disabled={activate.isPending || !slug}
+              disabled={activate.isPending || !slug || !capability.can_activate}
               onClick={() => activate.mutate({ slug, reason: activationReason.trim() })}
             >
               {activate.isPending ? "Activating…" : "Activate"}
@@ -192,6 +194,10 @@ export default function Skills() {
   const [expandedSkill, setExpandedSkill] = useState(null);
   const [rollbackReason, setRollbackReason] = useState("");
   const [activationReason, setActivationReason] = useState("");
+  const [filters, setFilters] = useState({ search: "", category: "", topic: "", status: "", rating: "", budget: "" });
+  const [browseMode, setBrowseMode] = useState("categories");
+  const [sort, setSort] = useState("rating");
+  const [visibleCount, setVisibleCount] = useState(36);
 
   const evaluationsQuery = useQuery({
     queryKey: ["skill-evaluations", expandedSkill],
@@ -205,9 +211,30 @@ export default function Skills() {
   const { data, isLoading, error } = useQuery({
     queryKey: ["skills"],
     queryFn: queryFn("/skills"),
+    refetchInterval: 15000,
   });
 
   const skills = Array.isArray(data) ? data : data?.skills || [];
+  const matchingSkills = useMemo(() => sortSkills(filterSkills(skills, filters), sort), [skills, filters, sort]);
+  const categoryFacets = useMemo(() => skillFacets(matchingSkills, "categories"), [matchingSkills]);
+  const topicFacets = useMemo(
+    () => skillFacets(filterSkills(skills, { ...filters, topic: "" }), "topics"),
+    [skills, filters],
+  );
+  const updateFilter = (key, value) => {
+    setFilters((current) => ({ ...current, [key]: value }));
+    setVisibleCount(36);
+  };
+  const clearFilters = () => {
+    setFilters({ search: "", category: "", topic: "", status: "", rating: "", budget: "" });
+    setVisibleCount(36);
+    setBrowseMode("categories");
+  };
+  const chooseCategory = (category) => {
+    setFilters((current) => ({ ...current, category }));
+    setVisibleCount(36);
+    setBrowseMode("skills");
+  };
   const patterns = Array.isArray(data?.patterns) ? data.patterns : [];
   const skillSummary = data?.summary || {};
   const catalogSummary = catalogResult?.summary || {};
@@ -216,6 +243,10 @@ export default function Skills() {
   const registeredCount = countOrFallback(skillSummary.registered, skills.length);
   const activeCount = countOrFallback(skillSummary.active, skills.length - quarantinedFallback);
   const quarantinedCount = countOrFallback(skillSummary.quarantined, quarantinedFallback);
+  const reviewRequiredCount = countOrFallback(
+    skillSummary.review_required,
+    skills.filter((skill) => skill.admission_check?.status === "review_required").length,
+  );
   const promotionReadyCount = countOrFallback(
     skillSummary.promotion_ready,
     skills.filter((skill) => skill?.promotion_ready === true).length,
@@ -253,7 +284,10 @@ export default function Skills() {
   });
   const evaluateSkill = useMutation({
     mutationFn: (slug) => apiPost(`/skills/${encodeURIComponent(slug)}/evaluate`, {}),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["skill-evaluations", expandedSkill] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["skill-evaluations", expandedSkill] });
+      queryClient.invalidateQueries({ queryKey: ["skills"] });
+    },
   });
   const activateSkill = useMutation({
     mutationFn: ({ slug, reason }) => apiPost(`/skills/${encodeURIComponent(slug)}/activate`, reason ? { reason } : {}),
@@ -311,10 +345,10 @@ export default function Skills() {
       <PageHeader
         eyebrow="Foundry · Capability Library"
         title="Skills"
-        sub="Active skills can guide builds. Quarantined external references stay blocked until their immutable evidence is explicitly reviewed."
+        sub="Background improvement discovers and checks advisory skills, activates eligible ones, then attempts proven local feature changes. Static checks do not prove effectiveness. Failed and rolled-back skills stay blocked."
         actions={
           <span className="badge border-hairline text-ash">
-            learned · <span className="ml-1 text-plasma">{registeredCount}</span>
+            registered · <span className="ml-1 text-plasma">{registeredCount}</span>
           </span>
         }
       />
@@ -325,14 +359,14 @@ export default function Skills() {
         </Panel>
       ) : null}
 
-      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-3 xl:grid-cols-6">
+      <div className="mb-6 grid grid-cols-2 gap-4 md:grid-cols-4">
         <Stat label="Registered" value={registeredCount} tone="plasma" hint="all records" />
         <Stat label="Active" value={activeCount} tone="plasma" hint="eligible to inject" />
         <Stat
           label="Quarantined"
           value={quarantinedCount}
           tone={quarantinedCount ? "ember" : "bone"}
-          hint="blocked pending review"
+          hint="held by admission or evaluation"
         />
         <Stat
           label="Ready to promote"
@@ -340,6 +374,7 @@ export default function Skills() {
           tone={promotionReadyCount ? "ember" : "bone"}
           hint="passes promotion gate"
         />
+        <Stat label="Needs review" value={reviewRequiredCount} tone={reviewRequiredCount ? "ember" : "bone"} hint="held by on-add checks" />
         <Stat
           label="Patterns"
           value={patterns.length}
@@ -464,36 +499,161 @@ export default function Skills() {
             </div>
           }
         />
+        <div className="space-y-3 border-b border-hairline p-4">
+          <div className="flex flex-wrap gap-2">
+            <label className="min-w-48 flex-1 text-xs text-ash">
+              <span className="mb-1 block">Search titles, descriptions, categories and topics</span>
+              <input
+                type="search"
+                className="field"
+                aria-label="Search skills"
+                placeholder="MCP, desktop editor, testing, authentication..."
+                value={filters.search}
+                onChange={(event) => updateFilter("search", event.target.value)}
+              />
+            </label>
+            <button type="button" className="btn-ghost self-end" onClick={clearFilters}>Clear filters</button>
+          </div>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            <label className="text-xs text-ash">
+              Topic
+              <select className="field mt-1" aria-label="Skill topic" value={filters.topic} onChange={(event) => updateFilter("topic", event.target.value)}>
+                <option value="">All matching topics</option>
+                {filters.topic && !topicFacets.some(([topic]) => topic === filters.topic) ? <option value={filters.topic}>{filters.topic} (0)</option> : null}
+                {topicFacets.map(([topic, count]) => <option key={topic} value={topic}>{topic} ({count})</option>)}
+              </select>
+            </label>
+            <label className="text-xs text-ash">
+              Status
+              <select className="field mt-1" aria-label="Skill status" value={filters.status} onChange={(event) => updateFilter("status", event.target.value)}>
+                <option value="">All registered</option>
+                <option value="active">Active</option>
+                <option value="quarantined">Quarantined</option>
+                <option value="review_required">Needs review</option>
+                <option value="not_checked">Check missing / failed</option>
+              </select>
+            </label>
+            <label className="text-xs text-ash">
+              Prompt readiness
+              <select className="field mt-1" aria-label="Skill rating" value={filters.rating} onChange={(event) => updateFilter("rating", event.target.value)}>
+                <option value="">All ratings</option>
+                <option value="4">4/5 - compact procedure</option>
+                <option value="3">3/5 - useful with gaps</option>
+                <option value="2">2/5 - needs distillation</option>
+                <option value="1">1/5 - unsuitable as-is</option>
+              </select>
+            </label>
+            <label className="text-xs text-ash">
+              Prompt size
+              <select className="field mt-1" aria-label="Skill prompt size" value={filters.budget} onChange={(event) => updateFilter("budget", event.target.value)}>
+                <option value="">Any size</option>
+                <option value="fits">Fits alone in global budget</option>
+                <option value="oversized">Exceeds global budget</option>
+              </select>
+            </label>
+            <label className="text-xs text-ash">
+              Sort
+              <select className="field mt-1" aria-label="Sort skills" value={sort} onChange={(event) => { setSort(event.target.value); setVisibleCount(36); }}>
+                <option value="rating">Readiness: highest first</option>
+                <option value="name">Name</option>
+                <option value="size">Smallest prompt first</option>
+              </select>
+            </label>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn-ghost"
+              aria-pressed={browseMode === "categories"}
+              onClick={() => { updateFilter("category", ""); setBrowseMode("categories"); }}
+            >Browse categories</button>
+            <button type="button" className="btn-ghost" aria-pressed={browseMode === "skills"} onClick={() => setBrowseMode("skills")}>Show skills</button>
+            {filters.category ? <Pill tone="plasma">{filters.category}</Pill> : null}
+            <span className="text-xs text-ash" aria-live="polite" data-testid="skill-match-count">
+              {matchingSkills.length} matching of {skills.length} registered
+            </span>
+          </div>
+          <p className="text-xs text-ash">
+            Ratings are provisional text-only prompt-readiness checks, not measured effectiveness.
+            A 5/5 is reserved for independent review. Categories organize browsing; they do not activate skills or change build eligibility.
+            Size is per skill, before shared wrapper text and other selected advice.
+          </p>
+        </div>
         {isLoading ? (
           <Empty icon="≋">Loading the library…</Empty>
         ) : skills.length === 0 ? (
           <Empty icon="◇">No skills registered. The swarm has nothing learned yet.</Empty>
+        ) : matchingSkills.length === 0 ? (
+          <Empty icon="◇">No skills match these filters. Clear filters to browse the full library.</Empty>
+        ) : browseMode === "categories" ? (
+          <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3" aria-label="Matching skill categories">
+            {categoryFacets.map(([category, count]) => (
+              <button key={category} type="button" className="panel bg-void/40 p-4 text-left hover:border-plasma/50" onClick={() => chooseCategory(category)}>
+                <span className="block font-display text-base font-bold text-bone">{category}</span>
+                <span className="mt-1 block text-xs text-ash">{count} matching skills</span>
+              </button>
+            ))}
+          </div>
         ) : (
           <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 lg:grid-cols-3">
-            {skills.map((s) => {
+            {matchingSkills.slice(0, visibleCount).map((s) => {
               const tags = tagsFor(s);
               const quarantined = isQuarantined(s);
               const externalCandidate = tags.includes("external-candidate");
               const legacyMigrated = tags.includes("legacy-migrated");
               const provenanceComplete = s.provenance_complete === true;
               const skillName = s.name || s.title || s.slug || "Untitled skill";
+              const capability = s.capability_status && typeof s.capability_status === "object" ? s.capability_status : {};
+              const evaluationStatus = capability.status || "not_checked";
+              const evaluationTone = evaluationStatus === "passed" ? "plasma" : evaluationStatus === "failed" ? "ember" : "ash";
+              const admission = s.admission_check || { status: "not_checked" };
               return (
                 <div
                   key={s.slug || s.name || s.id}
-                  className="panel flex flex-col gap-3 border-hairline bg-void/40 p-4 transition-all duration-300 hover:border-plasma/40"
+                  className={`panel flex flex-col gap-3 bg-void/40 p-4 transition-all duration-300 ${evaluationStatus === "passed" ? "border-plasma/40" : evaluationStatus === "failed" ? "border-ember/40" : "border-hairline"}`}
                 >
                   <div className="flex items-start justify-between gap-2">
                     <h3 className="font-display text-base font-bold text-bone">
                       {skillName}
                     </h3>
-                    {s.score != null ? (
-                      <span className="font-mono text-sm text-plasma">{s.score}</span>
+                    {s.content_audit?.rating != null ? (
+                      <span className="whitespace-nowrap font-mono text-sm text-plasma" title="Provisional prompt-readiness rating">{s.content_audit.rating}/5</span>
                     ) : null}
                   </div>
 
                   {s.description ? (
                     <p className="text-sm text-ash">{s.description}</p>
                   ) : null}
+                  <div className="text-xs text-ash">
+                    <Pill tone={admission.status === "passed" ? "plasma" : "ember"}>
+                      On-add check: {admission.status.replaceAll("_", " ")}
+                    </Pill>
+                    {admission.checked_at ? <span className="mt-1 block">Checked {new Date(admission.checked_at * 1000).toLocaleString()}</span> : null}
+                    {admission.status === "review_required" ? <p className="mt-1">Retained for review, but blocked from build prompts and automatic activation.</p> : null}
+                    {admission.blocking_findings?.length ? <p className="mt-1">{admission.blocking_findings.join(" ")}</p> : null}
+                    {admission.status === "failed" ? <p className="mt-1 text-ember">The saved check could not be verified. This skill is not eligible.</p> : null}
+                  </div>
+                  {s.content_audit ? (
+                    <details className="text-xs text-ash">
+                      <summary className="cursor-pointer">
+                        Rating and budget: {s.content_audit.advice_chars.toLocaleString()} chars ({s.content_audit.budget_percent}%)
+                      </summary>
+                      <ul className="mt-2 list-disc space-y-1 pl-4">
+                        {s.content_audit.reasons.map((reason) => <li key={reason}>{reason}</li>)}
+                      </ul>
+                      <p className="mt-2">Budget: {s.content_audit.global_budget_chars.toLocaleString()} characters shared across selected skills.</p>
+                      <p className="mt-1 break-all font-mono text-[10px]">Body: {s.content_audit.body_sha256}</p>
+                    </details>
+                  ) : null}
+                  <p className="text-xs text-ash">
+                    Historical build association: {s.uses > 0 && Number.isFinite(Number(s.score)) ? `${Math.round(Number(s.score) * 100)}% across ${s.uses} uses` : "untried"}.
+                    {" "}Not proof of this skill's contribution.
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {(s.categories || []).map((category) => (
+                      <button type="button" key={category} className="btn-ghost px-2 py-0.5 text-[10px]" onClick={() => chooseCategory(category)}>{category}</button>
+                    ))}
+                  </div>
 
                   {externalCandidate && quarantined && !s.promotion_ready ? (
                     <p className="text-xs text-ember">
@@ -505,15 +665,21 @@ export default function Skills() {
                     </p>
                   ) : null}
 
+                  <div className="flex flex-wrap gap-2" aria-label={`Evaluation for ${skillName}`}>
+                    <Pill tone={evaluationTone}>
+                      {evaluationStatus === "passed" ? "Static checks passed" : evaluationStatus === "failed" ? "Static checks failed" : "Not evaluated / stale"}
+                    </Pill>
+                    <span className="text-xs text-ash">Effectiveness: {String(capability.effectiveness || "not_checked").replaceAll("_", " ")}</span>
+                  </div>
                   <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
-                    {quarantined ? <Pill tone="ember">quarantined</Pill> : <Pill tone="plasma">active</Pill>}
+                    {quarantined ? <Pill tone="ember">quarantined</Pill> : s.active ? <Pill tone="plasma">active</Pill> : <Pill tone="ember">not active</Pill>}
                     {externalCandidate && provenanceComplete ? (
                       <Pill tone="plasma">provenance complete</Pill>
                     ) : null}
-                    {tags.map((t) => (
-                      <Pill key={t} tone="plasma">
+                    {(s.topics || []).map((t) => (
+                      <button key={t} type="button" className="btn-ghost px-2 py-0.5 text-[10px]" onClick={() => updateFilter("topic", t)}>
                         {t}
-                      </Pill>
+                      </button>
                     ))}
                   </div>
 
@@ -554,6 +720,13 @@ export default function Skills() {
             })}
           </div>
         )}
+        {browseMode === "skills" && matchingSkills.length > visibleCount ? (
+          <div className="border-t border-hairline p-4">
+            <button type="button" className="btn-ghost" onClick={() => setVisibleCount((count) => count + 36)}>
+              Show more ({visibleCount} of {matchingSkills.length})
+            </button>
+          </div>
+        ) : null}
       </Panel>
 
       <Panel className="mt-6">

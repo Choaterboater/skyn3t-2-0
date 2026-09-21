@@ -60,7 +60,144 @@ Key invariant: a build is only `completed` when delivered files are non-empty
 **and** substantive (`delivered != empty`). Best-of-N runs the code stage in
 parallel worktrees and merges the winner before delivery.
 
+Parallel code slices share a read-only file manifest and write only their owned
+paths. MCP slices receive the same SDK/dependency contract as the whole-project
+builder, including on resume. Failed live slices preserve partial output without
+inventing placeholder configuration or tests; scaffold placeholders are limited
+to the offline path, and incomplete slices remain explicitly degraded. The
+repair loop targets configuration files as well as source files, normalizes
+project-local absolute diagnostic paths, and reports failure when it cannot
+locate any repair target instead of reporting an empty success.
+
+### MCP integration reliability
+
+MCP planning, generation, test-authoring and repairs share an external-service
+contract: boot/list without credentials, fail authenticated operations explicitly
+when configuration or upstream requests fail, and never replace errors with demo
+data. Live MCP architecture gets one malformed-plan correction attempt; a second
+failure is degraded, not an undisclosed offline scaffold.
+
+The MCP gate retains protocol-only checks for local tools. Detected HTTP integrations
+also run isolated 401, 503 and timeout probes through supported `httpx`, `requests`
+and `urllib.request` clients. Each tool/fault records request count and result;
+unsupported clients or faults with no exercisable request are unavailable, not
+passes. Synthetic credentials, isolated HOME/state and blocked Python socket/process
+operations keep these probes offline. A separate handshake/list pass clears declared
+credential environment variables so diagnostic credentials cannot hide a startup
+dependency. This diagnostic harness is **not an OS sandbox**.
+Coverage is bounded; it does not establish correct vendor endpoints, complete
+happy-path behavior, or successful live tenant operations.
+
+Failed or unavailable MCP checks withhold GO, including in lab posture. Evidence
+is bound to authored-source snapshots and refreshed after late repairs. Improvement
+candidates require fresh MCP evidence before replacing the original project;
+failed acceptance cannot receive positive skill credit even if structural proof passes.
+Python wheel proof also rejects a declared local root/src console-entry module
+that is absent from the archive; a metadata-only wheel is not a runnable app.
+This presence check is not a substitute for installing and exercising the package.
+Generated Python `*.egg-info`/`*.dist-info` directories are excluded from authored
+source fingerprints, but retained in delivery-integrity snapshots. Rebuilding a
+wheel must not invalidate code evidence merely by refreshing packaging metadata.
+Semantic review receives up to 192,000 characters of actual source (64,000 per
+file), excluding dependency/build/test caches and packaging metadata. This
+includes the worker, setup documentation and tests for modest multi-file MCPs;
+omitted evidence must not be described as a proven missing implementation.
+Oversized Copilot completion prompts use its noninteractive piped-stdin form
+without `-p`, retaining the read-only `view` allowlist. They are not clipped to
+fit an OS argument limit. Short completion and agentic invocation contracts are
+unchanged; unsuccessful or malformed CLI replies still withhold review evidence.
+
+### Shared MCP quality rules
+
+`MCP_QUALITY_CONTRACT` in `agents/_common.py` is mandatory, domain-neutral guidance
+included in the shared reliability contract, not an optional learned skill.
+Planning, whole/sliced/file generation, test authoring, semantic review, repair
+and native improvement receive it outside the advisory skill-character budget.
+Domain profiles refine these rules without silently enabling broader privileges.
+
+| Rule | Required behavior |
+| --- | --- |
+| Useful tools and context | Task-focused, composable tools; stable typed interfaces; focused resources; evidence, impact and next actions rather than an endpoint dump. |
+| Minimal prompting | Discover authorized scope; select only a complete, unambiguous match; otherwise return one focused question with authorized choices. Carry intent, scope and compatible time windows into drill-down arguments. |
+| Least privilege | Read-only by default; disclose effective and unavailable capabilities. Material changes require trusted consent bound to the exact action, not a model-supplied approval flag. |
+| Clear failure semantics | Bounded requests/retries/pages, actionable errors, preserved partial evidence, and explicit unknown/stale states. Missing data is never healthy. |
+| Stable interoperability | Negotiated MCP/SDK contracts, clean protocol stdout, declared dependencies, portable installed entrypoints and documented capability/version changes. |
+| Easy, honest setup | One secret input per upstream through the host/secret manager; no secret echo, ordinary-settings storage or CLI arguments. Offer a bounded read-only connection check after configuration and document actual limits. |
+
+The client owns conversation and consent presentation. Returned context can be
+passed explicitly on subsequent tool calls; any server-side context must be
+identity/session-scoped and reauthorized, never a global last-selected target.
+An optional **Enable more access** flow must disclose added capabilities, affected
+scope and read/write risk, require confirmation, and support reversal and audit.
+It cannot grant upstream permissions on its own. A read-only product keeps this
+unavailable and explains the administrator-controlled setup instead.
+
+These are generation and review requirements, **not a claim that the generic
+gate proves every workflow**. Profile-specific executable cases establish only
+their declared coverage. Generic checks now also reject recognizable hardcoded
+external `site-packages`/`dist-packages` paths and user-site dependency overrides
+in authored runtime Python. This narrow static guard does not replace a clean
+wheel installation and dependency-origin inspection. Synthetic coverage, quality
+scores and live-system validation must remain separate.
+
+### Documentation-backed MCP capability profiles
+
+`studio build --stack mcp --mcp-profile mist-readonly-proactive-v1` opts into a
+factory-owned, versioned contract. The native CLI seeds `ProductSpecV1` with
+separate registry-v1 requirements instead of one advisory brief. The shared
+agent knowledge path supplies the complete mandatory profile independently of
+the truncated advisory skill budget.
+Agentic generation/repair also receives a build-time command for the same external
+checker. An explicit `check_mcp(..., capability_profile=...)` enforces the full
+profile even before delivery metadata exists, letting the agent fix concrete
+failures before returning. The terminal gate independently repeats verification;
+the checker is not a dependency of the generated application.
+The command pins imports to the running factory's source location so an unrelated
+editable installation cannot silently select a different verifier.
+
+`mcp_capabilities` drives the real stdio interface and standalone worker against
+the synthetic HTTP boundary in `mcp_mist_probe`. The first profile covers thirteen
+groups: paged sites, actual org inventory, device types, alarm continuation,
+client Insights, site SLE, diagnosis, scope, unknown data, failures, persistent
+worker incidents, transition notifications and credential-free startup.
+Its endpoint references are the permitted MIT wrapper and official prose;
+HPE Network MCP's curated catalog is an implementation reference, not proof.
+Unverified vendor response schemas remain opaque and explicitly qualified.
+Scope checks also exercise unique authorized org/site discovery,
+ambiguous org/site clarification without telemetry,
+incomplete discovery rejection, and explicit scoped drill-down actions. The host
+carries that context; the MCP does not store a global conversational selection.
+
+Each `mcp:capability:<id>` resolves only to its own executed assertion receipt
+for the current authored-source digest. Generic protocol success, unrelated
+tests, skipped cases and stale receipts cannot prove a capability. Missing or
+failed capability evidence blocks the MCP gate in every posture. Terminal
+repairs refresh MCP evidence before compiling the requirement trace; native
+improvements verify candidates and persist fresh traces before replacement.
+Existing projects without capability contracts retain their previous behavior.
+When whole-project improvement is enabled, registered profiles receive one
+agentic MCP repair rather than six independent file rewrites that can omit the
+worker or shared envelope module. This repair requires a complete authored-file
+rollback snapshot bounded to 128 files / 2 MB. Failed task results, failed proof
+and changes to the frozen product contract restore the snapshot, including
+deleted binary files; oversized or incomplete snapshots withhold that repair.
+Late rejected improvements retain bounded, secret-screened changed text as
+unverified recovery candidates, without replacing the original project or
+copying its frozen control files. The CLI reports the actual MCP failures and
+coverage rather than displaying unrelated advisory proof diagnostics as blockers.
+
+The CLI reports synthetic contract coverage separately from quality and live
+validation. Passing this profile does **not** establish current vendor-response
+conformance, comprehensive Mist/Marvis parity or live tenant readiness. The worker
+is read-only with respect to the network; SQLite incidents/outbox notifications
+are local writes. External notification delivery and remediation are out of scope.
+
 ## CLI wiring (this package)
+
+`Settings` declares `data_dir`, `projects_dir`, and `logs_dir` as overridable
+path fields. Fresh startup uses these fields to initialize local state and
+resolve the default database URL; a healthy already-running dashboard does not
+prove that a new process can construct its settings.
 
 `skyn3t.cli.main` builds the spine on demand via `_assemble_spine()`:
 
@@ -74,6 +211,45 @@ parallel worktrees and merges the winner before delivery.
 
 Every command does its heavy imports lazily inside the command body, so the CLI
 starts fast and tolerates missing optional packages.
+
+Copilot completion stages use JSONL output with streaming disabled and extract
+only the final assistant content after a successful terminal result. Human-readable
+CLI text can wrap long lines inside JSON strings and Python source; it is not a
+lossless generation transport, even with `--silent`. Completion extraction never
+uses the truncated activity/prose buffer. Malformed or incomplete envelopes record
+an explicit failed response rather than returning a success-shaped scaffold.
+
+### Current-code quality
+
+Live reviews receive bounded implementation excerpts and available verification
+evidence, rather than filenames alone. Implementation precedes tests in the
+excerpt budget, truncated files are marked, and HTML review preserves scripts.
+Structural readiness remains available offline, but cannot outvote a semantic
+rejection. Invalid live reviews are explicitly unavailable and cannot approve
+delivery. Keyword overlap likewise cannot override a failing semantic intent score.
+Successful CLI replies use `cli_response`, while ordinary API replies use
+`succeeded`; failed CLI replies may contain fallback text and must not be graded.
+
+Improvement runs review the verified candidate before transactional delivery.
+`current_assessment` records the source digest, timestamp, semantic review,
+separate proof score, gaps and capped composite grade. Unrated offline improvements
+use a null quality score, not proof 100. Previous scores and superseded evidence
+remain in `assessment_history`; unrechecked blocking gates still prevent GO.
+They also retain a no-GO score shape and receive no positive learning credit.
+Failure to persist assessment metadata aborts delivery. Source-changing build
+repairs invalidate passing reviews too, including terminal repairs.
+
+The existing proof-environment, evidence and no-GO caps still apply. Project API
+scorecards prefer authoritative current manifest fields over cached grades.
+These grades are bounded review opinions supported by recorded checks, not proof
+of complete business acceptance or successful operation against a live tenant.
+
+MCP repair targets come from the canonical authored-source snapshot, not generated
+`build/lib` copies. Behavioral faults prioritize nested tool handlers, collectors
+and clients; startup faults prioritize launchers. If fixing startup exposes a
+separate tool-behavior failure, one additional bounded behavior repair is allowed.
+Intent judging uses the same larger source budget as quality review, so a long
+client/config prefix cannot hide the workflow being graded.
 
 ## Evidence-first learning
 

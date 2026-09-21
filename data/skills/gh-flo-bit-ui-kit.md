@@ -2,7 +2,7 @@
 slug: gh-flo-bit-ui-kit
 title: Fox UI (Svelte 5 + Tailwind 4) component-kit install pattern -- public alpha
 stack: sveltekit
-tags: frontend, reference, svelte, sveltekit, tailwind, ui-components, github-distilled, hygiene:quarantine, review-held
+tags: frontend, reference, svelte, sveltekit, tailwind, ui-components, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

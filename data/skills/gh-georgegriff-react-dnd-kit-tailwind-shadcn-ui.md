@@ -2,7 +2,7 @@
 slug: gh-georgegriff-react-dnd-kit-tailwind-shadcn-ui
 title: georgegriff/react-dnd-kit-tailwind-shadcn-ui: Accessible Kanban Example (setup steps not in source)
 stack: react
-tags: design, frontend, react, typescript, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: design, frontend, react, typescript, ui, web, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

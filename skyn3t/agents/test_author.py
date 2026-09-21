@@ -18,6 +18,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from skyn3t.agents import _verify_common as vc
+from skyn3t.agents._common import MCP_RELIABILITY_CONTRACT, knowledge_block
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
@@ -397,7 +398,10 @@ class TestAuthorAgent(BaseAgent):
         asset_paths = derive_asset_paths(payload)
 
         acceptance = derive_acceptance(brief, plan)
-        acceptance = await self._maybe_llm_enrich(brief, acceptance)
+        guidance = knowledge_block(payload)
+        if stack == "mcp":
+            guidance += "\n" + MCP_RELIABILITY_CONTRACT
+        acceptance = await self._maybe_llm_enrich(brief, acceptance, guidance)
 
         root = vc.resolve_project_dir(payload)
         written: list[str] = []
@@ -431,10 +435,13 @@ class TestAuthorAgent(BaseAgent):
             },
         )
 
-    async def _maybe_llm_enrich(self, brief: str, base: list[str]) -> list[str]:
+    async def _maybe_llm_enrich(
+        self, brief: str, base: list[str], guidance: str = "",
+    ) -> list[str]:
         if self.llm is None or getattr(self.llm, "backend", "stub") == "stub":
             return base
         prompt = (
+            f"{guidance}\n\n"
             "Turn this software brief into a list of concrete, testable acceptance "
             'criteria. Reply ONLY with JSON {"criteria": [str, ...]}.\n\nBrief: ' + brief
         )

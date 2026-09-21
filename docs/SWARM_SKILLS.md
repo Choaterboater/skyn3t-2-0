@@ -60,8 +60,11 @@ an incompatible or quarantined skill eligible.
 
 For each selected stage role, the build manifest records bounded evidence:
 
-- `extra.skills_used` and `extra.stage_skills_used` identify the advice that
-  actually reached the build.
+- `extra.skills_used` and `extra.stage_skills_used` identify selected advice.
+  They do not alone prove complete prompt exposure: the global advice preamble
+  currently has a 6,000-character limit and stage-role advice has a separate
+  3,000-character limit. Inspect retained stage prompts to confirm what survived
+  those limits.
 - `extra.skill_selection_context` stores the compact verified contract context
   and the selection tags used for ranking.
 - `extra.skill_selection_receipts[stage]` stores the selected slug, source,
@@ -75,6 +78,83 @@ grades each selected skill. Re-entering terminal handling cannot double-grade a
 role. The final build outcome sets its helpful signal and the final score
 supplies a finite, bounded continuous quality value. A mid-stage result
 therefore does not become the skill's final grade.
+
+## Browsing and prompt-readiness ratings
+
+The Skills dashboard opens with clickable categories instead of rendering the
+entire library. Search narrows titles, descriptions, categories, and topics.
+Selecting a category preserves the other filters and shows only matching skills;
+topic chips narrow that selection further. Status, provisional rating, and prompt
+size filters can be combined. Results are displayed 36 at a time without excluding
+the remaining matches. Clear filters returns to the complete category index.
+
+Each skill has a read-only, body-hashed **prompt-readiness** assessment. This
+deterministic scan reads the complete body and flags reference extracts, unclear
+scope/verification, weak build examples, and excessive rendered character cost.
+Its 1–4 ratings are provisional text/budget judgments, not an independent content
+review or a measured contribution to build quality; 5/5 is reserved for independent
+review. The rating reasons and exact budget consumption are available on each card.
+Historical build association and capability evidence remain separately labeled.
+Browsing does not create checks or activate skills. The ingestion checks below
+use concrete blocking findings, not the numerical rating, to control eligibility.
+
+### Checks when skills arrive or change
+
+All library write paths share an admission check: direct additions, directory and
+curated imports, configured local hubs, migrated candidates, and learned build
+patterns. The check runs synchronously when the skill is persisted, without a
+dashboard visit or a later background tick. Loading a library also checks older
+entries that have no current receipt.
+
+The library stores the latest result under `.admission_checks/`, keyed by a hash
+of the skill identity. Each receipt binds the complete content and applicability
+metadata, includes a timestamp, categories/topics, and the provisional assessment,
+and is replaced only when that assessment changes. Re-importing unchanged material
+does not reset the timestamp or change historical usage scores. Character checks
+reserve space for the longest normal score label rather than depending on its
+current historical percentage and include the shared advisory heading.
+
+Reference-extraction templates, weak claimed winning-build examples, empty
+advice, and advice exceeding its complete budget (6,000 global characters or
+3,000 for a stage-tagged role) are **review required**.
+They remain available for inspection but cannot enter normal, semantic, stage,
+or already-selected prompt rendering, and cannot pass automatic capability
+activation. Other warnings, such as missing explicit validation language or
+consuming over half the budget, remain visible without being mistaken for proof
+that the advice is wrong.
+
+An admission-held or explicitly quarantined winning-build example does not lock
+its per-stack learning slot: a later eligible example can replace it. Eligible
+reference-bearing winners remain unchanged on repeat wins. Static admission cannot
+override a behavioral-verification quarantine. Replacement candidates are checked before
+overwriting an incumbent; another held candidate leaves its content and receipt intact.
+
+A changed body cannot reuse an old receipt. Missing, corrupt, or stale checks
+do not grant eligibility, and failed receipt persistence is not reported as a
+successful addition. The dashboard exposes the saved on-add result, timestamp,
+and a Needs review filter, separately from content ratings and activation state.
+
+Passing admission is **not measured effectiveness**, source approval, or permission
+to activate. Imported capabilities still need their existing provenance/evidence
+evaluation and activation; explicit rollback decisions remain in force. No source
+code, bundled script, network call, or model evaluation is executed by admission.
+Per-skill admission does not guarantee that several selected skills fit together;
+whole-prompt packing and exposure receipts remain separate concerns.
+
+Generate a complete JSON/CSV snapshot, including registered archived records:
+
+```bash
+.venv/bin/python -m skyn3t.intelligence.skill_catalog \
+  --output docs/reports/2026-09-17-skill-audit \
+  --prior-review docs/reports/2026-09-08-skill-audit.json
+```
+
+The optional prior review contributes editorial ratings only when the complete
+body hash still matches. Archived content must match the retirement registry's
+file and body hashes. Missing or changed archive evidence fails the export rather
+than silently reducing its scope. API browsing includes the currently registered
+library; retired and reference-only records remain in the export, not selectable
+or activatable through the browser.
 
 ## Catalog roles and multi-stack matching
 

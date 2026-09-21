@@ -2,7 +2,7 @@
 slug: gh-chocomeow-vocard
 title: ChocoMeow/Vocard: Discord music bot, setup deferred entirely to an external docs site (held)
 stack: python
-tags: bot, discord, python, reference, github-distilled, hygiene:quarantine, review-held
+tags: bot, discord, python, reference, github-distilled, review-held, external-promoted
 uses: 1
 helpful: 1
 quality_sum: 0.7400

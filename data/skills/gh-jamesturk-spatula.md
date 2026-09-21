@@ -2,7 +2,7 @@
 slug: gh-jamesturk-spatula
 title: jamesturk/spatula: Page-Oriented Python Scraper Library (mirror only, no local usage code)
 stack: python
-tags: python, github-distilled, hygiene:quarantine, review-held
+tags: python, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

@@ -88,3 +88,31 @@ def test_failed_improve_prints_snapshot_guard_reason(monkeypatch):
 
     assert result.exit_code == 2
     assert "project_snapshot_invalid" in result.output
+
+
+def test_failed_mcp_improve_prints_capability_failure_not_passing_proof_noise(monkeypatch):
+    async def failed(project, *, goal):
+        return {
+            "slug": project, "goal": goal, "status": "failed",
+            "files_changed": ["worker.py"], "proof_passed": True,
+            "detail": {
+                "delivery_blocked": "mcp_verification_failed",
+                "mcp_check": {
+                    "issues": ["Worker bypassed authorization before telemetry"],
+                    "checked": {"capability_coverage": {
+                        "cases": {"inventory": {"status": "passed"}, "worker": {"status": "failed"}},
+                        "live_validation": "not_run",
+                    }},
+                },
+                "proof": {"passed": True, "detail": {
+                    "build": "failed", "build_summary": "unrelated advisory proof diagnostic",
+                }},
+            },
+        }
+
+    monkeypatch.setattr(cli, "_run_improve", failed)
+    result = CliRunner().invoke(cli.app, ["studio", "improve", "demo", "--goal", "Fix worker"])
+    assert result.exit_code == 2
+    assert "Worker bypassed authorization before telemetry" in result.output
+    assert "1/2 groups passed" in result.output
+    assert "unrelated advisory proof diagnostic" not in result.output

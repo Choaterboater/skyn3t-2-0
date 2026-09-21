@@ -223,3 +223,112 @@ async def test_improve_proof_learning_excludes_advisory_fixture_markers(tmp_path
         assert any("invalid syntax" in row["text"] for row in lessons)
     finally:
         await store.close()
+
+
+@pytest.mark.parametrize("source,expected", [("print('changed')\n", "completed"), ("def broken(:\n", "failed")])
+async def test_improve_injects_eligible_skills_and_records_proof(tmp_path, source, expected):
+    from skyn3t.agents._common import knowledge_block
+    from skyn3t.intelligence.skill_library import SkillLibrary
+    from skyn3t.studio.manifest import BuildManifest
+
+    settings = _settings(tmp_path)
+    project = settings.projects_dir / "demo"
+    project.mkdir(parents=True)
+    (project / "main.py").write_text("print('original')\n")
+    library = SkillLibrary(tmp_path / "skills")
+    good = library.add("Repair advice", "Check boundary inputs before processing.", stack="python", tags=["stage:improve"])
+    blocked = library.add("Blocked advice", "Never inject this quarantined guidance.", stack="python", tags=["hygiene:quarantine"])
+    author = _SourceAuthor(source)
+    engine = ImproveEngine(EventBus(), author, settings=settings, skills=library)
+    outcome = await engine.improve(str(project), "Improve the entrypoint")
+    prompt = knowledge_block(author.requests[0].payload)
+    assert good.body in prompt
+    assert blocked.body not in prompt
+    assert outcome.status == expected
+    checks = outcome.detail["skill_terminal_grading"]["post_use_checks"]
+    assert [row["slug"] for row in checks] == [good.slug]
+    assert checks[0]["proof_status"] == ("passed" if expected == "completed" else "failed")
+    assert checks[0]["attribution"] == "inconclusive"
+    assert checks[0]["revision_matches"] is True
+    assert good.uses == 1
+    assert blocked.uses == 0
+    if expected == "completed":
+        history = BuildManifest.load(project).extra["improve_history"][-1]
+        assert history["skill_terminal_grading"]["post_use_checks"] == checks
+    else:
+        assert (project / "main.py").read_text() == "print('original')\n"
+
+
+async def test_improve_does_not_credit_revised_skill_or_leak_selection_between_runs(tmp_path):
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    settings = _settings(tmp_path)
+    project = settings.projects_dir / "demo"
+    project.mkdir(parents=True)
+    (project / "main.py").write_text("print('original')\n")
+    library = SkillLibrary(tmp_path / "skills")
+    skill = library.add("Repair advice", "Original boundary guidance.", stack="python")
+
+    class RevisingAuthor(_SourceAuthor):
+        async def submit(self, task):
+            skill.body = "New guidance that was not supplied to this run."
+            return await super().submit(task)
+
+    author = RevisingAuthor("print('changed')\n")
+    engine = ImproveEngine(EventBus(), author, settings=settings, skills=library)
+    outcome = await engine.improve(str(project), "Improve entrypoint")
+    assert outcome.status == "completed"
+    assert skill.uses == 0
+    assert outcome.detail["skill_terminal_grading"]["post_use_checks"][0]["revision_matches"] is False
+    library.demote(skill.slug)
+    again = await engine.improve(str(project), "Improve again")
+    assert again.detail["skills_used"] == []
+    assert not author.requests[-1].payload.get("skills_advice")
+
+
+async def test_improve_generation_failure_does_not_grade_unproven_skills(tmp_path):
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    settings = _settings(tmp_path)
+    project = settings.projects_dir / "demo"
+    project.mkdir(parents=True)
+    (project / "main.py").write_text("print('original')\n")
+    library = SkillLibrary(tmp_path / "skills")
+    skill = library.add("Repair advice", "Check boundaries.", stack="python")
+
+    class FailingAuthor:
+        async def submit(self, task):
+            raise RuntimeError("provider unavailable")
+
+    outcome = await ImproveEngine(
+        EventBus(), FailingAuthor(), settings=settings, skills=library,
+    ).improve(str(project), "Improve entrypoint")
+    assert outcome.status == "failed"
+    check = outcome.detail["skill_terminal_grading"]["post_use_checks"][0]
+    assert check["proof_status"] == "not_checked"
+    assert skill.uses == 0
+    assert (project / "main.py").read_text() == "print('original')\n"
+
+
+async def test_improve_does_not_credit_advice_excluded_by_prompt_budget(tmp_path):
+    from skyn3t.agents._common import knowledge_block
+    from skyn3t.intelligence.skill_library import SkillLibrary
+
+    settings = _settings(tmp_path)
+    project = settings.projects_dir / "demo"
+    project.mkdir(parents=True)
+    (project / "main.py").write_text("print('original')\n")
+    library = SkillLibrary(tmp_path / "skills")
+    oversized = library.add("Long advice", "Omitted guidance. " * 1000, stack="python")
+    small = library.add("Short advice", "Validate boundary inputs.", stack="python")
+    author = _SourceAuthor("print('changed')\n")
+    outcome = await ImproveEngine(
+        EventBus(), author, settings=settings, skills=library,
+    ).improve(str(project), "Improve entrypoint")
+    assert outcome.status == "completed"
+    prompt = knowledge_block(author.requests[0].payload)
+    assert small.body in prompt
+    assert "Omitted guidance." not in prompt
+    assert outcome.detail["skills_used"] == [small.slug]
+    assert oversized.uses == 0
+    assert small.uses == 1

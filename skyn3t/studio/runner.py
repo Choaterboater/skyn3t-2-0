@@ -27,6 +27,7 @@ import hashlib
 import json
 import math
 import re
+import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -94,6 +95,7 @@ from skyn3t.studio.lab_policy import LabAutonomyPolicy
 from skyn3t.studio.layout_profiles import resolve_layout_profile
 from skyn3t.studio.liveness import liveness_self_improve
 from skyn3t.studio.manifest import BuildManifest, StageRecord
+from skyn3t.studio.mcp_check import McpVerdict
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.product_spec import ProductSpecV1, product_contract_prompt_block
 from skyn3t.studio.proof_run import (
@@ -2024,13 +2026,25 @@ class StudioRunner:
         self, manifest, verdict: str, *, posture: GatePosture | None = None
     ) -> str:
         if str(getattr(manifest, "stack", "")).lower() == "mcp":
+            if manifest.extra.get("mcp_planning_failure"):
+                return self._gate_outcome(
+                    manifest, "code_degraded", False, verdict,
+                    str(manifest.extra["mcp_planning_failure"]), posture=posture,
+                )
             check = manifest.extra.get("mcp_check")
             if not isinstance(check, dict) or check.get("skipped") is True or check.get("ok") is not True:
                 reason = (
-                    str(check.get("reason") or "MCP protocol verification did not pass")
+                    str(check.get("reason") or "; ".join(check.get("issues") or [])[:500]
+                        or "MCP verification did not pass")
                     if isinstance(check, dict) else "MCP protocol verification is missing"
                 )
-                manifest.extra["verification_unavailable"] = reason
+                if (
+                    not isinstance(check, dict) or check.get("skipped") is True
+                    or check.get("unavailable") is True
+                ):
+                    manifest.extra["verification_unavailable"] = reason
+                else:
+                    manifest.extra.pop("verification_unavailable", None)
                 return self._gate_outcome(
                     manifest, "mcp_verification", False, verdict, reason, posture=posture
                 )
@@ -2068,13 +2082,17 @@ class StudioRunner:
     _ISOLATION_ONLY_DEGRADED: tuple[str, ...] = ("docker sandbox unavailable",)
 
     def _apply_degraded_proof_score(self, manifest, proof, final_score: float, verdict: str) -> float:
+        return self._cap_degraded_proof_score(self.settings, manifest, proof, final_score, verdict)
+
+    @staticmethod
+    def _cap_degraded_proof_score(settings, manifest, proof, final_score: float, verdict: str) -> float:
         if verdict != "go":
             return final_score
         detail = getattr(proof, "detail", None) or {}
         env = detail.get("proof_environment") if isinstance(detail, dict) else None
         if not isinstance(env, dict) or env.get("degraded") is not True:
             return final_score
-        cap = float(getattr(self.settings, "degraded_proof_score_cap", 74.0))
+        cap = float(getattr(settings, "degraded_proof_score_cap", 74.0))
         reasons = [str(r) for r in (env.get("degraded_reasons") or [])]
         # A host without Docker degrades every build forever, so under lab
         # posture an isolation-only degradation must not permanently cap an
@@ -2082,10 +2100,10 @@ class StudioRunner:
         # container is not. Release posture keeps 2.0's behaviour: there,
         # weaker isolation IS a reason to withhold a top score.
         isolation_only = bool(reasons) and all(
-            any(r.startswith(prefix) for prefix in self._ISOLATION_ONLY_DEGRADED)
+            any(r.startswith(prefix) for prefix in StudioRunner._ISOLATION_ONLY_DEGRADED)
             for r in reasons
         )
-        posture = GatePosture.from_settings(self.settings)
+        posture = GatePosture.from_settings(settings)
         capped = not (isolation_only and posture.posture == "lab")
         manifest.extra["proof_environment_gate"] = {
             "degraded": True,
@@ -2904,6 +2922,15 @@ class StudioRunner:
                     posture=posture,
                 )
         verdict = self._final_consistency_check(project_dir, plan, manifest, verdict)
+        if plan.stack == "mcp" and product_spec is not None and any(
+            acceptance.startswith("mcp:capability:")
+            for requirement in product_spec.requirements
+            for acceptance in requirement.acceptance_ids
+        ):
+            current = source_tree_snapshot(project_dir)
+            verified = manifest.extra.get("mcp_check_source_tree")
+            if not isinstance(verified, dict) or not self._same_evidence_snapshot(verified, current):
+                await self._refresh_mcp_check(manifest, plan, project_dir)
         return await self._run_final_requirement_evidence(
             manifest, product_spec, project_dir, plan, proof, final_score, verdict,
             selection, posture=posture,
@@ -3037,6 +3064,8 @@ class StudioRunner:
         if product_spec is None:
             return final_score, verdict, proof
         evidence_extra: dict[str, Any] = {}
+        if plan.stack == "mcp" and selection.opted_in:
+            evidence_extra["mcp_check"] = manifest.extra.get("mcp_check", {})
         if proof_payload is not None:
             evidence_extra["proof"] = self._sanitized_requirement_proof(
                 proof_payload, selection.safe_proof_ids
@@ -3107,8 +3136,15 @@ class StudioRunner:
             trace.get("mode") == "enforced" and trace.get("go_eligible") is not True
         ) or (trace.get("mode") == "invalid" and selection.fully_bound)
         if blocked:
+            gate_name = "requirement_trace"
+            if plan.stack == "mcp" and any(
+                acceptance.startswith("mcp:capability:")
+                for requirement in product_spec.requirements
+                for acceptance in requirement.acceptance_ids
+            ):
+                gate_name = "mcp_verification"
             verdict = self._gate_outcome(
-                manifest, "requirement_trace", False, verdict,
+                manifest, gate_name, False, verdict,
                 f"requirement trace mode={trace.get('mode')} "
                 f"go_eligible={trace.get('go_eligible')}",
                 posture=posture,
@@ -4129,8 +4165,7 @@ class StudioRunner:
 
     @staticmethod
     def _snapshot_seo_targets(project_dir, rels) -> dict[str, bytes]:
-        """Map ``rel -> original bytes`` for the ≤6 SEO target files that exist. Bounded
-        to the handful of targets on purpose — a rollback snapshot must NOT copy the tree."""
+        """Snapshot caller-bounded authored targets without copying generated trees."""
         root = Path(project_dir)
         snaps: dict[str, bytes] = {}
         for rel in rels:
@@ -4335,11 +4370,35 @@ class StudioRunner:
         return out[:6]
 
     @staticmethod
-    def _select_mcp_source_files(project_dir) -> list[str]:
-        """MCP repair targets: server.py (the SDK registration) + tools.py (the
-        tool logic) + other root-level modules. See _select_root_py_files."""
-        return StudioRunner._select_root_py_files(
+    def _select_mcp_source_files(project_dir, *, boot_failed: bool = False) -> list[str]:
+        """Prioritize authored handlers for behavioral faults, launchers for boot faults."""
+        roots = StudioRunner._select_root_py_files(
             project_dir, ("server.py", "tools.py"))
+        snapshot = source_tree_snapshot(project_dir)
+        if not snapshot.get("valid"):
+            log.warning("mcp_repair.invalid_source_snapshot")
+            return []
+        candidates = [
+            path for path in snapshot["files"]
+            if path.endswith(".py")
+            and not Path(path).name.startswith("test_")
+            and not any(part in {"tests", "test"} for part in Path(path).parts)
+        ]
+
+        def priority(path: str) -> tuple[int, str]:
+            stem = Path(path).stem.lower()
+            for rank, words in enumerate((
+                ("tool", "handler", "workflow", "observability", "collect"),
+                ("client", "api"),
+                ("scope", "diagnos"),
+                ("server", "main"),
+            )):
+                if any(word in stem for word in words):
+                    return rank, path
+            return 4, path
+
+        preferred = roots[:2] if boot_failed else []
+        return list(dict.fromkeys(preferred + sorted(candidates, key=priority)))[:6]
 
     @staticmethod
     def _select_rag_source_files(project_dir) -> list[str]:
@@ -4395,39 +4454,79 @@ class StudioRunner:
 
         return sorted(dict.fromkeys(candidates), key=priority)[:6]
 
+    async def _refresh_mcp_check(self, manifest, plan, project_dir) -> McpVerdict:
+        from skyn3t.studio.mcp_check import check_mcp
+
+        before = source_tree_snapshot(project_dir)
+        verdict = await asyncio.to_thread(
+            check_mcp, project_dir, plan.stack, brief=manifest.brief,
+        )
+        after = source_tree_snapshot(project_dir)
+        if not self._same_evidence_snapshot(before, after):
+            verdict.unavailable = True
+            verdict.reason = "Authored source changed during MCP verification."
+        manifest.extra["mcp_check"] = verdict.to_dict()
+        manifest.extra["mcp_check_source_tree"] = after
+        return verdict
+
     async def _run_mcp_check(
-        self, manifest, plan, project_dir, correlation_id, extra
+        self, manifest, plan, project_dir, correlation_id, extra, *, _after_boot: bool = False,
     ) -> None:
-        """Deterministic MCP-server gate (mcp stack, ADVISORY): spawn the delivered
-        server.py and drive the real Model Context Protocol over stdio (initialize →
-        tools/list → tools/call each tool → one malformed call), with ZERO LLM. RECORD
-        the verdict to ``manifest.extra["mcp_check"]``. When there are real issues and a
-        ``code_improve`` capability is present, dispatch ONE repair.
+        """Record deterministic MCP protocol/HTTP-failure evidence and try one repair.
 
-        Do-no-harm (mirrors ``_run_seo_check``): the improver rewrites server.py/tools.py
-        AFTER proof_run + the verdict have run, and nothing downstream except the final
-        consistency pass re-verifies them — so a broken rewrite would otherwise ship as
-        ``verdict=go``. This snapshots the ≤6 targets and, after the repair, re-runs the
-        REAL proof: the repair is KEPT only if the proof still passes, else every mutation
-        is ROLLED BACK. A failed/timed-out dispatch is rolled back unconditionally.
-        Strictly ADVISORY: it NEVER touches ``verdict``. Best-effort; never raises."""
+        Repairs retain structural proof and receive fresh MCP checks. Failed
+        dispatch/proof rolls back the repair. The central gate owns release
+        policy: failed or unavailable MCP verification withholds GO in every
+        posture, and late source changes require another check before delivery.
+        """
         try:
-            from skyn3t.studio.mcp_check import check_mcp
-
-            verdict = await asyncio.to_thread(check_mcp, project_dir, plan.stack)
-            manifest.extra["mcp_check"] = verdict.to_dict()
+            verdict = await self._refresh_mcp_check(manifest, plan, project_dir)
             log.info("mcp_check.done", skipped=verdict.skipped, ok=verdict.ok,
                      tools=len(verdict.tools), issues=len(verdict.issues))
 
             gaps = verdict.gaps()
             if not gaps or not self._has_capability("code_improve"):
                 return
-            files = self._select_mcp_source_files(project_dir)
+            boot_failed = not bool(verdict.tools)
+            files = self._select_mcp_source_files(project_dir, boot_failed=boot_failed)
+            from skyn3t.studio.mcp_profiles import mcp_profile_name
+            from skyn3t.studio.product_spec import PRODUCT_SPEC_RELATIVE_PATH
+
+            product = ProductSpecV1.load(project_dir)
+            agentic = (
+                mcp_profile_name(product) is not None
+                and bool(getattr(self.settings, "improve_agentic", False))
+            )
+            snapshot_paths = files
+            if agentic:
+                tree = source_tree_snapshot(project_dir)
+                if (
+                    not tree.get("valid")
+                    or tree["file_count"] > 128
+                    or tree["byte_count"] > 2_000_000
+                ):
+                    log.warning("mcp_repair.agentic_snapshot_unavailable")
+                    manifest.extra["mcp_repair"] = {
+                        "kept": False, "reason": "bounded complete authored-source snapshot unavailable",
+                    }
+                    return
+                snapshot_paths = tree["files"]
+                files = [
+                    rel for rel in snapshot_paths
+                    if rel.endswith(".py") and "tests" not in Path(rel).parts
+                    and not Path(rel).name.startswith("test_")
+                ]
             if not files:
                 return
 
             before_files = set(self._safe_list_files(project_dir))
-            snapshots = self._snapshot_seo_targets(project_dir, files)
+            snapshots = self._snapshot_seo_targets(project_dir, snapshot_paths)
+            if agentic and len(snapshots) != len(snapshot_paths):
+                log.warning("mcp_repair.incomplete_rollback_snapshot")
+                manifest.extra["mcp_repair"] = {
+                    "kept": False, "reason": "could not snapshot every authored file before agentic repair",
+                }
+                return
 
             payload = {
                 "brief": manifest.brief, "slug": manifest.slug,
@@ -4438,6 +4537,14 @@ class StudioRunner:
                     max_attempts=1, files=list(files)),
                 "files": list(files),
             }
+            if agentic:
+                payload.update(
+                    agentic=True,
+                    agentic_timeout=min(
+                        int(getattr(self.settings, "improve_agentic_timeout", 900)),
+                        max(1, int(self.stage_exec_timeout) - 5),
+                    ),
+                )
             if extra:
                 payload["extra"] = extra
             task = TaskRequest(
@@ -4456,13 +4563,17 @@ class StudioRunner:
             )
             dispatched_ok = True
             try:
-                await asyncio.wait_for(
+                repair_result = await asyncio.wait_for(
                     self.orchestrator.submit(task), timeout=self.stage_exec_timeout)
+                dispatched_ok = getattr(repair_result, "success", False) is True
             except Exception as exc:  # noqa: BLE001 - a timeout can leave partial writes
                 dispatched_ok = False
                 log.warning("mcp_check.improve_failed", error=str(exc))
 
             changed = self._seo_changed_targets(project_dir, snapshots)
+            if PRODUCT_SPEC_RELATIVE_PATH.as_posix() in changed:
+                dispatched_ok = False
+                log.warning("mcp_repair.product_contract_mutated")
             new_files = sorted(
                 f for f in set(self._safe_list_files(project_dir)) if f not in before_files)
             if not changed and not new_files:
@@ -4474,7 +4585,7 @@ class StudioRunner:
                 manifest.files = self._safe_list_files(project_dir)
                 manifest.extra["mcp_repair"] = {
                     "kept": False,
-                    "reason": "improver dispatch failed/timed out; rolled back partial writes",
+                    "reason": "improver failed/timed out or changed the product contract; rolled back partial writes",
                     "changed_files": touched,
                 }
                 return
@@ -4492,9 +4603,16 @@ class StudioRunner:
             )
             if proof.passed:
                 manifest.files = self._safe_list_files(project_dir)
-                verdict = await asyncio.to_thread(check_mcp, project_dir, plan.stack)
-                manifest.extra["mcp_check"] = verdict.to_dict()
+                verdict = await self._refresh_mcp_check(manifest, plan, project_dir)
                 manifest.extra["mcp_repair"] = {"kept": True, "changed_files": touched}
+                manifest.extra.setdefault("mcp_repair_attempts", []).append({
+                    "phase": "boot" if boot_failed else "behavior",
+                    "files": files, "changed_files": touched, "mcp_ok": verdict.ok,
+                })
+                if boot_failed and verdict.tools and not verdict.ok and not _after_boot:
+                    await self._run_mcp_check(
+                        manifest, plan, project_dir, correlation_id, extra, _after_boot=True,
+                    )
             else:
                 self._rollback_seo(project_dir, snapshots, new_files)
                 manifest.files = self._safe_list_files(project_dir)
@@ -5062,6 +5180,28 @@ class StudioRunner:
                     "missing": list(getattr(result, "missing", []) or []),
                     "detail": getattr(result, "detail", {}),
                 }
+            # Compare diagnostics, not pytest/Vitest/Vite runtime telemetry.
+            # Preserve raw proof output and all error values/locations.
+            payload = dict(payload)
+            detail = dict(payload.get("detail") or {})
+            for key, value in detail.items():
+                if not key.endswith("_summary") or not isinstance(value, str):
+                    continue
+                value = re.sub(
+                    r"(?m)^([=]+[^\n]* in )\d+(?:\.\d+)?s( [=]+\s*)$",
+                    r"\1<duration>\2", value,
+                )
+                value = re.sub(
+                    r"(?m)^[ \t]*(?:Duration[ \t]+\d+(?:\.\d+)?(?:ms|s)\b[^\n]*"
+                    r"|Start at[ \t]+\d{2}:\d{2}:\d{2})[ \t]*$",
+                    "<test timing>", value,
+                )
+                value = re.sub(
+                    r"(?m)^([^\w\n]*Build failed in )\d+(?:\.\d+)?(?:ms|s)[ \t]*$",
+                    r"\1<duration>", value,
+                )
+                detail[key] = value
+            payload["detail"] = detail
             raw = json.dumps(
                 payload, sort_keys=True, separators=(",", ":"), default=str
             ).encode("utf-8", errors="replace")
@@ -5270,7 +5410,7 @@ class StudioRunner:
                     "unchanged_rounds": unchanged_rounds,
                     "tree_signature": current_tree_signature,
                     "proof_signature": current_proof_signature,
-                    "reason": "deliverable tree and proof were unchanged for two rounds",
+                    "reason": "deliverable tree and timing-normalized proof were unchanged for two rounds",
                 }
                 manifest.extra["fix_stalled"] = stall_evidence
                 if runtime_self_heal:
@@ -5300,22 +5440,27 @@ class StudioRunner:
     def _distill_win_skill(self, manifest: BuildManifest, plan: BuildPlan, project_dir: str) -> None:
         """Author a new Skill from a genuine win — the factory GROWS its own.
 
-        Idempotent per stack (slug-guarded) so repeated wins don't spam the
-        library; the distilled skill captures the delivered structure (entrypoint
-        + key files) as reusable, advisory guidance. Best-effort; never raises.
+        Admitted reference examples are idempotent per stack. Held or
+        structure-only examples can be replaced by an admission-passed candidate.
+        Captures the delivered entrypoints and code as reusable, advisory guidance.
+        Best-effort; never raises.
         """
         if self.skills is None:
             return
         slug = f"won-{plan.stack}-shape"
         try:
             existing = self.skills.get(slug)
-            # Upgrade a structure-only distilled skill to one WITH code; skip if it
-            # already carries reference code for this stack.
-            if existing is not None and "Reference code" in (getattr(existing, "body", "") or ""):
+            # Preserve admitted reference code, but let a held example improve.
+            if (
+                existing is not None
+                and "Reference code" in (getattr(existing, "body", "") or "")
+                and self.skills.applies_to(existing, plan.stack)
+            ):
                 return
             from pathlib import Path
 
             from skyn3t.agents import _verify_common as vc
+            from skyn3t.intelligence.skill_library import Skill
 
             root = Path(project_dir)
             entrypoints = vc.find_entrypoints(root)[:4]
@@ -5358,13 +5503,30 @@ class StudioRunner:
                 f"## Reference code from the winning build\n"
                 f"Real, working code from this win — adapt these patterns:\n\n{code_block}"
             )
-            self.skills.add(
+            candidate = Skill(
                 title=f"Winning {plan.stack} build shape",
                 body=body,
                 stack=plan.stack,
                 tags=[plan.stack, "build-distilled"],
                 source="build-distilled",
                 slug=slug,
+            )
+            if existing is not None:
+                # Assess without overwriting the incumbent or its saved receipt.
+                admission = self.skills._admission_assessment(candidate)
+                if admission["status"] != "passed":
+                    log.warning(
+                        "skills.distill_replacement_held", slug=slug,
+                        status=admission["status"], findings=admission["blocking_findings"],
+                    )
+                    return
+            self.skills.add(
+                title=candidate.title,
+                body=candidate.body,
+                stack=candidate.stack,
+                tags=candidate.tags,
+                source=candidate.source,
+                slug=candidate.slug,
             )
             log.info("skills.distilled", slug=slug, stack=plan.stack,
                      score=manifest.score, snippets=len(picks))
@@ -5597,6 +5759,56 @@ class StudioRunner:
                 grade_quality = current_quality
             grade_quality = max(0.0, min(1.0, float(grade_quality)))
             pending = [slug for slug in selected_skill_slugs if slug not in graded]
+            # Selection proves exposure, not that the model followed the advice.
+            # Keep observed proof separate from causal attribution and never
+            # award an edited revision the outcome of its predecessor.
+            selection = manifest_extra.get("skill_selection_receipts", {})
+            selected_revisions: dict[str, list[tuple[str, str]]] = {}
+            if isinstance(selection, dict):
+                for stage, receipts in selection.items():
+                    if not isinstance(receipts, list):
+                        continue
+                    for receipt in receipts:
+                        if not isinstance(receipt, dict):
+                            continue
+                        slug = receipt.get("slug")
+                        digest = receipt.get("advisory_body_sha256")
+                        if isinstance(slug, str) and isinstance(digest, str):
+                            selected_revisions.setdefault(slug, []).append((str(stage), digest))
+            post_use_checks = state.setdefault("post_use_checks", [])
+            proof = manifest_extra.get("proof") or {}
+            proof = proof if isinstance(proof, dict) else {}
+            detail = proof.get("detail") or {}
+            detail = detail if isinstance(detail, dict) else {}
+            proof_status = (
+                "passed" if proof.get("passed") is True
+                else "failed" if proof.get("passed") is False else "not_checked"
+            )
+            gradeable = []
+            for slug in pending:
+                revisions = selected_revisions.get(slug, [])
+                getter = getattr(self.skills, "get", None)
+                skill = getter(slug) if callable(getter) else None
+                body = getattr(skill, "body", None)
+                current_digest = hashlib.sha256(body.encode()).hexdigest() if isinstance(body, str) else None
+                matches = bool(revisions) and all(digest == current_digest for _, digest in revisions)
+                for stage, digest in dict.fromkeys(revisions or [("unknown", "")]):
+                    post_use_checks.append({
+                        "slug": slug, "stage": stage,
+                        "advisory_body_sha256": digest,
+                        "revision_matches": matches if revisions else None,
+                        "exposure": "selected", "attribution": "inconclusive",
+                        "build_id": manifest.build_id, "build_status": manifest.status,
+                        "verdict": manifest.verdict, "proof_status": proof_status,
+                        "checks": {
+                            key: detail[key] for key in ("build", "tests", "node-tests", "swift_tests")
+                            if detail.get(key) in ("passed", "failed", "skipped")
+                        },
+                    })
+                # Legacy callers without selection receipts retain their old
+                # aggregate scoring; the receipt explicitly marks revision unknown.
+                if matches or not revisions:
+                    gradeable.append(slug)
             if pending:
                 graded.update(pending)
                 state["schema_version"] = 1
@@ -5605,7 +5817,7 @@ class StudioRunner:
                 state["quality"] = round(grade_quality, 4)
                 try:
                     self.skills.record_use(
-                        pending,
+                        gradeable,
                         helpful=grade_helpful,
                         quality=grade_quality,
                     )
@@ -6058,10 +6270,13 @@ class StudioRunner:
                 log.debug("studio.selector_profile_capture_failed", error=str(exc)[:120])
         from skyn3t.studio.stack_selector import classify_build, select_stack
         pin = _resolve_stack_pin(extra)
+        selection_started = time.perf_counter()
         choice = await select_stack(
             brief, pin=pin, llm=sel_llm,
             attended=bool(extra.get("attended", False)),
+            settings=self.settings,
         )
+        selection_elapsed_s = time.perf_counter() - selection_started
         plan = self.planner.plan(
             brief,
             slug,
@@ -6210,6 +6425,7 @@ class StudioRunner:
         manifest.extra["stack_selection"] = {
             "method": choice.method, "stack": choice.stack,
             "confidence": choice.confidence, "rationale": choice.rationale,
+            "elapsed_s": round(selection_elapsed_s, 4),
         }
         manifest.extra["classification"] = classification.to_dict()
         manifest.extra["layout_profile"] = frozen_profile
@@ -6255,6 +6471,7 @@ class StudioRunner:
         # no_go that stands in when the reviewer stage never ran (stale — the
         # structural rescore is then the legitimate recovery signal).
         reviewer_ran = False
+        review_metadata: dict[str, Any] = {}
         # Captured so a reviewer no_go graded on the PRE-repair worktree can be
         # refreshed against the DELIVERED tree once the fix loop changed it.
         reviewer_spec: StageSpec | None = None
@@ -6523,6 +6740,10 @@ class StudioRunner:
                         failed["backend"] = "failed"
                         failed["degraded"] = True
                         failed["degraded_reason"] = result.error or "code stage failed"
+                    if plan.stack == "mcp" and spec.capability == "architecture":
+                        manifest.extra["mcp_planning_failure"] = (
+                            result.error or "Live MCP architecture failed."
+                        )
                     prior[spec.name] = failed
 
                 if spec.agent_type == "code":
@@ -6590,6 +6811,7 @@ class StudioRunner:
                 # completeness/correctness vs. the brief), so it must not be
                 # silently discarded by the later structural rescore.
                 if spec.agent_type == "reviewer" and result.success:
+                    review_metadata = dict(result.metadata or {})
                     reviewer_score = self._extract_score(result.output) or 0.0
                     verdict = str(result.output.get("verdict", "no_go"))
                     reviewer_gaps = list(result.output.get("gaps") or [])
@@ -6881,10 +7103,9 @@ class StudioRunner:
             # verdict is stale: re-dispatch the SAME registered reviewer agent
             # (brief-aware, including its optional LLM blend) ONCE against the
             # DELIVERED tree and honour its fresh verdict in the AND-combine
-            # below. A stale "go" is never refreshed — the AND with re_verdict
-            # already guards it, and a refresh could only downgrade. Any
-            # dispatch failure/timeout keeps the stale values.
-            if reviewer_ran and verdict == "no_go" and reviewer_spec is not None:
+            # below. Passing reviews expire too: structural proof cannot detect
+            # a semantic regression introduced by a later repair.
+            if reviewer_ran and reviewer_spec is not None:
                 delivered_sha = ""
                 delivered_valid = False
                 try:
@@ -6906,6 +7127,7 @@ class StudioRunner:
                             reviewer_stage_extra,
                         )
                         refresh_payload.update(reviewer_spec.extra)
+                        refresh_payload["verification_evidence"] = {"proof": proof.to_dict()}
                         refresh = await self._submit_stage(
                             reviewer_spec, refresh_payload, correlation_id
                         )
@@ -6921,6 +7143,13 @@ class StudioRunner:
                         verdict = fresh_verdict
                         reviewer_score = self._extract_score(refresh.output) or 0.0
                         reviewer_gaps = list(refresh.output.get("gaps") or [])
+                        review_metadata = dict(refresh.metadata or {})
+                        reviewed_tree_sha = delivered_sha
+                        reviewed_tree_valid = delivered_valid
+                    else:
+                        verdict = "no_go"
+                        reviewer_score = 0.0
+                        reviewer_gaps = ["Current-source review unavailable after source changed"]
             if reviewer_ran and re_verdict not in ("go", "no_go"):
                 # The structural rescore itself errored ("error" sentinel): the
                 # gate is UNAVAILABLE, not failed. Honour the brief-aware
@@ -7231,7 +7460,8 @@ class StudioRunner:
                 )
             if not intent_ok:
                 manifest.extra["intent_gate"] = (
-                    f"intent match {intent.score} < {self._intent_floor} floor "
+                    f"semantic intent {intent.detail.get('llm_score', intent.score)} "
+                    f"< {self._intent_floor} floor "
                     f"(missing: {', '.join(intent.missing[:6])}) — content ignored the brief"
                 )
                 # Don't let the learning loop reward a brief-ignoring build. Only
@@ -7332,7 +7562,7 @@ class StudioRunner:
                 await self._run_seo_check(
                     manifest, plan, project_dir, correlation_id, extra)
 
-            # End-of-build MCP-server gate (mcp stack, ADVISORY, zero LLM): spawn the
+            # End-of-build MCP-server verification (mcp stack, zero LLM): spawn the
             # delivered server.py and drive the real Model Context Protocol over stdio
             # (initialize → tools/list → tools/call each tool → one malformed call).
             # Like the SEO check it is recorded to manifest.extra["mcp_check"] + fed to
@@ -7410,6 +7640,52 @@ class StudioRunner:
                 verdict,
                 posture=posture,
             )
+            if plan.stack == "mcp" and getattr(self.settings, "mcp_check_enabled", True):
+                current_source = source_tree_snapshot(project_dir)
+                verified_source = manifest.extra.get("mcp_check_source_tree")
+                if not isinstance(verified_source, dict) or not self._same_evidence_snapshot(
+                    verified_source, current_source,
+                ):
+                    await self._refresh_mcp_check(manifest, plan, project_dir)
+                verdict = self._apply_ai_native_gates(manifest, verdict, posture=posture)
+            current_review_tree = source_tree_snapshot(project_dir)
+            if reviewer_ran and reviewer_spec is not None and (
+                not reviewed_tree_valid or not current_review_tree.get("valid")
+                or reviewed_tree_sha != current_review_tree.get("sha256")
+            ):
+                refresh = None
+                try:
+                    refresh_payload = self._base_payload(
+                        plan, project_dir, project_dir, prior, [], reviewer_stage_extra,
+                    )
+                    refresh_payload.update(reviewer_spec.extra)
+                    refresh_payload["verification_evidence"] = {
+                        "proof": proof.to_dict(), "mcp_check": manifest.extra.get("mcp_check"),
+                    }
+                    refresh = await self._submit_stage(reviewer_spec, refresh_payload, correlation_id)
+                except Exception as exc:  # noqa: BLE001 - terminal review must fail closed
+                    log.warning("terminal_review.failed", error=type(exc).__name__)
+                if refresh is not None and refresh.success and self._same_evidence_snapshot(
+                    current_review_tree, source_tree_snapshot(project_dir),
+                ):
+                    reviewer_score = self._extract_score(refresh.output) or 0.0
+                    reviewer_gaps = list(refresh.output.get("gaps") or [])
+                    review_metadata = dict(refresh.metadata or {})
+                    reviewed_tree_sha = str(current_review_tree.get("sha256") or "")
+                    reviewed_tree_valid = True
+                    if refresh.output.get("verdict") != "go":
+                        verdict = "no_go"
+                    # Do not erase earlier safety/quality penalties when a late
+                    # repair changes the implementation reviewed at the start.
+                    final_score = min(
+                        final_score,
+                        self._honest_score(0.6 * reviewer_score + 0.4 * proof.score, proof.passed),
+                    )
+                else:
+                    reviewed_tree_valid = False
+                    review_metadata = {"assessment_status": "unavailable"}
+                    reviewer_gaps = ["Current-source review unavailable after terminal repair"]
+                    verdict, final_score = "no_go", 0.0
             final_score, verdict = self._apply_scaffold_stub_proof_gate(
                 manifest, proof, final_score, verdict, posture=posture
             )
@@ -7435,6 +7711,18 @@ class StudioRunner:
             manifest.score = final_score
             manifest.verdict = verdict
             manifest.status = _final_build_status(delivered_nonempty, verdict)
+            if reviewer_ran:
+                manifest.extra["current_assessment"] = {
+                    "status": review_metadata.get("assessment_status", "structural_only"),
+                    "at": datetime.now(UTC).isoformat(),
+                    "review_score": reviewer_score, "proof_score": proof.score,
+                    "score": final_score, "verdict": verdict, "gaps": reviewer_gaps,
+                    "source_tree": {
+                        "algorithm": delivered_tree.get("algorithm"),
+                        "sha256": reviewed_tree_sha,
+                        "valid": reviewed_tree_valid and reviewed_tree_sha == delivered_tree.get("sha256"),
+                    },
+                }
             manifest.extra["delivery_source_tree"] = {
                 "algorithm": delivered_tree.get("algorithm"),
                 "sha256": delivered_tree.get("sha256"),

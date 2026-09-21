@@ -4,6 +4,23 @@ _Last reviewed: 2026-09-17 (5,353 passed / 10 skipped; full suite green).
 Historical design trend: 7/15 → 11/15 → 14/15 → effectively 15/15 live codex,
 zero AI-look warnings with briefs threaded._
 
+**2026-09-17 — Improve skill feedback connected:** Improve now injects eligible
+Skills-library advice, records selected body revisions, and attaches existing
+proof outcomes to run history. Changed or prompt-omitted bodies receive no credit;
+generation failures remain ungraded. Quarantine eligibility stays authoritative.
+Verification: 117 focused Improve tests passed; no full-suite claim.
+
+**2026-09-17 — MCP SDK alignment and post-use skill checks:** new MCP scaffolds
+and generation guidance use SDK v2 `MCPServer` with `mcp>=2.2,<3`. A scratch
+copy of the failed Mist server passed protocol verification after SDK alignment;
+this does not complete its missing Mist functionality or change its `no_go`.
+Terminal skill checks now preserve selected body hashes and proof outcomes,
+with inconclusive causal attribution and no credit for a changed body revision.
+Verification: 67 focused tests passed using `.venv/bin/python`; system Python
+has an incompatible older SDK. Separate reviewed-snapshot tests remain blocked
+by a checksum mismatch in the mutable `data/skills` snapshot; hashes were not
+rewritten to accept it. No new full-suite-green claim.
+
 **2026-09-17 — incomplete MCP delivery correction:** incomplete generation now
 blocks `GO` in Lab and release modes while retaining files as `completed_no_go`.
 MCP protocol verification must actually pass; unavailable checks remain explicit.

@@ -2,7 +2,7 @@
 slug: gh-csnw-d3-compose
 title: CSNW/d3.compose: Composable D3 Chart Layout (Legacy D3 v3 / d3.chart)
 stack: react
-tags: design, frontend, javascript, react, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: design, frontend, javascript, react, ui, web, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

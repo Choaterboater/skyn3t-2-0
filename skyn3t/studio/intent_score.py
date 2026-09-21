@@ -16,10 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+import structlog
+
+log = structlog.get_logger(__name__)
 
 _TERM_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9\-]{2,}")
 # Case-preserving identifier scan + camelCase/PascalCase splitter so domain terms
@@ -59,6 +64,7 @@ _SOURCE_SUFFIXES = (
 _SKIP_DIRS = frozenset({
     "node_modules", ".git", "dist", "build", ".preview", "__pycache__", ".venv",
     ".next", ".cache", "coverage", "vendor",
+    ".pytest_cache", ".ruff_cache", ".mypy_cache",
 })
 
 _MAX_SCAN_BYTES = 200_000
@@ -106,6 +112,7 @@ _OWN_ARTIFACT_NAMES = frozenset({
     "web-assets.json",
     "product.json",
     ".skyn3t-proof-owned.json",
+    ".skyn3t-worktree.json",
 })
 _OWN_ARTIFACT_DIRS = frozenset({".skyn3t"})
 
@@ -138,15 +145,17 @@ def _iter_source_files(project_dir: Path):
     root = Path(project_dir)
     candidates: list[Path] = []
     for p in sorted(root.rglob("*")):
-        if not p.is_file() or p.suffix.lower() not in _SOURCE_SUFFIXES:
+        if p.is_symlink() or not p.is_file() or p.suffix.lower() not in _SOURCE_SUFFIXES:
             continue
-        if set(p.parts) & _SKIP_DIRS:
+        if set(p.relative_to(root).parts) & _SKIP_DIRS:
+            continue
+        if any(part.casefold().endswith((".egg-info", ".dist-info")) for part in p.relative_to(root).parts):
             continue
         if _is_own_artifact(p, root):
             continue
         candidates.append(p)
 
-    def rank(path: Path) -> tuple[int, int, str]:
+    def rank(path: Path) -> tuple[int, int, int, str]:
         suffix = path.suffix.lower()
         try:
             order = _CONTENT_FIRST_SUFFIXES.index(suffix)
@@ -154,7 +163,9 @@ def _iter_source_files(project_dir: Path):
             order = len(_CONTENT_FIRST_SUFFIXES)
         # An entry page outranks a sibling of the same type.
         entry = 0 if path.stem.lower() in ("index", "main", "app") else 1
-        return (order, entry, str(path).lower())
+        is_test = any(part in {"tests", "test", "__tests__"} for part in path.relative_to(root).parts)
+        is_test = is_test or path.name.startswith("test_") or ".test." in path.name or ".spec." in path.name
+        return (int(is_test), order, entry, str(path).lower())
 
     yield from sorted(candidates, key=rank)
 
@@ -225,7 +236,10 @@ def _readable_excerpt(path: Path, text: str, limit: int) -> str:
     return text[:limit]
 
 
-def _content_digest(project_dir, *, max_bytes: int = _MAX_DIGEST_BYTES) -> str:
+def _content_digest(
+    project_dir, *, max_bytes: int = _MAX_DIGEST_BYTES, max_file_bytes: int = 1500,
+    raw_source: bool = False,
+) -> str:
     """A bounded excerpt of actual file contents for the LLM judge."""
     pdir = Path(project_dir)
     if not pdir.is_dir():
@@ -239,10 +253,20 @@ def _content_digest(project_dir, *, max_bytes: int = _MAX_DIGEST_BYTES) -> str:
             text = p.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        snippet = _readable_excerpt(p, text, min(1500, budget))
+        limit = min(max_file_bytes, budget)
+        if raw_source and len(text) > limit:
+            marker = "\n... [middle omitted; partial source excerpt] ...\n"
+            room = max(0, limit - len(marker))
+            head = room * 2 // 3
+            tail = room - head
+            snippet = (text[:head] + marker + (text[-tail:] if tail else ""))[:limit]
+        elif raw_source:
+            snippet = text
+        else:
+            snippet = _readable_excerpt(p, text, limit)
         if not snippet:
             continue
-        chunks.append(f"# {p.name}\n{snippet}")
+        chunks.append(f"# {p.relative_to(pdir).as_posix()}\n{snippet}")
         budget -= len(snippet)
     return "\n\n".join(chunks)[:max_bytes]
 
@@ -288,16 +312,16 @@ def score_intent(brief: str, project_dir, stack: str = "", *,
 def intent_gate(code_backend: str, intent: IntentResult, floor: float) -> bool:
     """Whether a delivered project clears intent for a 'go'.
 
-    A hard no_go requires a CORROBORATED low signal. Lexical token-overlap (the
+    A hard no_go requires a semantic signal. Lexical token-overlap (the
     offline heuristic) cannot tell "ignored the brief" from "used a synonym /
     camelCase / another language", so it is advisory only — it never flips a
-    verdict. The gate fails a build only when the semantic LLM judge concurred
-    that intent is low (method == "llm+heuristic"). Stub backends are exempt."""
+    verdict. A low semantic score cannot be outvoted by keyword overlap.
+    Stub backends are exempt."""
     if code_backend == "stub":
         return True
     if getattr(intent, "method", "") != "llm+heuristic":
         return True  # heuristic-only is advisory — too noisy to gate
-    return intent.score >= floor
+    return intent.score >= floor and float(intent.detail.get("llm_score", intent.score)) >= floor
 
 
 def _median(values: list[float]) -> float:
@@ -313,9 +337,18 @@ async def _one_judge(prompt: str, llm) -> float | None:
         from skyn3t.core.model_router import Tier
         res = await llm.complete(prompt, tier=Tier.STRONG, json_mode=True,
                                  max_tokens=256)
+        if getattr(res, "status", "succeeded") not in {"succeeded", "cli_response"} or getattr(res, "backend", "") == "stub":
+            log.warning("intent.failed_provider_reply", status=getattr(res, "status", "unknown"))
+            return None
         data = json.loads(res.text)
-        return max(0.0, min(100.0, float(data.get("score"))))
-    except Exception:  # noqa: BLE001 - one bad sample must not sink the vote
+        if not isinstance(data, dict) or isinstance(data.get("score"), bool):
+            raise ValueError("invalid intent object")
+        score = float(data["score"])
+        if not math.isfinite(score) or not 0 <= score <= 100:
+            raise ValueError("invalid intent score")
+        return score
+    except Exception as exc:  # noqa: BLE001 - one bad sample must not sink the vote
+        log.warning("intent.judge_unavailable", error=type(exc).__name__)
         return None
 
 
@@ -327,7 +360,7 @@ async def llm_intent_score(brief: str, project_dir, *, llm,
     LLM, or every sample failed)."""
     if llm is None or getattr(llm, "backend", "stub") == "stub":
         return None
-    digest = _content_digest(project_dir)
+    digest = _content_digest(project_dir, max_bytes=64000, max_file_bytes=24000, raw_source=True)
     prompt = (
         "You are grading whether a generated software project satisfies the "
         "USER BRIEF's intent — judge the actual CONTENT, not whether it merely "

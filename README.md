@@ -206,6 +206,48 @@ Copilot-backed planning, review, and other text-completion stages are restricted
 to the read-only `view` tool; they cannot edit files or delegate another build.
 Code generation and agentic repair retain their separate worktree-writing mode.
 
+Optional TypeSafe/Jev stack selection (`pip install typesafe-sdk`, configure
+`SKYN3T_TYPESAFE_API_KEY` or `TYPESAFE_API_KEY`) runs before the LLM selector.
+Explicit stack pins bypass it. Only exact menu choices with finite confidence
+of at least 0.60 are accepted; uncertain, malformed, or failed responses fall
+back to the existing LLM/keyword path. This threshold is a routing policy, not
+an accuracy guarantee. The build manifest's `extra.stack_selection.elapsed_s`
+records total selection latency, including fallback; TypeSafe's accepted-call
+log records its own elapsed time. Jev does not generate or repair application code.
+
+Compare selection quality without building 41 applications:
+
+```bash
+python -m skyn3t.studio.stack_selection_bench --provider keyword --repeats 3 --output /tmp/stack-keyword.json
+# Requires the TypeSafe SDK and an API key in the environment/settings.
+python -m skyn3t.studio.stack_selection_bench --provider typesafe --repeats 3 --output /tmp/stack-jev.json
+```
+
+The fixed suite covers all builder stacks, task-only and contrastive prompts,
+plus ambiguous requests. Reports include raw accuracy against repository-authored
+acceptable sets, accuracy/coverage after the production confidence gate, confident
+mistakes, ambiguous acceptances, errors, and median/p95 decision latency. These
+are not independent human ground-truth labels; repeated prompts do not multiply
+the accuracy sample size. Version 2 reports retain full Jev probability
+distributions, selected-option probability and top-two margin, plus
+provider-reported model, request ID and token counts when available. Missing or
+malformed distributions are explicitly flagged, not normalized into valid-looking
+evidence. Confidence describes distribution concentration, not the probability
+that a decision is correct; token usage is not proof of billing.
+The adapter rejects empty or unsupported question batches before sending them.
+Missing, extra, or wrong-primitive answers invalidate the whole response rather
+than returning a success-shaped partial result. Provider failures log the error
+class, not raw exception text that could echo prompts or credentials.
+No fallback LLM, toolchain demotion, or code generation
+runs in this benchmark. Missing credentials produce a blocked report and nonzero
+exit, never a substitute keyword score. Reports are checkpointed after each call.
+
+The repair loop stops after two consecutive rounds with unchanged deliverable
+files and unchanged proof evidence, ignoring known pytest/Vitest/Vite timing
+lines when comparing diagnostics. Original proof output is retained, and changed
+errors or source files permit further attempts within the existing budget.
+A stalled repair remains a failed proof, never a successful build.
+
 OpenRouter agentic generation validates response state and the entire tool batch
 before dispatch. Truncated responses receive at most two recovery requests;
 explicit refusals stop without retry, and malformed arguments cannot become a
@@ -264,6 +306,18 @@ evidence also withholds delivery. Structural rescoring does not raise the
 brief-aware review score, and unsuccessful builds cannot trigger pattern
 promotion.
 
+New MCP scaffolds target the official Python SDK v2 (`MCPServer`) and declare
+`mcp>=2.2,<3`. Install the generated project's requirements in its execution
+environment; SDK v1 cannot run this scaffold. Existing v1 projects are not
+automatically migrated.
+
+After a build, `extra.skill_terminal_grading.post_use_checks` records selected
+advisory body hashes, stages, terminal build outcome, and available test/build
+proof statuses. Selection is exposure, not proof that the model followed the
+advice: causal attribution remains `inconclusive`. Changed advisory bodies do
+not receive their previous revision's aggregate credit. These receipts reuse
+completed proof; they do not launch another build or model request.
+
 ### Work on a project SkyN3t did not create
 
 Import a local project, then give **Improve** a specific repair, refactor,
@@ -277,6 +331,15 @@ skyn3t studio improve existing-app-copy --goal "Redesign the navigation while pr
 
 In the dashboard, use **Projects → Import existing project**, enter the path
 on the machine running SkyN3t, then use **Improve** on the imported row.
+
+Improve selects eligible skills through the Skills library and sends their advice
+through the existing bounded generation prompt. Quarantined or inactive capabilities
+remain excluded. Its outcome includes `skills_used`, selection body hashes, and
+`skill_terminal_grading.post_use_checks`; completed and proof-rejected attempts
+also retain those checks in `extra.improve_history`. Proof outcomes update usage
+scores only for unchanged selected bodies. Generation failures without proof remain
+`not_checked`; causal attribution remains `inconclusive`. Oversized advice omitted
+from the prompt receives no usage credit. Runs without a Skills library still work.
 
 Import creates a separate managed copy in `Projects/<name>/`; it never edits
 the original, installs dependencies, or executes project code. Existing names

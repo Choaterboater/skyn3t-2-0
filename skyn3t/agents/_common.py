@@ -417,6 +417,96 @@ def slugify(text: str, fallback: str = "app") -> str:
     return s or fallback
 
 
+MCP_QUALITY_CONTRACT = """MANDATORY MCP QUALITY CONTRACT (domain-neutral)
+Build a narrow, trustworthy bridge to real systems, not an endpoint dump.
+1. Useful tools and context: use predictable names, typed inputs and stable
+structured outputs; compose small task-focused tools over shared adapters.
+Expose focused resources/schemas, evidence, affected targets, severity and
+actionable next steps. Distinguish observed facts from hypotheses; never invent
+missing measurements or unsupported capabilities to fill an overview.
+2. Minimal-prompt workflow: discover authorized scope before dependent reads.
+Use a single clear authorized scope automatically; otherwise return concrete
+authorized choices and one focused clarification for the client to present.
+Ask only when the answer changes the next action. Carry known intent, selected
+scope, time window and target into drill-down actions instead of asking again.
+Prefer explicit context returned to/passed by the host; any server-side context
+must be identity/session-scoped and reauthorized. Never share selected scope across users.
+An explicit scope change overrides prior context; revoked access fails closed.
+The host owns the conversation; use elicitation only if the client supports it.
+3. Safe access: default to the smallest useful read-only access. Disclose effective
+capabilities, selected scope and unavailable operations. Validate inputs and
+authorization on each operation. Material changes require a preview of targets,
+effects and risk, followed by trusted explicit consent bound to that exact action.
+A model-supplied approved=true or tool annotation is NOT authorization.
+If elevation is supported, provide an explicit "Enable more access" workflow:
+show added capabilities, affected scopes and read/write/destructive implications;
+require confirmation; make elevation reversible and auditable without secrets.
+Never grant upstream permissions yourself or invent elevation APIs; unsupported
+elevation remains disabled with administrator/setup guidance. Read-only briefs
+must stay read-only even when the supplied credential has broader privileges.
+4. Honest reliability: bounded timeouts, retries and pagination; useful structured
+errors with recovery guidance; retain partial evidence with explicit coverage.
+Unavailable, stale, malformed or unauthorized data is unknown, never healthy.
+Keep quality scores, exercised capability coverage and live validation distinct.
+5. Interoperability: follow negotiated MCP contracts and published SDK interfaces.
+Keep protocol stdout free of logs; preserve public tools/resources and document
+breaking changes, supported versions, input/output schemas and capability limits.
+Use declared installed dependencies; never inject machine-specific or external
+user site-packages into runtime imports. Exercise an installed package outside
+its checkout, not only imports from the development machine.
+6. Easy setup: one clear secret input per upstream via host-managed secret storage
+or a documented secret-manager/environment reference; never echo, log, return,
+embed in source, or put credentials in ordinary settings/history/CLI arguments.
+After explicit configuration, offer an immediate bounded read-only connection and
+permission check with a clear result and next step; do not require credentials to
+import, start or list tools. Document installation, first connection, scope,
+one successful example, common failures and actual limits; no unsupported
+production-ready claims. Persistent state uses a private per-user data directory
+or explicit configured path, not shared temporary storage.
+Test single/ambiguous/changed/revoked scope, context isolation, partial failures,
+secret redaction and denied/unconfirmed/elevated actions where applicable.
+Do not add a UI, write tools, or unsupported domain features just to satisfy this
+contract. State non-applicable and unverified behavior explicitly.
+
+"""
+
+
+MCP_RELIABILITY_CONTRACT = MCP_QUALITY_CONTRACT + (
+    "MCP EXTERNAL-API RELIABILITY CONTRACT: Boot and tools/list must work without "
+    "credentials, but an authenticated operation without configuration must return "
+    "a structured credentials_required failure. Never substitute demo data for a "
+    "live API failure. HTTP 401/403, 429, 5xx, timeouts and failed workflow steps "
+    "must propagate as success=false with an explicit error, or an MCP tool error; "
+    "never claim completed/applied/verified on failure. Simulation is explicit "
+    "opt-in, labeled simulated, and must not claim a real action was applied. "
+    "Use documented endpoints, payloads and response fields with source URLs; "
+    "unsupported vendor capabilities remain unsupported, not invented endpoints. "
+    "Separate injectable HTTP clients from pure diagnosis and tool orchestration. "
+    "Follow observe -> evidence-linked diagnosis -> recommendation -> deliberate "
+    "operator-approved action -> refreshed verification. Preserve source IDs, "
+    "observation times and uncertainty; do not invent device IDs, counts, root "
+    "causes or verification steps. Inspection is read-only; disruptive actions "
+    "need explicit approval, scoped targets and a dry-run path. API acceptance "
+    "of a command is not proof of recovery. Partial failures remain visible and "
+    "cannot become aggregate success. Validate authorized scope before dependent "
+    "calls; absent or malformed authorization fails closed. Failed, timed-out or "
+    "rate-limited identity/scope lookups also block dependent reads: a None/error "
+    "sentinel must never skip authorization. Test those prerequisite failures "
+    "separately from partial telemetry failures after successful authorization. Unknown telemetry "
+    "is neither healthy nor failed; correlate only compatible observation times. "
+    "Respect documented mutually exclusive API arguments. Redact credentials even "
+    "when upstream error bodies echo them. Use httpx, requests or urllib clients "
+    "with bounded total deadlines/retries and finite validated Retry-After delays. "
+    "Declared Python console entrypoints must exist in the built wheel and work "
+    "after installation outside the checkout. "
+    "Tests must inject HTTP success AND HTTP 401, "
+    "HTTP 503, timeout, partial failure and missing-credential cases; assert "
+    "actual request paths/payloads and returned evidence, not just response shape. "
+    "The factory independently injects upstream failures without live credentials. "
+    "Do not special-case its diagnostic inputs or weaken tests to obtain GO."
+)
+
+
 # Max chars of injected skill advice in a generative prompt. Skill bodies can be
 # tens of KB each; the full set otherwise dwarfs the build instruction AND slows
 # the codegen agent (a larger prompt degrades wall-clock — the idle stall-guard
@@ -424,6 +514,7 @@ def slugify(text: str, fallback: str = "app") -> str:
 # it conservative: design guidance is carried by the explicit DESIGN directive in
 # the codegen prompt (code_agent._DESIGN_DIRECTIVE), not by un-truncated skill bodies.
 _MAX_SKILL_ADVICE = 6000
+_MAX_STAGE_ROLE_GUIDANCE = 3000
 
 
 def knowledge_block(payload: Any) -> str:
@@ -439,6 +530,11 @@ def knowledge_block(payload: Any) -> str:
         return ""
     raw_extra = payload.get("extra")
     extra: dict[str, Any] = raw_extra if isinstance(raw_extra, dict) else {}
+    from skyn3t.studio.mcp_profiles import mcp_profile_instructions, mcp_profile_name
+
+    product = extra.get("product_spec") or payload.get("product_spec")
+    profile = mcp_profile_name(product) if isinstance(product, dict) else None
+    mandatory = mcp_profile_instructions(profile) + "\n" if profile else ""
     parts: list[str] = []
     corrections = extra.get("user_corrections")
     if isinstance(corrections, str) and corrections:
@@ -461,7 +557,7 @@ def knowledge_block(payload: Any) -> str:
     if role_guidance:
         parts.append(
             "STAGE ROLE GUIDANCE (external/catalog roles for this stage only):\n"
-            + str(role_guidance).strip()[:3000]
+            + str(role_guidance).strip()[:_MAX_STAGE_ROLE_GUIDANCE]
         )
 
     lessons = payload.get("lessons") or []
@@ -509,8 +605,8 @@ def knowledge_block(payload: Any) -> str:
             )
 
     if not parts:
-        return ""
-    return "## Prior knowledge (advisory — reuse what fits)\n" + "\n\n".join(parts) + "\n\n"
+        return mandatory
+    return mandatory + "## Prior knowledge (advisory — reuse what fits)\n" + "\n\n".join(parts) + "\n\n"
 
 
 def _full_app_contract(payload: dict[str, Any], extra: dict[str, Any]) -> str:

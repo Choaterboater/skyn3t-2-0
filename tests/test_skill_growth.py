@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
@@ -19,6 +21,12 @@ from skyn3t.studio.runner import StudioRunner
 def _runner(skills: SkillLibrary) -> StudioRunner:
     bus = EventBus()
     return StudioRunner(bus, Orchestrator(bus), settings=Settings(llm_backend="stub"), skills=skills)
+
+
+def _distillation_runner(skills: SkillLibrary) -> StudioRunner:
+    runner = StudioRunner.__new__(StudioRunner)
+    runner.skills = skills
+    return runner
 
 
 class _Manifest:
@@ -44,8 +52,8 @@ def _proj(tmp_path):
 
 def test_distill_win_skill_creates_and_is_idempotent(tmp_path):
     lib = SkillLibrary(tmp_path / "skills")
-    runner = _runner(lib)
-    plan = Planner(Settings()).plan("a python cli tool", "s")  # stack -> cli
+    runner = _distillation_runner(lib)
+    plan = SimpleNamespace(stack="cli")
     proj = _proj(tmp_path)
 
     runner._distill_win_skill(_Manifest("go", 92.0, "a python cli tool"), plan, str(proj))
@@ -57,8 +65,91 @@ def test_distill_win_skill_creates_and_is_idempotent(tmp_path):
     assert any(s.slug == sk.slug for s in lib.relevant(plan.stack, limit=10))
 
     # Idempotent: a second win for the same stack does not duplicate/overwrite.
+    before_check = lib.admission_status(sk.slug)
+    path = tmp_path / "skills" / f"{sk.slug}.md"
+    before_bytes = path.read_bytes()
     runner._distill_win_skill(_Manifest("go", 99.0, "other"), plan, str(proj))
     assert lib.get(f"won-{plan.stack}-shape").body == sk.body
+    assert path.read_bytes() == before_bytes
+    assert lib.admission_status(sk.slug) == before_check
+
+
+def test_distill_win_skill_replaces_held_winner_with_admitted_example(tmp_path):
+    lib = SkillLibrary(tmp_path / "skills")
+    runner = _distillation_runner(lib)
+    plan = SimpleNamespace(stack="mcp")
+    proj = _proj(tmp_path)
+    slug = "won-mcp-shape"
+
+    runner._distill_win_skill(_Manifest("go", 37.0, "weak scaffold"), plan, str(proj))
+    assert lib.admission_status(slug)["status"] == "review_required"
+    assert lib.inject("mcp") == ""
+
+    lib = SkillLibrary(tmp_path / "skills")
+    runner = _distillation_runner(lib)
+    (proj / "main.py").write_text("def verified_contract():\n    return 'NEW_96_POINT_WINNER'\n")
+    runner._distill_win_skill(_Manifest("go", 96.0, "verified tool contract"), plan, str(proj))
+
+    reloaded = SkillLibrary(tmp_path / "skills")
+    assert reloaded.admission_status(slug)["status"] == "passed"
+    assert "NEW_96_POINT_WINNER" in reloaded.inject("mcp")
+    assert "weak scaffold" not in reloaded.get(slug).body
+
+
+def test_distill_win_skill_replaces_quarantined_reference_after_failed_verification(tmp_path):
+    lib = SkillLibrary(tmp_path / "skills")
+    slug = "won-mcp-shape"
+    lib.add(
+        "Winning mcp build shape",
+        "A real **mcp** build scored 70 (go).\n## Reference code\nOld unverified example.",
+        stack="mcp", tags=["mcp", "build-distilled", "hygiene:quarantine"],
+        source="build-distilled", slug=slug,
+    )
+    assert lib.admission_status(slug)["status"] == "passed"
+    assert not lib.relevant("mcp")
+    project = _proj(tmp_path)
+    (project / "main.py").write_text("def checked_errors():\n    return 'VERIFIED_REPLACEMENT'\n")
+
+    _distillation_runner(lib)._distill_win_skill(
+        _Manifest("go", 96.0, "verified HTTP failures"), SimpleNamespace(stack="mcp"), str(project),
+    )
+
+    assert "VERIFIED_REPLACEMENT" in SkillLibrary(tmp_path / "skills").inject("mcp")
+
+
+@pytest.mark.parametrize("incumbent_body", [
+    "Use validated entrypoints and verify the tool contract.",
+    "Use validated entrypoints and verify the tool contract.\n## Reference code\nTrusted example.",
+    "A real **mcp** build scored 37 (go) with this structure.\n## Reference code\nHeld example.",
+], ids=["structure-only", "admitted-reference", "held-reference"])
+@pytest.mark.parametrize(("score", "source"), [
+    (37.0, "def tool():\n    return 'WEAK_REPLACEMENT'\n"),
+    (96.0, "NOTES = '''\nReusable patterns distilled from **example/project**.\n'''\n"),
+], ids=["weak-score", "reference-extract"])
+def test_distill_win_skill_rejected_candidate_preserves_incumbent(
+    tmp_path, incumbent_body, score, source,
+):
+    lib = SkillLibrary(tmp_path / "skills")
+    slug = "won-mcp-shape"
+    incumbent = lib.add(
+        "Winning mcp build shape", incumbent_body, stack="mcp",
+        tags=["mcp", "build-distilled"], source="build-distilled", slug=slug,
+    )
+    before_check = lib.admission_status(slug)
+    path = tmp_path / "skills" / f"{slug}.md"
+    before_bytes = path.read_bytes()
+    runner = _distillation_runner(lib)
+    proj = _proj(tmp_path)
+    (proj / "main.py").write_text(source)
+
+    runner._distill_win_skill(
+        _Manifest("go", score, "replacement candidate"),
+        SimpleNamespace(stack="mcp"), str(proj),
+    )
+
+    assert lib.get(slug) is incumbent
+    assert path.read_bytes() == before_bytes
+    assert SkillLibrary(tmp_path / "skills").admission_status(slug) == before_check
 
 
 def test_record_learning_only_distills_on_nonstub_go(tmp_path):

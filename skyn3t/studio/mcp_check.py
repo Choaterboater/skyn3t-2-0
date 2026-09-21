@@ -10,10 +10,16 @@ them. This gate is that client, mechanically: it spawns the delivered
   tool, with schema-derived fixture args)  →  one malformed call (missing a
   required param).
 
-It asserts: the handshake completes; ``tools/list`` is non-empty with valid JSON
+For local-only servers it asserts: the handshake completes; ``tools/list`` is non-empty with valid JSON
 Schema objects; each tool returns a well-formed, non-error result on valid input;
 and a malformed call yields a structured error (JSON-RPC ``error`` OR an
 ``isError`` result), NOT a crash.
+
+External HTTP integrations instead run with diagnostic credentials and injected
+401, 503 and timeout responses. They must report upstream failure, not invented
+success. Unsupported/unexercised clients remain unverified. This is not proof of
+successful vendor operations, documented endpoint correctness, or full workflow
+acceptance.
 
 Design contract — mirrors :mod:`skyn3t.studio.seo_check`:
 
@@ -37,6 +43,7 @@ provable, and the gate's own tests can use SDK-free fixture servers.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import queue
@@ -44,13 +51,15 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, TypeGuard
 
 from skyn3t.security.secrets import filter_env, mask_secrets
+from skyn3t.worktree import source_tree_snapshot
 
 # Default per-phase read budgets (seconds). Generous enough for a real SDK boot,
 # bounded so a wedged server can never hang a build. Overridable (the tests pass
@@ -62,6 +71,14 @@ _BOOT_GRACE = 6.0  # wait for a boot-crash to surface on stderr before classifyi
 
 _MAX_TOOLS = 24  # bound the tools we exercise so a pathological list can't stall
 _PROTOCOL_VERSION = "2024-11-05"
+_HTTP_FAULTS = ("HTTP 401", "HTTP 503", "timeout")
+_HTTP_IMPORT = re.compile(
+    r"^\s*(?:import\s+[^#\n;]*\b(?:httpx|requests|aiohttp|urllib\.request)\b|"
+    r"from\s+(?:httpx|requests|aiohttp|urllib\.request)\b|"
+    r"from\s+urllib\s+import\s+.*\brequest\b)", re.M,
+)
+_CREDENTIAL_NAME = re.compile(r"(?:api_?key|token|password|secret)", re.I)
+_PROBE_ID = "00000000-0000-4000-8000-000000000001"
 
 # The delivered server cannot boot without its SDK: verification is unavailable,
 # not a protocol pass or evidence of an implementation defect.
@@ -75,8 +92,8 @@ _MCP_MISSING_RE = re.compile(
 class McpVerdict:
     """The outcome of the deterministic MCP gate.
 
-    ``ok`` means the protocol check ran without issues, not that the tools satisfy
-    the product brief. ``unavailable`` distinguishes applicable checks that could
+    ``ok`` means the applicable protocol/failure probes ran without issues, not
+    that the tools satisfy the product brief. ``unavailable`` distinguishes checks that could
     not run from not-applicable skips. Both remain ``ok=False`` with no repair
     gaps; the runner must withhold verified status when evidence is unavailable.
     """
@@ -340,7 +357,9 @@ def _mask_value(value: Any) -> Any:
     if isinstance(value, str):
         return _mask(value)
     if isinstance(value, list):
-        return [_mask(item) if isinstance(item, str) else item for item in value]
+        return [_mask_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _mask_value(item) for key, item in value.items()}
     return value
 
 
@@ -364,6 +383,32 @@ def _mask_verdict(verdict: McpVerdict) -> McpVerdict:
     return verdict
 
 
+def _portability_issues(root: Path, files: list[str]) -> list[str]:
+    issues = []
+    for relative in files:
+        path = Path(relative)
+        if path.suffix != ".py" or "tests" in path.parts or path.name.startswith("test_"):
+            continue
+        try:
+            tree = ast.parse((root / path).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, SyntaxError):
+            issues.append(f"Cannot inspect runtime dependency portability: {relative}")
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                parts = set(node.value.replace("\\", "/").split("/"))
+                if {"site-packages", "dist-packages"} & parts and (
+                    Path(node.value).is_absolute() or PureWindowsPath(node.value).is_absolute()
+                ):
+                    issues.append(f"{relative} embeds a machine-specific dependency path")
+            elif (
+                isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "getusersitepackages"
+            ):
+                issues.append(f"{relative} consults external user-site dependencies")
+    return list(dict.fromkeys(issues))
+
+
 def check_mcp(
     project_dir: str | Path,
     stack: str = "",
@@ -373,10 +418,14 @@ def check_mcp(
     handshake_timeout: float = _HANDSHAKE_TIMEOUT,
     list_timeout: float = _LIST_TIMEOUT,
     call_timeout: float = _CALL_TIMEOUT,
+    brief: str = "",
+    capability_profile: str | None = None,
 ) -> McpVerdict:
-    """Drive the delivered MCP server over stdio and return a protocol verdict.
-    Never raises or hangs; records unavailable evidence when it cannot run.
-    A protocol pass does not verify brief-specific tool behavior."""
+    """Check stdio plus bounded upstream failures for HTTP integrations.
+
+    Failure injection does not establish endpoint correctness or successful
+    business behavior. Local-only servers retain the protocol-only check.
+    """
     try:
         s = (stack or "").strip().lower()
         if s and s != "mcp":
@@ -390,14 +439,213 @@ def check_mcp(
         py = _python_exec(python_exec)
         if not py:
             return McpVerdict(skipped=True, unavailable=True, reason="no python interpreter available")
-        return _mask_verdict(_probe_server(
-            root, server.name, py,
-            handshake_timeout=handshake_timeout,
-            list_timeout=list_timeout,
-            call_timeout=call_timeout,
-        ))
+        source = source_tree_snapshot(root)
+        if not source.get("valid"):
+            return McpVerdict(unavailable=True, reason="Cannot bind MCP verification to authored source")
+        portability = _portability_issues(root, source["files"])
+        if portability:
+            return McpVerdict(issues=portability, checked={"runtime_portability": "failed"})
+        requires_http, keys = _http_requirements(root, brief)
+        if not requires_http:
+            return _with_capability_evidence(root, py, _probe_server(
+                root, server.name, py, handshake_timeout=handshake_timeout,
+                list_timeout=list_timeout, call_timeout=call_timeout,
+            ), capability_profile)
+        with tempfile.TemporaryDirectory(prefix="skyn3t-mcp-http-") as temporary:
+            scratch = Path(temporary)
+            verdicts = []
+            for index, fault in enumerate(_HTTP_FAULTS):
+                case_root = scratch / str(index)
+                case_root.mkdir()
+                verdicts.append(_probe_server(
+                    root, server.name, py, handshake_timeout=handshake_timeout,
+                    list_timeout=list_timeout, call_timeout=call_timeout,
+                    fault=fault, receipt=case_root / "requests.jsonl",
+                    probe_environment=_probe_environment(keys, case_root),
+                ))
+            startup_root = scratch / "startup"
+            startup_root.mkdir()
+            startup_environment = _probe_environment(keys, startup_root)
+            for key in keys:
+                if _CREDENTIAL_NAME.search(key):
+                    startup_environment[key] = ""
+            startup = _probe_server(
+                root, server.name, py, handshake_timeout=handshake_timeout,
+                list_timeout=list_timeout, call_timeout=call_timeout,
+                fault="HTTP 401", receipt=startup_root / "requests.jsonl",
+                probe_environment=startup_environment, list_only=True,
+            )
+            verdicts.append(startup)
+        unavailable_reason = next(
+            (result.reason for result in verdicts if result.unavailable and result.reason), "",
+        )
+        verdict = verdicts[0]
+        cases = [
+            case for result in verdicts for case in result.checked.get("http_cases", [])
+        ]
+        exercised = sorted({case["tool"] for case in cases if case["requests"] > 0})
+        verdict.issues = list(dict.fromkeys(issue for result in verdicts for issue in result.issues))
+        verdict.unavailable = any(result.unavailable for result in verdicts)
+        verdict.checked.pop("http_cases", None)
+        verdict.checked["verification_scope"] = "protocol_and_http_failure_handling"
+        verdict.checked["startup_without_credentials"] = startup.to_dict()
+        verdict.checked["http_failure_handling"] = {
+            "exercised_tools": exercised,
+            "cases": cases,
+            "network": "supported HTTP clients replaced; Python socket/process operations blocked",
+        }
+        exercised_faults = {case["fault"] for case in cases if case["requests"] > 0}
+        if verdict.unavailable:
+            verdict.reason = unavailable_reason
+        elif exercised_faults != set(_HTTP_FAULTS) and not verdict.issues:
+            verdict.unavailable = True
+            verdict.reason = (
+                "External API failure handling not exercised: no supported HTTP request "
+                "was reached with diagnostic inputs; provide testable client configuration."
+            )
+        return _with_capability_evidence(root, py, verdict, capability_profile)
     except Exception as exc:  # noqa: BLE001 - a gate must never break a build
         return McpVerdict(skipped=True, unavailable=True, reason=_mask(f"mcp check error: {exc}"))
+
+
+def _with_capability_evidence(
+    root: Path, py: str, verdict: McpVerdict, capability_profile: str | None = None,
+) -> McpVerdict:
+    from skyn3t.studio.mcp_capabilities import check_mcp_capabilities
+
+    coverage = check_mcp_capabilities(
+        root, python_exec=py, tools=verdict.tools, capability_profile=capability_profile,
+    )
+    if coverage is not None:
+        verdict.checked["capability_coverage"] = coverage
+        for capability, case in coverage["cases"].items():
+            if case["status"] != "passed":
+                verdict.issues.append(f"MCP capability {capability}: {case['reason']}")
+    return _mask_verdict(verdict)
+
+
+def _http_requirements(root: Path, brief: str) -> tuple[bool, set[str]]:
+    from skyn3t.worktree import SOURCE_TREE_EXCLUDED_DIR_NAMES
+
+    required = bool(re.search(r"\bAPI\b.*https?://", brief, re.I | re.S))
+    keys: set[str] = set()
+    example = root / ".env.example"
+    if example.is_file() and not example.is_symlink():
+        keys.update(re.findall(
+            r"^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=",
+            example.read_text(encoding="utf-8"), re.M,
+        ))
+    for directory, dirs, names in os.walk(root, followlinks=False):
+        dirs[:] = [
+            name for name in dirs
+            if name.casefold() not in SOURCE_TREE_EXCLUDED_DIR_NAMES
+            and name not in {"tests", "test"} and not name.startswith(".")
+        ]
+        for name in names:
+            path = Path(directory) / name
+            if not name.endswith(".py") or name.startswith("test_") or path.is_symlink():
+                continue
+            text = path.read_text(encoding="utf-8")
+            required = required or bool(_HTTP_IMPORT.search(text))
+            keys.update(re.findall(
+                r"(?:getenv|environ\.get)\(\s*['\"]([A-Z][A-Z0-9_]*)['\"]", text,
+            ))
+    return required or any(_CREDENTIAL_NAME.search(key) for key in keys), keys
+
+
+def _probe_environment(keys: set[str], scratch: Path) -> dict[str, str]:
+    home = scratch / "home"
+    home.mkdir()
+    environment: dict[str, str] = {
+        "HOME": str(home), "USERPROFILE": str(home),
+        "XDG_CONFIG_HOME": str(home / "config"),
+    }
+    for key in keys:
+        low = key.lower()
+        if _CREDENTIAL_NAME.search(key):
+            environment[key] = "skyn3t-diagnostic-not-a-real-credential"
+        elif low.endswith(("_org_id", "_site_id", "_device_id")):
+            environment[key] = _PROBE_ID
+        elif low.endswith(("_db_path", "_database_path")):
+            environment[key] = str(scratch / "state.db")
+        elif any(part in low for part in ("offline", "simulation", "demo_mode", "dry_run")):
+            environment[key] = "false"
+    return environment
+
+
+def _http_fixture_args(schema: dict[str, Any]) -> dict[str, Any]:
+    args = _fixture_args(schema)
+    end = int(time.time()) - 60
+    for name, spec in (schema.get("properties") or {}).items():
+        low = name.lower()
+        if _CREDENTIAL_NAME.search(name):
+            args[name] = "skyn3t-diagnostic-not-a-real-credential"
+        elif (
+            low in {"base_url", "api_url", "endpoint"} and name in args
+            and not (isinstance(spec, dict) and (spec.get("default") or spec.get("enum")))
+        ):
+            args[name] = "https://skyn3t-probe.invalid"
+        elif low in {"org_id", "site_id", "device_id"}:
+            args[name] = _PROBE_ID
+        elif (
+            low in {"start", "end", "start_time", "end_time", "since", "until"}
+            and isinstance(spec, dict)
+            and (
+                spec.get("type") in ("integer", "number")
+                or any(
+                    isinstance(option, dict) and option.get("type") in ("integer", "number")
+                    for option in (spec.get("anyOf") or [])
+                )
+            )
+        ):
+            args[name] = end if low in {"end", "end_time", "until"} else end - 900
+        elif low in {"offline", "offline_mode", "simulate", "simulation", "dry_run"}:
+            args[name] = False
+        elif (
+            low in {"approved", "confirm", "confirmed"}
+            and isinstance(spec, dict) and spec.get("type") == "boolean"
+        ):
+            args[name] = True
+    return args
+
+
+def _failure_reported(response: dict[str, Any]) -> bool:
+    failed = _is_error_response(response)
+    result = response.get("result")
+    if not isinstance(result, dict) or not isinstance(result.get("content"), list):
+        return failed
+    structured = result.get("structuredContent")
+    payloads = [structured]
+    if isinstance(structured, dict) and isinstance(structured.get("result"), dict):
+        payloads.append(structured["result"])
+    for content in result.get("content") or []:
+        if isinstance(content, dict) and isinstance(content.get("text"), str):
+            try:
+                payloads.append(json.loads(content["text"]))
+            except json.JSONDecodeError:
+                continue
+    for value in payloads:
+        if not isinstance(value, dict):
+            continue
+        status = str(value.get("status") or value.get("action_status") or "").lower()
+        if (
+            value.get("success") is True or value.get("ok") is True
+            or status in {"completed", "success", "succeeded"}
+        ):
+            return False
+        failed = failed or (
+            value.get("success") is False or value.get("ok") is False
+            or bool(value.get("error")) or status in {"error", "failed", "unauthorized"}
+        )
+    return failed
+
+
+def _probe_events(receipt: Path | None) -> list[dict[str, Any]]:
+    if receipt is None or not receipt.exists():
+        return []
+    if receipt.stat().st_size > 1_000_000:
+        raise ValueError("MCP HTTP probe receipt exceeded its limit")
+    return [json.loads(line) for line in receipt.read_text(encoding="utf-8").splitlines()]
 
 
 def _probe_server(
@@ -408,8 +656,19 @@ def _probe_server(
     handshake_timeout: float,
     list_timeout: float,
     call_timeout: float,
+    fault: str = "",
+    receipt: Path | None = None,
+    probe_environment: dict[str, str] | None = None,
+    list_only: bool = False,
 ) -> McpVerdict:
     env = {**filter_env(os.environ), "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+    command = [py, "-B", server_name]
+    if fault:
+        command = [
+            py, "-B", str(Path(__file__).with_name("mcp_http_probe.py")),
+            str((root / server_name).resolve()), fault, str(receipt),
+            json.dumps(probe_environment or {}),
+        ]
     try:
         # NOT `-I`: since Python 3.11 isolated mode implies -P (safe path), which
         # drops the script's directory from sys.path — the scaffold's own
@@ -417,7 +676,7 @@ def _probe_server(
         # "crashed on boot" issue whenever the mcp SDK is installed. `-B` keeps
         # the proof from polluting the artifact with __pycache__ instead.
         proc = subprocess.Popen(
-            [py, "-B", server_name],
+            command,
             cwd=str(root),
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -504,9 +763,15 @@ def _probe_server(
 
         # 4. validate each tool's schema + call it with valid fixture args.
         issues: list[str] = []
+        cases: list[dict[str, Any]] = []
+        unsupported = False
+        deadline = time.monotonic() + 90.0
         tool_names: list[str] = []
         first_required: tuple[str, dict] | None = None
         for entry in tools[:_MAX_TOOLS]:
+            if fault and time.monotonic() >= deadline:
+                issues.append("MCP HTTP failure checks exceeded the bounded 90-second tool-call budget")
+                break
             if not isinstance(entry, dict):
                 issues.append("tools/list contains a non-object tool entry")
                 continue
@@ -524,12 +789,16 @@ def _probe_server(
             if not (isinstance(desc, str) and desc.strip()):
                 issues.append(f"tool '{name}' has no description — MCP clients select "
                               "tools by name + description, so every tool needs one")
+            if list_only:
+                continue
             required = schema.get("required")
             if isinstance(required, list) and required and first_required is None:
                 first_required = (name, schema)
 
             try:
-                rid = client.send("tools/call", {"name": name, "arguments": _fixture_args(schema)})
+                before = len(_probe_events(receipt))
+                arguments = _http_fixture_args(schema) if fault else _fixture_args(schema)
+                rid = client.send("tools/call", {"name": name, "arguments": arguments})
                 resp = client.read_result(rid, call_timeout)  # type: ignore[arg-type]
             except _Timeout:
                 issues.append(f"tool '{name}' did not return within {call_timeout:.0f}s on "
@@ -539,7 +808,25 @@ def _probe_server(
                 issues.append(f"server exited while calling tool '{name}' — it crashed "
                               "instead of returning a result")
                 break
-            if not _call_ok(resp):
+            if fault:
+                events = _probe_events(receipt)[before:]
+                requests = sum(event.get("kind") == "http" for event in events)
+                blocked = any(event.get("kind") == "blocked_operation" for event in events)
+                unsupported = unsupported or blocked
+                status = "not_exercised"
+                if requests:
+                    status = "pass" if _failure_reported(resp) else "fail"
+                    if status == "fail":
+                        issues.append(
+                            f"tool '{name}' did not report failure after injected {fault}; "
+                            "propagate upstream errors instead of returning demo data or "
+                            "claiming completed actions (tools.py / external client)."
+                        )
+                cases.append({
+                    "tool": name, "fault": fault, "requests": requests,
+                    "status": status, "blocked_operation": blocked,
+                })
+            elif not _call_ok(resp):
                 issues.append(f"tool '{name}' failed on valid fixture input "
                               f"(expected a well-formed result): {_err_detail(resp)}")
 
@@ -566,7 +853,16 @@ def _probe_server(
 
         checked["tools"] = tool_names
         checked["tool_count"] = len(tool_names)
-        return McpVerdict(issues=issues, tools=tool_names, checked=checked)
+        if fault:
+            checked["http_cases"] = cases
+        return McpVerdict(
+            issues=issues, tools=tool_names, checked=checked, unavailable=unsupported,
+            reason=(
+                "HTTP failure verification unavailable: an unsupported socket/process "
+                "operation was blocked by the offline probe."
+                if unsupported else ""
+            ),
+        )
     finally:
         _shutdown(proc)
 

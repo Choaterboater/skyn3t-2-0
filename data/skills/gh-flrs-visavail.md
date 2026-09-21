@@ -2,7 +2,7 @@
 slug: gh-flrs-visavail
 title: flrs/visavail: D3-based Time-Availability Chart (legacy global-script integration, React unverified)
 stack: react
-tags: frontend, javascript, react, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: frontend, javascript, react, ui, web, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

@@ -3509,6 +3509,15 @@ async def list_projects(state: AppState) -> dict[str, Any]:
             if fresh_interact is not None and m.get("extra") is extra:
                 extra["web_interact"] = fresh_interact
             summary = build_summary(m)
+            cached_scorecard = extra.get("quality_scorecard")
+            current_scorecard = {
+                **(cached_scorecard if isinstance(cached_scorecard, dict) else {}),
+                **{
+                    key: value for key, value in summary["quality_scorecard"].items()
+                    if value is not None or key in {"score", "status", "verdict"}
+                    or extra.get("current_assessment")
+                },
+            }
             ai_fields = _compact_project_ai_fields(m, record)
             project_cost = extra.get("build_cost_usd")
             non_shippable_spend = _project_non_shippable_spend_usd(
@@ -3569,10 +3578,7 @@ async def list_projects(state: AppState) -> dict[str, Any]:
                 "stage_skills_used": dict(stage_skills_used)
                 if isinstance(stage_skills_used, dict) else {},
                 **ai_fields,
-                "quality_scorecard": {
-                    **(summary.get("quality_scorecard") or {}),
-                    **(dict(extra.get("quality_scorecard")) if isinstance(extra.get("quality_scorecard"), dict) else {}),
-                },
+                "quality_scorecard": current_scorecard,
                 "local_reverify": local_reverify,
                 "scaffold_stub_gate": scaffold_stub_gate,
                 "deploy_plan": dict(extra.get("deploy_plan") or {})
@@ -6142,7 +6148,33 @@ def _skill_payload(skill: Any, *, library: Any = None) -> dict[str, Any]:
         "status": "not_checked", "effectiveness": "not_checked",
         "active": False, "can_activate": False, "advisory_only": True,
     }
+    admission_checker = getattr(library, "admission_status", None)
+    out["admission_check"] = (
+        admission_checker(out["slug"]) if callable(admission_checker)
+        else {"status": "not_checked"}
+    )
+    if callable(admission_checker):
+        out["active"] = out["active"] and out["admission_check"]["status"] == "passed"
+    if out["capability_status"].get("managed"):
+        out["active"] = out["active"] and out["capability_status"]["active"]
+    from skyn3t.intelligence.skill_catalog import describe_skill
+
+    out["uses"] = _skill_value(skill, "uses", 0)
+    out.update(describe_skill(
+        title=title, body=body, stack=str(out["stack"]), tags=tags,
+        source=str(out["source"]), score=float(out["score"]),
+    ))
     return out
+
+
+async def evaluate_all_capabilities(state: AppState, activate: bool = False) -> dict[str, Any]:
+    """Refresh local evidence without tying automation to dashboard visits."""
+    operation = getattr(getattr(state, "skills", None), "evaluate_pending_capabilities", None)
+    if not callable(operation):
+        raise RuntimeError("capability library is unavailable")
+    return await asyncio.to_thread(operation, activate=activate)
+
+
 
 
 def _skills_summary(skills: list[dict[str, Any]]) -> dict[str, int]:
@@ -6151,6 +6183,9 @@ def _skills_summary(skills: list[dict[str, Any]]) -> dict[str, int]:
         "active": sum(1 for skill in skills if skill.get("active") is True),
         "quarantined": sum(1 for skill in skills if skill.get("quarantined") is True),
         "promotion_ready": sum(1 for skill in skills if skill.get("promotion_ready") is True),
+        "review_required": sum(
+            skill.get("admission_check", {}).get("status") == "review_required" for skill in skills
+        ),
     }
 
 
@@ -9370,6 +9405,14 @@ def build_router(state: AppState) -> Any:
     @router.post("/skills/{slug}/activate", dependencies=[auth])
     async def _activate_capability(slug: str, body: dict[str, Any] = empty_body) -> dict[str, Any]:
         return await _learning_response(capability_action(state, slug, "activate", body))
+
+    @router.post("/skills/evaluate-all", dependencies=[auth])
+    async def _evaluate_all_capabilities(body: dict[str, Any] = empty_body) -> dict[str, Any]:
+        try:
+            activate = bool(body.get("activate", False))
+            return await evaluate_all_capabilities(state, activate=activate)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @router.post("/skills/{slug}/rollback", dependencies=[auth])
     async def _rollback_capability(slug: str, body: dict[str, Any] = empty_body) -> dict[str, Any]:

@@ -145,6 +145,197 @@ def test_improve_delivers_change_and_records_history(tmp_path):
     assert not any(p.name.startswith("improve-demo-") for p in wt_root.iterdir()) if wt_root.exists() else True
 
 
+def test_improve_refreshes_quality_without_rewriting_historical_score(tmp_path):
+    import json
+
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "graded")
+    for name in ("client.py", "tools.py", "models.py", "config.py"):
+        (project / name).write_text("VALUE = 1\n")
+    (project / "pyproject.toml").write_text('[project]\nname="graded"\nversion="0.1"\n')
+    path = project / "skyn3t_manifest.json"
+    original = json.loads(path.read_text())
+    original.update(score=49, verdict="no_go", status="completed_no_go")
+    original["extra"] = {
+        "mcp_planning_failure": "Old malformed plan",
+        "gate_findings": [{"gate": "code_degraded", "blocked": True, "status": "failed"}],
+        "final_score_shape": {"output": 49, "verdict": "no_go"},
+        "quality_scorecard": {"score": 49, "verdict": "no_go"},
+    }
+    path.write_text(json.dumps(original))
+
+    prompts = []
+
+    class Judge:
+        backend = "copilot_cli"
+
+        async def complete(self, prompt, **kwargs):
+            prompts.append(prompt)
+            return SimpleNamespace(text='{"score":85,"gaps":[]}')
+
+    engine = ImproveEngine(EventBus(), _FakeOrchestrator(), settings=settings, llm_client=Judge())
+    result = asyncio.run(engine.improve("graded", "Improve the implementation"))
+    saved = json.loads(path.read_text())
+    assert result.status == "completed"
+    assert (project / "main.py").read_text().strip() in prompts[-1]
+    assert 49 < saved["score"] < 100
+    assert saved["score"] == result.score
+    assert saved["extra"]["assessment_history"][-1]["score"] == 49
+    assert "mcp_planning_failure" not in saved["extra"]
+    assert not any(f.get("blocked") for f in saved["extra"].get("gate_findings", []))
+    assert saved["extra"]["current_assessment"]["source_tree"]["valid"]
+    assert saved["extra"]["current_assessment"]["proof_score"] == result.detail["proof"]["score"]
+
+
+def test_improve_metadata_failure_preserves_original_project(tmp_path, monkeypatch):
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "demo")
+    before = (project / "skyn3t_manifest.json").read_bytes()
+
+    def fail_history(*args, **kwargs):
+        raise OSError("assessment persistence failed")
+
+    monkeypatch.setattr(ImproveEngine, "_record_history", fail_history)
+    result = asyncio.run(ImproveEngine(EventBus(), _FakeOrchestrator(), settings=settings).improve(
+        "demo", "Improve the implementation",
+    ))
+    assert result.status == "failed"
+    assert "assessment persistence failed" in result.detail["error"]
+    assert (project / "main.py").read_text() == "print('original')\n"
+    assert (project / "skyn3t_manifest.json").read_bytes() == before
+
+
+def test_rejected_semantic_improvement_preserves_original_project(tmp_path):
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "demo")
+
+    class Judge:
+        backend = "copilot_cli"
+
+        async def complete(self, *args, **kwargs):
+            return SimpleNamespace(text='{"score":0,"gaps":["Behavior not implemented"]}')
+
+    result = asyncio.run(ImproveEngine(
+        EventBus(), _FakeOrchestrator(), settings=settings, llm_client=Judge(),
+    ).improve("demo", "Implement the workflow"))
+    assert result.status == "failed"
+    assert result.detail["delivery_blocked"] == "quality_review_failed"
+    assert (project / "main.py").read_text() == "print('original')\n"
+    assert result.score is not None and result.score < 49
+
+
+def test_unrechecked_blocker_keeps_score_policy_and_learning_consistent(tmp_path):
+    import json
+
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "demo")
+    path = project / "skyn3t_manifest.json"
+    original = json.loads(path.read_text())
+    original["extra"] = {
+        "gate_findings": [{"gate": "security", "blocked": True, "status": "failed"}],
+    }
+    path.write_text(json.dumps(original))
+
+    class Judge:
+        backend = "copilot_cli"
+
+        async def complete(self, *args, **kwargs):
+            return SimpleNamespace(text='{"score":95,"gaps":[]}', status="cli_response")
+
+    result = asyncio.run(ImproveEngine(
+        EventBus(), _FakeOrchestrator(), settings=settings, llm_client=Judge(),
+    ).improve("demo", "Improve the implementation"))
+    saved = json.loads(path.read_text())
+    assert saved["verdict"] == "no_go" and saved["score"] <= 49
+    assert saved["extra"]["final_score_shape"]["verdict"] == "no_go"
+    assert result.detail["skill_terminal_grading"]["quality"] == 0
+    assert saved["extra"]["improve_history"][-1]["skill_terminal_grading"]["quality"] == 0
+    assert any("Unrechecked" in gap for gap in saved["extra"]["current_assessment"]["gaps"])
+
+
+@pytest.mark.parametrize("verified", [False, True])
+def test_mcp_improve_requires_fresh_behavioral_verification(tmp_path, monkeypatch, verified):
+    import json
+
+    from skyn3t.studio.mcp_check import McpVerdict
+
+    settings = _settings(tmp_path)
+    project = _seed_project(settings.projects_dir, "mcp-demo")
+    (project / "server.py").write_text("# mcp server fixture\nprint('mcp')\n")
+    path = project / "skyn3t_manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["stack"] = "mcp"
+    manifest["extra"] = {"mcp_check": {"ok": True, "checked": {"old": True}}}
+    path.write_text(json.dumps(manifest))
+    original = _project_bytes(project)
+    calls = []
+    result = McpVerdict(
+        issues=[] if verified else ["tool 'health' claims success after HTTP 401"],
+        tools=["health"], checked={"fresh_behavioral_probe": True},
+    )
+
+    def check(candidate, stack, **kwargs):
+        calls.append(Path(candidate))
+        assert stack == "mcp"
+        return result
+
+    monkeypatch.setattr("skyn3t.studio.mcp_check.check_mcp", check)
+    orchestrator = _FakeOrchestrator()
+    engine = ImproveEngine(EventBus(), orchestrator, settings=settings)
+    outcome = asyncio.run(engine.improve("mcp-demo", "Improve the MCP"))
+
+    assert "MANDATORY MCP QUALITY CONTRACT" in orchestrator.submitted[0].payload["brief"]
+    assert calls and calls[0] != project
+    assert outcome.status == ("completed" if verified else "failed")
+    if verified:
+        saved = json.loads(path.read_text())
+        assert saved["extra"]["mcp_check"] == result.to_dict()
+        assert outcome.detail["mcp_check"] == result.to_dict()
+    else:
+        assert outcome.detail["delivery_blocked"] == "mcp_verification_failed"
+        assert outcome.detail["project_preserved"] is True
+        assert outcome.detail["skill_terminal_grading"]["proof_status"] == "passed"
+        assert outcome.detail["skill_terminal_grading"]["acceptance_status"] == "failed"
+        assert outcome.detail["skill_terminal_grading"]["quality"] == 0
+        assert _project_bytes(project) == original
+
+
+def test_failed_mcp_candidate_is_retained_unverified_without_changing_original(tmp_path, monkeypatch):
+    import json
+
+    from skyn3t.config.settings import Settings
+    from skyn3t.studio.mcp_check import McpVerdict
+    from skyn3t.studio.proof_run import ProofResult
+
+    settings = Settings(
+        _env_file=None, projects_dir=tmp_path / "Projects",
+        data_dir=tmp_path / "data", logs_dir=tmp_path / "logs",
+        run_generated_tests=False, run_generated_build=False,
+    )
+    project = _seed_project(settings.projects_dir, "mcp-held")
+    (project / "server.py").write_text("print('server')\n")
+    path = project / "skyn3t_manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["stack"] = "mcp"
+    path.write_text(json.dumps(manifest))
+    original = _project_bytes(project)
+    monkeypatch.setattr("skyn3t.studio.improve.proof_run", lambda *a, **k: ProofResult(
+        passed=True, mode="static", score=100, files_total=4, files_substantive=4,
+    ))
+    monkeypatch.setattr("skyn3t.studio.mcp_check.check_mcp",
+                        lambda *a, **k: McpVerdict(issues=["Worker still fails"], tools=["health"]))
+    outcome = asyncio.run(ImproveEngine(
+        EventBus(), _FakeOrchestrator(), settings=settings,
+    ).improve("mcp-held", "Repair worker"))
+    assert outcome.status == "failed"
+    assert outcome.detail["delivery_blocked"] == "mcp_verification_failed"
+    assert _project_bytes(project) == original
+    retained = outcome.detail["candidate_retention"]
+    assert retained["status"] == "unverified"
+    archive = json.loads(Path(retained["path"]).read_text())
+    assert archive["state"]["files"]["main.py"]["content"] == "print('improved')\n"
+
+
 def test_live_vite_cache_created_during_delivery_does_not_trigger_rollback(tmp_path, monkeypatch):
     import skyn3t.studio.improve as improve_module
 
@@ -1353,6 +1544,15 @@ def test_queued_improve_keeps_submission_time_provider_model_and_backend(
 ):
     from skyn3t.adapters.llm import LLMClient
     from skyn3t.config.settings import Settings
+    from skyn3t.agents.reviewer import ReviewerAgent
+
+    async def offline_review(_self, task):
+        return SimpleNamespace(
+            metadata={"assessment_status": "structural_only", "source_tree": {"valid": True}},
+            output={"score": 90, "verdict": "go", "gaps": []},
+        )
+
+    monkeypatch.setattr(ReviewerAgent, "execute", offline_review)
 
     monkeypatch.setattr(
         LLMClient,
@@ -1451,6 +1651,15 @@ def test_nested_improve_inherits_outer_build_route_after_gui_change(
 ):
     from skyn3t.adapters.llm import LLMClient
     from skyn3t.config.settings import Settings
+    from skyn3t.agents.reviewer import ReviewerAgent
+
+    async def offline_review(_self, task):
+        return SimpleNamespace(
+            metadata={"assessment_status": "structural_only", "source_tree": {"valid": True}},
+            output={"score": 90, "verdict": "go", "gaps": []},
+        )
+
+    monkeypatch.setattr(ReviewerAgent, "execute", offline_review)
 
     monkeypatch.setattr(
         LLMClient,

@@ -21,6 +21,7 @@ import structlog
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.adapters.model_slot import ModelSlot
 from skyn3t.agents._common import (
+    MCP_RELIABILITY_CONTRACT,
     canonical_project_relpath,
     detect_stack,
     extract_code,
@@ -446,6 +447,20 @@ class CodeImproverAgent(BaseAgent):
             # caller already computed, instead of silently doing nothing.
             target_files = await self._discover_targets_via_repo_map(
                 p.get("repo_map"), brief, worktree)
+        if not target_files:
+            reason = "No repair targets could be located from the gaps or repository map."
+            _log.warning("code_improver.no_repair_targets", reason=reason)
+            return TaskResult(
+                task_id=task.task_id,
+                success=False,
+                error=reason,
+                retryable=False,
+                output={
+                    "files_improved": 0, "files": [], "skipped": {},
+                    "worktree_dir": str(worktree), "backend": self.llm.backend,
+                    **model_used_out,
+                },
+            )
 
         improved: list[str] = []
         # rel -> why nothing was written ("already_satisfied" | "unchanged" |
@@ -647,6 +662,8 @@ class CodeImproverAgent(BaseAgent):
     ) -> str:
         goals = "\n".join(f"- {str(g).strip()}" for g in gaps if str(g).strip()) or f"- {brief}"
         preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
+        if stack == "mcp":
+            preamble += MCP_RELIABILITY_CONTRACT + "\n\n"
         # Repair-stage council guidance (already carries its own header +
         # never-mention rules from council._assemble). Whole-app agentic
         # repairs only — the per-file rewrite prompts stay tight.
@@ -861,6 +878,8 @@ class CodeImproverAgent(BaseAgent):
             # it drives both model tier and the design bar below.
             tier = Tier.UI if ext in _FRONTEND_EXTENSIONS else Tier.BACKEND
             preamble = f"{knowledge.strip()}\n\n" if knowledge.strip() else ""
+            if stack == "mcp":
+                preamble += MCP_RELIABILITY_CONTRACT + "\n\n"
             layout_prompt = ""
             if profile is not None:
                 layout_context = self._layout_context_for_path(profile, rel)
@@ -966,6 +985,8 @@ class CodeImproverAgent(BaseAgent):
             if tier is Tier.UI and (stack or "").lower() != "phaser"
             and not existing_project else ""
         )
+        if stack == "mcp":
+            preamble += MCP_RELIABILITY_CONTRACT + "\n\n"
         prompt = (
             f"{preamble}Brief: {brief}\nStack: {stack}\nMissing file to CREATE: {rel}\n"
             f"Issues: {gaps}\n{importer_context}\n"
@@ -1045,6 +1066,10 @@ class CodeImproverAgent(BaseAgent):
         candidates: list[str] = []
         for g in gaps:
             text = g if isinstance(g, str) else str(g)
+            # Compiler/pytest diagnostics use absolute paths, including project
+            # roots with spaces. Strip only this root before tokenizing paths.
+            for root in dict.fromkeys((str(worktree.absolute()), str(worktree.resolve()))):
+                text = text.replace(root + os.sep, "")
             named_export = _NAMED_EXPORT_MISMATCH_RE.search(text)
             if named_export:
                 candidates.append(named_export.group(1))
@@ -1061,7 +1086,10 @@ class CodeImproverAgent(BaseAgent):
                 if resolved:
                     candidates.append(resolved)
                 continue
-            for m in re.findall(r"[\w./-]+\.(?:jsx|tsx|js|ts|json|py|css|html)", text):
+            for m in re.findall(
+                r"[\w./-]+\.(?:jsx|tsx|mjs|cjs|js|ts|json|py|css|html|toml|yaml|yml|ini|cfg|txt)\b",
+                text,
+            ):
                 candidates.append(m)
             # A dependency/install/resolution failure must route to package.json
             # even when the gap text never names the file — otherwise the loop

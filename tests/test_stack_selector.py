@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from skyn3t.studio.stack_selector import (
     REAL_BUILDER_STACKS,
     classify_build,
@@ -148,3 +150,136 @@ def test_classify_build_keeps_browser_only_react_dashboard_out_of_api_service():
     )
     assert c.app_type == "dashboard"
     assert c.engine == "dom"
+
+
+def test_typesafe_fast_path_skipped_without_settings():
+    """No settings passed -> TypeSafe fast path never engages; existing
+    keyword/LLM resolution is completely unaffected (default behavior)."""
+    c = asyncio.run(select_stack("a react dashboard", llm=None))
+    assert c.method == "keyword" and c.stack == "react"
+
+
+def test_typesafe_fast_path_skipped_when_unconfigured(monkeypatch):
+    """Settings present but no TypeSafe key configured -> adapter.available is
+    False -> fast path degrades to None, falling through to keyword/LLM."""
+    from skyn3t.config.settings import Settings
+
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("SKYN3T_TYPESAFE_API_KEY", raising=False)
+    settings = Settings(typesafe_api_key="")
+    c = asyncio.run(select_stack("a react dashboard", llm=None, settings=settings))
+    assert c.method == "keyword" and c.stack == "react"
+
+
+def test_typesafe_fast_path_used_when_available(monkeypatch):
+    """When TypeSafe is configured and returns a valid choice, it wins over
+    the LLM path (never called) — the fast path IS the resolution, not just
+    an advisory."""
+    from skyn3t.config.settings import Settings
+    from skyn3t.studio import stack_selector
+
+    settings = Settings(typesafe_api_key="fake_key_for_mock")
+
+    class _FakeAdapter:
+        available = True
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def ask_choice(self, **_kwargs):
+            return {"choice": "react", "confidence": 0.95}
+
+    monkeypatch.setattr("skyn3t.adapters.typesafe.TypeSafeAdapter", _FakeAdapter)
+
+    async def _boom(*_a, **_k):
+        raise AssertionError("LLM path must not be called when TypeSafe succeeds")
+
+    monkeypatch.setattr(stack_selector, "_llm_choice", _boom)
+
+    c = asyncio.run(select_stack("a react dashboard", llm="not-none-sentinel", settings=settings))
+    assert c.method == "typesafe" and c.stack == "react" and c.confidence == 0.95
+
+
+def test_typesafe_fast_path_unknown_choice_falls_back(monkeypatch):
+    from skyn3t.config.settings import Settings
+
+    settings = Settings(typesafe_api_key="fake_key_for_mock")
+
+    class _FakeAdapter:
+        available = True
+
+        def __init__(self, *_a, **_k):
+            pass
+
+        def ask_choice(self, **_kwargs):
+            return {"choice": "not_a_real_stack", "confidence": 0.9}
+
+    monkeypatch.setattr("skyn3t.adapters.typesafe.TypeSafeAdapter", _FakeAdapter)
+
+    c = asyncio.run(select_stack("a react dashboard", llm=None, settings=settings))
+    assert c.method == "keyword" and c.stack == "react"
+
+
+@pytest.mark.parametrize("confidence", [0, 0.52, 0.599, None, -1, 1.1, float("nan"),
+                                        float("inf"), True, "invalid"])
+def test_typesafe_uncertain_or_invalid_confidence_uses_llm(monkeypatch, confidence):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from skyn3t.studio.stack_selector import StackChoice
+
+    adapter = MagicMock()
+    adapter.ask_choice.return_value = {"choice": "python", "confidence": confidence}
+    monkeypatch.setattr("skyn3t.adapters.typesafe.TypeSafeAdapter", lambda _: adapter)
+    llm_choice = AsyncMock(return_value=StackChoice("react", "llm", 0.9, "web app"))
+    monkeypatch.setattr("skyn3t.studio.stack_selector._llm_choice", llm_choice)
+
+    choice = asyncio.run(select_stack("a react dashboard", settings=object(), llm=object()))
+
+    assert choice.method == "llm"
+    assert choice.stack == "react"
+    llm_choice.assert_awaited_once()
+
+
+@pytest.mark.parametrize("confidence", [0.6, 1.0])
+def test_typesafe_confidence_boundary_accepted(monkeypatch, confidence):
+    from unittest.mock import MagicMock
+
+    adapter = MagicMock()
+    adapter.ask_choice.return_value = {"choice": "react", "confidence": confidence}
+    monkeypatch.setattr("skyn3t.adapters.typesafe.TypeSafeAdapter", lambda _: adapter)
+    choice = asyncio.run(select_stack("a dashboard", settings=object()))
+    assert choice.method == "typesafe"
+    assert choice.confidence == confidence
+
+
+def test_explicit_pin_bypasses_typesafe(monkeypatch):
+    from unittest.mock import MagicMock
+
+    adapter = MagicMock(side_effect=AssertionError("pin must not call TypeSafe"))
+    monkeypatch.setattr("skyn3t.adapters.typesafe.TypeSafeAdapter", adapter)
+    choice = asyncio.run(select_stack("a dashboard", pin="react", settings=object()))
+    assert choice.method == "pin"
+    adapter.assert_not_called()
+
+
+@pytest.mark.parametrize("response", [{}, {"choice": "react"}, {"choice": ["react"]}])
+def test_typesafe_malformed_answers_use_keywords(monkeypatch, response):
+    from unittest.mock import MagicMock
+
+    adapter = MagicMock()
+    adapter.ask_choice.return_value = response
+    monkeypatch.setattr("skyn3t.adapters.typesafe.TypeSafeAdapter", lambda _: adapter)
+    choice = asyncio.run(select_stack("a react dashboard", settings=object()))
+    assert choice.method == "keyword"
+    assert choice.stack == "react"
+
+
+def test_typesafe_request_failure_uses_keywords(monkeypatch):
+    from unittest.mock import MagicMock
+
+    adapter = MagicMock()
+    adapter.ask_choice.side_effect = TimeoutError("unavailable")
+    monkeypatch.setattr("skyn3t.adapters.typesafe.TypeSafeAdapter", lambda _: adapter)
+    choice = asyncio.run(select_stack("a react dashboard", settings=object()))
+    assert choice.method == "keyword"
+    assert choice.stack == "react"

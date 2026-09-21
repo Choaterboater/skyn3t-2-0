@@ -44,7 +44,7 @@ def test_run_build_runs_one_gated_tick(monkeypatch):
     ticks: list = []
     _patch_common(monkeypatch, learning=True, ticks=ticks)
     out = asyncio.run(climain._run_build("a python tool", best_of=1, no_critic=False, slug="s"))
-    assert out == {"verdict": "go", "slug": "s"}
+    assert out == {"verdict": "go", "slug": "s", "typesafe_advisory": None}
     assert len(ticks) == 1  # exactly one tick, no loop
 
 
@@ -70,7 +70,7 @@ def test_run_build_skips_tick_when_learning_off(monkeypatch):
     ticks: list = []
     _patch_common(monkeypatch, learning=False, ticks=ticks)
     out = asyncio.run(climain._run_build("a python tool", best_of=1, no_critic=False, slug="s"))
-    assert out == {"verdict": "go", "slug": "s"}
+    assert out == {"verdict": "go", "slug": "s", "typesafe_advisory": None}
     assert ticks == []  # gated off -> no tick
 
 
@@ -86,4 +86,19 @@ def test_run_build_tick_never_raises(monkeypatch):
     monkeypatch.setattr(bs, "build_cortex", boom)
     # The learning tick is best-effort: a broken cortex must not fail the build.
     out = asyncio.run(climain._run_build("a python tool", best_of=1, no_critic=False, slug="s"))
-    assert out == {"verdict": "go", "slug": "s"}
+    assert out == {"verdict": "go", "slug": "s", "typesafe_advisory": None}
+
+
+def test_native_cli_displays_capability_coverage_from_the_runner_manifest(monkeypatch):
+    from typer.testing import CliRunner
+
+    _patch_common(monkeypatch, learning=False, ticks=[])
+    monkeypatch.setattr(_Outcome, "manifest", {"extra": {"mcp_check": {"checked": {
+        "capability_coverage": {
+            "cases": {"inventory": {"status": "passed"}, "worker": {"status": "failed"}},
+            "live_validation": "not_run", "vendor_response_conformance": "not_verified",
+        },
+    }}}}, raising=False)
+    result = CliRunner().invoke(climain.app, ["studio", "build", "Build MCP", "--yes"])
+    assert "1/2 groups passed" in result.output
+    assert "not_run" in result.output

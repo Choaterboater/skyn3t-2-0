@@ -1,0 +1,20 @@
+{
+  "entries": {
+    "6a2c3ff0609439d1693db189f1265f2120b33af124e17747254f4091b280a8e2": {
+      "cached_at": "2026-09-17T18:47:40.407867+00:00",
+      "report": {
+        "backlog": [],
+        "cache_hit": false,
+        "error": null,
+        "queries": [
+          "mcp server hpe mist all read"
+        ],
+        "requirements_modified": false,
+        "retrieved_at": "2026-09-17T18:47:40.407867+00:00",
+        "sources": [],
+        "status": "ok"
+      }
+    }
+  },
+  "schema_version": 2
+}

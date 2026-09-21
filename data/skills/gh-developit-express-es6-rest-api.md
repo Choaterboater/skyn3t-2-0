@@ -2,7 +2,7 @@
 slug: gh-developit-express-es6-rest-api
 title: developit/express-es6-rest-api: Babel-Transpiled ES6 Express REST Boilerplate
 stack: react
-tags: frontend, javascript, node, react, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: frontend, javascript, node, react, ui, web, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

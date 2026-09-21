@@ -2,7 +2,7 @@
 slug: gh-huginn-huginn
 title: huginn/huginn: Self-Hosted Agent/Event Automation Platform (Rails)
 stack: generic
-tags: ruby, github-distilled, hygiene:quarantine, review-held
+tags: ruby, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

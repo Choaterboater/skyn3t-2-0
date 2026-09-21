@@ -2,7 +2,7 @@
 slug: gh-jazelly-agentic-react
 title: jazelly/agentic-react: Bundler Adapters for Source-Aware React UI Selection (Agent Handoff)
 stack: react
-tags: design, frontend, mcp, react, tools, typescript, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: design, frontend, mcp, react, tools, typescript, ui, web, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

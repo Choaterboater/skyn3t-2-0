@@ -2,7 +2,7 @@
 slug: gh-foalts-foal
 title: FoalTS/foal: Full-Stack TypeScript Node Framework Quick Start
 stack: node
-tags: api, backend, foal, node, reference, typescript, github-distilled, hygiene:quarantine, review-held
+tags: api, backend, foal, node, reference, typescript, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

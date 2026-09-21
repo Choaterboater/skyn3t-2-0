@@ -49,6 +49,22 @@ def test_list_projects_reads_manifests(tmp_path):
     assert "beta" in rows and rows["beta"]["status"] == "failed"
 
 
+def test_current_scorecard_overrides_cached_historical_score(tmp_path):
+    state = _state(tmp_path)
+    project = _project(state.settings.projects_dir, "regraded", score=88)
+    path = project / "skyn3t_manifest.json"
+    manifest = json.loads(path.read_text())
+    manifest["extra"] = {
+        "proof": {"passed": True},
+        "quality_scorecard": {"score": 49, "verdict": "no_go", "proof_passed": False},
+    }
+    path.write_text(json.dumps(manifest))
+    row = asyncio.run(list_projects(state))["projects"][0]
+    assert row["quality_scorecard"]["score"] == row["score"] == 88
+    assert row["quality_scorecard"]["verdict"] == row["verdict"] == "go"
+    assert row["quality_scorecard"]["proof_passed"] is True
+
+
 def test_manifestless_preview_is_building_and_hidden_from_project_size(tmp_path):
     state = _state(tmp_path, builds={
         "build-1": SimpleNamespace(

@@ -71,6 +71,129 @@ def test_reviewer_agent_go(tmp_path):
     assert res.output["score"] >= 60.0
 
 
+@pytest.mark.parametrize("stack,expected", [("mcp", True), ("python_cli", False)])
+def test_review_applies_domain_neutral_mcp_rules_only_to_mcp(tmp_path, stack, expected):
+    from types import SimpleNamespace
+
+    prompts = []
+
+    async def complete(prompt, **kwargs):
+        prompts.append(prompt)
+        return SimpleNamespace(text='{"score": 70, "gaps": []}', backend="copilot_cli")
+
+    agent = ReviewerAgent(
+        event_bus=EventBus(),
+        llm_client=SimpleNamespace(backend="copilot_cli", complete=complete),
+    )
+    result = _run(agent.run(TaskRequest(type="review", payload={
+        "worktree_dir": str(_good_project(tmp_path)), "stack": stack,
+    })))
+    assert result.success
+    assert ("MANDATORY MCP QUALITY CONTRACT" in prompts[0]) is expected
+
+
+def test_review_sees_worker_setup_and_tests_in_a_modest_project(tmp_path):
+    from types import SimpleNamespace
+
+    for name in ("client.py", "diagnosis.py", "scope.py", "tools.py"):
+        (tmp_path / name).write_text("# implementation detail\n" * 1300)
+    (tmp_path / "worker.py").write_text("def observe_and_persist(): return 'worker evidence'\n")
+    (tmp_path / "README.md").write_text("Use a host-managed secret input, never a token literal.\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_private_state.py").write_text(
+        "def test_private_state(): assert state_mode == 0o600\n"
+    )
+    prompts = []
+
+    async def complete(prompt, **kwargs):
+        prompts.append(prompt)
+        return SimpleNamespace(text='{"score": 70, "gaps": []}', backend="copilot_cli")
+
+    agent = ReviewerAgent(
+        event_bus=EventBus(),
+        llm_client=SimpleNamespace(backend="copilot_cli", complete=complete),
+    )
+    _run(agent.run(TaskRequest(type="review", payload={
+        "worktree_dir": str(tmp_path), "stack": "mcp",
+    })))
+    assert "def observe_and_persist" in prompts[0]
+    assert "Use a host-managed secret input" in prompts[0]
+    assert "def test_private_state" in prompts[0]
+
+
+def test_semantic_rejection_sees_source_and_cannot_be_outvoted_by_structure(tmp_path):
+    root = _good_project(tmp_path)
+    (root / "index.js").write_text("const NOT_IMPLEMENTED = true;\n")
+    prompts = []
+
+    class Judge:
+        backend = "copilot_cli"
+
+        async def complete(self, prompt, **kwargs):
+            prompts.append(prompt)
+            return type("Reply", (), {"text": '{"score":0,"gaps":["Feature is not implemented"]}'})()
+
+    agent = ReviewerAgent(event_bus=EventBus(), llm_client=Judge())
+    result = _run(agent.execute(TaskRequest(
+        type="review", payload={"project_dir": str(root), "brief": "Implement a working diagnostic workflow"},
+    )))
+    assert "NOT_IMPLEMENTED" in prompts[0]
+    assert result.output["verdict"] == "no_go"
+    assert result.output["score"] == 0
+    assert result.output["gaps"]
+    assert result.metadata["source_tree"]["valid"]
+
+
+@pytest.mark.parametrize("text", ["not json", '{"score":NaN}', '{"score":true}', '{"score":101}'])
+def test_invalid_live_review_cannot_fall_back_to_structural_success(tmp_path, text):
+    root = _good_project(tmp_path)
+
+    class Judge:
+        backend = "copilot_cli"
+
+        async def complete(self, *_args, **_kwargs):
+            return type("Reply", (), {"text": text})()
+
+    result = _run(ReviewerAgent(event_bus=EventBus(), llm_client=Judge()).execute(
+        TaskRequest(type="review", payload={"project_dir": str(root)}),
+    ))
+    assert result.output["verdict"] == "no_go"
+    assert result.metadata["assessment_status"] == "unavailable"
+
+
+def test_failed_provider_cannot_supply_a_passing_stub_review(tmp_path):
+    from skyn3t.adapters.llm import LLMResult
+
+    class FailedJudge:
+        backend = "copilot_cli"
+
+        async def complete(self, *args, **kwargs):
+            return LLMResult(text='{"score":95}', model="copilot-cli", backend="copilot_cli", status="failed")
+
+    result = _run(ReviewerAgent(event_bus=EventBus(), llm_client=FailedJudge()).execute(
+        TaskRequest(type="review", payload={"project_dir": str(_good_project(tmp_path))}),
+    ))
+    assert result.output["verdict"] == "no_go"
+    assert result.metadata["assessment_status"] == "unavailable"
+
+
+def test_successful_cli_response_is_valid_review_evidence(tmp_path):
+    from skyn3t.adapters.llm import LLMResult
+
+    class Judge:
+        backend = "copilot_cli"
+
+        async def complete(self, *args, **kwargs):
+            return LLMResult(text='{"score":85}', model="copilot-cli", backend="copilot_cli", status="cli_response")
+
+    result = _run(ReviewerAgent(event_bus=EventBus(), llm_client=Judge()).execute(
+        TaskRequest(type="review", payload={"project_dir": str(_good_project(tmp_path))}),
+    ))
+    assert result.output["verdict"] == "go"
+    assert result.output["score"] == 85
+    assert result.metadata["assessment_status"] == "assessed"
+
+
 def test_critic_blocks_on_eval(tmp_path):
     root = tmp_path / "danger"
     root.mkdir()

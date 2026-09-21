@@ -33,6 +33,7 @@ import structlog
 from skyn3t.adapters.llm import _BUILD_ROUTING, LLMClient
 from skyn3t.adapters.model_slot import ModelSlot
 from skyn3t.agents._common import (
+    MCP_RELIABILITY_CONTRACT,
     canonical_project_relpath,
     detect_stack,
     extract_code,
@@ -571,23 +572,24 @@ _MCP_DIRECTIVE = (
     "app and NOT an HTTP/REST API: NEVER emit package.json, npm, index.html, Flask/"
     "FastAPI, or a web server. "
     "LAYOUT: `server.py` (the runnable root — `python server.py` starts the stdio "
-    "server), `tools.py` (the tool IMPLEMENTATIONS as pure functions), "
-    "`tests/test_tools.py` (pytest over the pure functions), and `requirements.txt` "
-    "listing `mcp`. "
-    "SDK: use the official Python SDK — `from mcp.server.fastmcp import FastMCP`; "
-    "create `mcp = FastMCP(\"<server-name>\")`, register each tool with an `@mcp.tool()` "
+    "server), `tools.py` (tool orchestration over clients and pure diagnostics), "
+    "`tests/test_tools.py` (pytest with injected clients), and `requirements.txt` "
+    "listing `mcp>=2.2,<3`. "
+    "SDK: use the official Python SDK v2 — `from mcp.server.mcpserver import MCPServer`; "
+    "create `mcp = MCPServer(\"<server-name>\")`, register each tool with an `@mcp.tool()` "
     "decorator, and end with `if __name__ == \"__main__\": mcp.run()` (stdio). "
-    "ARCHITECTURE (pure core + thin registration — the sim-core split): put ALL tool "
-    "LOGIC in `tools.py` as ordinary, PURE, TOTAL functions (no `mcp` import, never "
-    "raise on well-typed input) so they are unit-testable without the SDK; the "
-    "`@mcp.tool()` functions in `server.py` are THIN wrappers that call `tools.py`. "
+    "ARCHITECTURE: keep SDK registration thin; `tools.py` orchestrates injectable "
+    "clients and pure domain/diagnostic functions in separate modules. Tests exercise "
+    "the logic without importing the MCP SDK or contacting a real provider. "
+    "The `@mcp.tool()` functions in `server.py` are thin wrappers. "
     "TOOLS ARE LOAD-BEARING: give every tool a descriptive snake_case name, a "
     "one-line docstring (clients pick tools by name + description), and TYPED "
-    "parameters (real type hints → FastMCP derives the JSON Schema). Implement the "
+    "parameters (real type hints → MCPServer derives the JSON Schema). Implement the "
     "brief's real tools — 2+ genuinely useful ones, not a stub. Handle bad input by "
     "returning a structured result, never by crashing the process. Add at least one "
-    "`@mcp.resource(...)`. Keep upstream API keys OPTIONAL (read from the env with a "
-    "safe fallback) so the server boots and lists its tools with no secrets."
+    "`@mcp.resource(...)`. Credentials are optional for startup, not for performing "
+    "authenticated operations. "
+    + MCP_RELIABILITY_CONTRACT
 )
 
 
@@ -1824,10 +1826,9 @@ class CodeAgent(BaseAgent):
         restored_contracts: set[str],
     ) -> TaskResult:
         """Generate ONLY this slice's files. The full file manifest is supplied as
-        read-only context so cross-slice imports line up. On under-delivery the
-        slice falls back to its own scaffold subset (a runnable floor) and flags
-        degraded — mirroring the monolithic path so a vanished slice can't ship a
-        silent hole."""
+        read-only context so cross-slice imports line up. Under-delivery preserves
+        useful partial files and flags degraded; only explicit offline generation
+        fabricates scaffold files."""
         name = str(slice_scope.get("name") or "slice")
         slice_files = [str(x) for x in (slice_scope.get("files") or [])]
         owned_paths = self._agentic_planned_paths({"files": slice_files})
@@ -1883,7 +1884,7 @@ class CodeAgent(BaseAgent):
                     if attempt == 0
                     else self._agentic_slice_resume_prompt(
                         brief, stack, name, slice_files, disk, missing, agentic_error,
-                        design=design, design_tokens_md=design_tokens_md)
+                        design=design, design_tokens_md=design_tokens_md, manifest=manifest)
                 )
                 self._task_metadata.setdefault("prompts", []).append({
                     "stage": f"codegen_slice_{name}"
@@ -1958,10 +1959,9 @@ class CodeAgent(BaseAgent):
                     f"{'y' if attempt == 1 else 'ies'}: "
                     + "; ".join(reasons or ["completion contract not satisfied"])
                 )
-                # Keep every useful partial file and add only the deterministic
-                # owned-file floor beneath it. The degraded marker prevents this
-                # recovery tree from being mistaken for a complete specialist merge.
-                files = {**self._slice_stub(stack, app_name, brief, missing), **disk}
+                # Missing paths must stay missing: fake config/test files poison
+                # the proof and conceal the work the repair loop needs to do.
+                files = disk
         else:
             # Completion backend: generate just this slice's files concurrently,
             # each pinned to the slice's tier model when provided. Pass the full
@@ -1985,7 +1985,6 @@ class CodeAgent(BaseAgent):
                     generated.add(rel)
             missing = sorted(owned_paths - generated)
             if missing:
-                files = {**self._slice_stub(stack, app_name, brief, slice_files), **files}
                 degraded_reason = (
                     f"completion slice '{name}' missed {len(missing)} owned file(s): "
                     + ", ".join(missing[:12])
@@ -2063,6 +2062,8 @@ class CodeAgent(BaseAgent):
             f"{knowledge}"
             f"You are building the **{slice_name}** part of a larger {stack} application, "
             f"in parallel with other agents building the rest. Brief:\n{brief}\n\n"
+            + (f"{_MCP_DIRECTIVE}\n\n" if stack == "mcp" else "")
+            + "Apply the app-wide contract only to your owned files; other workers supply the rest.\n"
             f"Write ONLY these files (create subfolders as needed) — fully implemented, "
             f"production-quality, no placeholders or TODOs:\n{want}\n\n"
             f"The REST of the app is being written by other agents at these exact paths — "
@@ -2086,6 +2087,7 @@ class CodeAgent(BaseAgent):
         previous_error: str,
         design: dict[str, Any] | None = None,
         design_tokens_md: str | None = None,
+        manifest: str = "",
     ) -> str:
         """Compact continuation for an incomplete specialist slice."""
         remaining = "\n".join(f"- {path}" for path in missing) or (
@@ -2110,7 +2112,9 @@ class CodeAgent(BaseAgent):
             "RESUME THIS SLICE IN PLACE. Preserve every working file and do not restart "
             "or reduce the implementation.\n\n"
             f"Brief: {brief}\nStack: {stack}\nSlice: {slice_name}\n"
-            f"Prior issue: {error}\n\n"
+            + (f"{_MCP_DIRECTIVE}\n\n" if stack == "mcp" else "")
+            + f"Prior issue: {error}\n\n"
+            f"Read-only cross-slice manifest (do not create other workers' files):\n{manifest}\n\n"
             f"Owned paths (do not write outside these):\n{owned}\n\n"
             f"Still missing:\n{remaining}\n\n"
             f"Already present (inspect before editing):\n{existing}\n\n"
@@ -3174,7 +3178,8 @@ class CodeAgent(BaseAgent):
             f"{knowledge}"
             f"Project brief: {brief}\n"
             f"Stack: {stack}\n"
-            f"Architecture summary: {plan.get('summary', '')}\n"
+            + (f"{_MCP_DIRECTIVE}\n\n" if stack == "mcp" else "")
+            + f"Architecture summary: {plan.get('summary', '')}\n"
             f"All files in this project:\n{file_list}\n\n"
             f"File to write: {rel_path}\n"
             f"This file's purpose: {purpose or 'implement the part of the brief this path implies'}\n\n"

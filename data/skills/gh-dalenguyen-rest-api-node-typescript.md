@@ -2,7 +2,7 @@
 slug: gh-dalenguyen-rest-api-node-typescript
 title: dalenguyen/rest-api-node-typescript: Two-Tier Node+TypeScript+MongoDB REST API (license unverified)
 stack: react
-tags: frontend, node, react, typescript, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: frontend, node, react, typescript, ui, web, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

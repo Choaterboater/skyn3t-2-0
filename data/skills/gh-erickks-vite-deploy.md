@@ -2,7 +2,7 @@
 slug: gh-erickks-vite-deploy
 title: ErickKS/vite-deploy: GitHub Pages deploy workflow for Vite (held, license unresolved)
 stack: generic
-tags: deployment, github-actions, reference, vite, github-distilled, hygiene:quarantine, review-held
+tags: deployment, github-actions, reference, vite, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

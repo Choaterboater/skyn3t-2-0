@@ -2,7 +2,7 @@
 slug: gh-artzub-githubvisualizer
 title: artzub/GitHubVisualizer: unmodified Create React App boilerplate text (held)
 stack: react
-tags: reference, github-distilled, hygiene:quarantine, review-held
+tags: reference, github-distilled, review-held, external-promoted
 uses: 14
 helpful: 8
 quality_sum: 8.9900

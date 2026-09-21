@@ -2,7 +2,7 @@
 slug: gh-auth0-developer-hub-auth0-b2b-saas-starter
 title: Auth0 B2B SaaS bootstrap pattern: isolated tenant + CLI-scripted provisioning
 stack: nextjs
-tags: auth, nextjs, reference, security, github-distilled, hygiene:quarantine, review-held
+tags: auth, nextjs, reference, security, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

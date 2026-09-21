@@ -235,14 +235,17 @@ class HandlerRegistry:
         return self._stage(proposal, "feature")
 
     async def _stage_ingest(self, proposal: Proposal) -> dict[str, Any]:
-        """Ingest with RAG, or with skills alone in autonomous improvement mode.
+        """Ingest with RAG, or with skills alone while autonomous learning is enabled.
 
         Normal mode retains its staging fallback. Fetch failures remain retryable;
         all external RAG evidence stays quarantined regardless of skill activation.
         """
         payload = proposal.payload or {}
         repo_or_url = payload.get("url") or payload.get("repo")
-        learn_advisory = bool(getattr(self.settings, "autonomous_improvement", False))
+        learn_advisory = bool(
+            getattr(self.settings, "autonomous_learning", False)
+            or getattr(self.settings, "autonomous_improvement", False)
+        )
         if repo_or_url and (self.rag is not None or (learn_advisory and self.skills is not None)):
             result = await self._ingest_github(str(repo_or_url), proposal)
             if result is not None:
@@ -270,14 +273,15 @@ class HandlerRegistry:
             staged = self._stage(proposal, "ingest")  # offline -> keep intent, retryable
             staged["ingested"] = 0
             staged["degraded"] = True
-            if bool(getattr(self.settings, "autonomous_improvement", False)):
+            if self.skills is not None:
                 staged["advisory_learning"] = []
                 staged["rag_status"] = "not_ingested"
                 staged["evidence_status"] = "unavailable"
             return staged
         url = evidence.source_url
         rag = self.rag
-        learn_advisory = bool(getattr(self.settings, "autonomous_improvement", False))
+        auto_activate = bool(getattr(self.settings, "autonomous_improvement", False))
+        learn_advisory = bool(getattr(self.settings, "autonomous_learning", False) or auto_activate)
         skills_only_allowed = learn_advisory and self.skills is not None
         if rag is None and not skills_only_allowed:
             return self._stage(proposal, "ingest")
@@ -296,6 +300,8 @@ class HandlerRegistry:
             return result
 
         def _rag_ingest(text: str, source: str, metadata: dict[str, object]) -> Any:
+            if rag is None:
+                raise RuntimeError("RAG ingestion is unavailable")
             try:
                 return rag.ingest_text(text, source=source, kind="github", metadata=metadata)
             except TypeError as exc:
@@ -373,32 +379,32 @@ class HandlerRegistry:
                     source_path=source_path,
                     metadata={"skyn3t-source-kind": source_kind},
                 ).with_content_hash(document)
-                learning: dict[str, Any] | None = {} if learn_advisory else None
+                learning: dict[str, Any] = {}
                 skill_slug, skill_error = self._distill_repo_skill(
                     url,
                     document,
                     proposal.payload or {},
                     provenance=provenance,
                     learning=learning,
+                    activate=auto_activate,
                 )
                 if skill_slug:
                     skill_slugs.append(skill_slug)
                 elif skill_error:
                     skill_errors.append(f"{source_path}: {skill_error}")
-                if learning is not None:
-                    if skill_error:
-                        learning.update({
-                            "source_path": source_path,
-                            "evaluation": {"status": "not_checked", "reason": skill_error},
-                            "activation": {"status": "not_activated"},
-                            "active": False,
-                            "advisory_only": True,
-                            "effectiveness": "not_checked",
-                        })
-                    advisory_learning.append(learning)
+                if skill_error:
+                    learning.update({
+                        "source_path": source_path,
+                        "evaluation": {"status": "not_checked", "reason": skill_error},
+                        "activation": {"status": "not_activated"},
+                        "active": False,
+                        "advisory_only": True,
+                        "effectiveness": "not_checked",
+                    })
+                advisory_learning.append(learning)
 
         result: dict[str, Any] = {"applied": True, "ingested": ingested, "source": url}
-        if learn_advisory:
+        if self.skills is not None:
             result["advisory_learning"] = advisory_learning
             result["rag_status"] = (
                 "unavailable" if rag is None else "failed" if rag_error else "ingested"
@@ -637,6 +643,7 @@ class HandlerRegistry:
         *,
         provenance: Any | None = None,
         learning: dict[str, Any] | None = None,
+        activate: bool = False,
     ) -> tuple[str | None, str | None]:
         """Turn an ingested repo into an advisory Skill.
 
@@ -648,6 +655,8 @@ class HandlerRegistry:
         """
         if self.skills is None:
             return None, None
+        if learning is None:
+            learning = {}
         try:
             if not text or not text.strip():
                 return None, "empty repo text"
@@ -716,27 +725,32 @@ class HandlerRegistry:
                 metadata=metadata,
                 compatibility=base.compatibility,
             )
-            unchanged = False
-            if learning is not None:
-                # Retirements and prior lifecycle decisions remain authoritative.
-                # An unchanged import may be evaluated once only if its durable
-                # journal is empty, including no rollback before first evaluation.
-                if self.skills.is_retired(slug):
-                    return None, "skill is retired"
-                previous = self.skills.get(slug)
-                if (
-                    previous is not None
-                    and previous.provenance is not None
-                    and previous.provenance.content_hash == skill_provenance.content_hash
-                ):
-                    unchanged = True
-                    if self.skills._read_capability_records(slug):
-                        learning.update(self.skills.capability_status(slug))
-                        learning["evaluation"] = {
-                            "status": "skipped", "reason": "unchanged_content",
+            if self.skills.is_retired(slug):
+                return None, "skill is retired"
+            previous = self.skills.get(slug)
+            unchanged = (
+                previous is not None
+                and previous.provenance is not None
+                and previous.provenance.content_hash == skill_provenance.content_hash
+            )
+            if unchanged:
+                records = self.skills._read_capability_records(slug)
+                current = self.skills.capability_status(slug)
+                lifecycle = [row for row in records if row["kind"] in {"activation", "rollback"}]
+                rolled_back = bool(lifecycle and lifecycle[-1]["kind"] == "rollback")
+                if records and (rolled_back or current["status"] in {"passed", "failed"}):
+                    learning["evaluation"] = {
+                        "status": "skipped", "reason": "unchanged_content",
+                    }
+                    learning["activation"] = {"status": "preserved"}
+                    if activate and not rolled_back and current["can_activate"]:
+                        activated = self.skills.activate_candidate(slug)
+                        learning["activation"] = {
+                            "status": "activated" if activated is not None else "not_activated",
                         }
-                        learning["activation"] = {"status": "preserved"}
-                        return slug, None
+                    learning["admission_check"] = self.skills.admission_status(slug)
+                    learning.update(self.skills.capability_status(slug))
+                    return slug, None
             if not unchanged:
                 self.skills.add(
                     title=(
@@ -754,24 +768,25 @@ class HandlerRegistry:
                     ),
                     provenance=skill_provenance,
                 )
-            if learning is not None:
-                learning.update({
-                    "slug": slug, "active": False, "advisory_only": True,
-                    "effectiveness": "not_checked",
-                    "evaluation": {"status": "not_checked"},
-                    "activation": {"status": "not_activated"},
-                })
-                try:
-                    evaluation = self.skills.evaluate_candidate(slug)
-                    learning["evaluation"] = evaluation
-                    if evaluation["status"] == "passed":
-                        activated = self.skills.activate_candidate(slug)
-                        learning["activation"] = {
-                            "status": "activated" if activated is not None else "not_activated",
-                        }
-                    learning.update(self.skills.capability_status(slug))
-                except Exception as exc:  # noqa: BLE001 - candidate stays quarantined
-                    learning["activation"] = {"status": "not_activated", "error": str(exc)}
+            learning.update({
+                "slug": slug, "active": False, "advisory_only": True,
+                "effectiveness": "not_checked",
+                "admission_check": self.skills.admission_status(slug),
+                "evaluation": {"status": "not_checked"},
+                "activation": {"status": "not_activated"},
+            })
+            try:
+                evaluation = self.skills.evaluate_candidate(slug)
+                learning["evaluation"] = evaluation
+                if activate and evaluation["status"] == "passed":
+                    activated = self.skills.activate_candidate(slug)
+                    learning["activation"] = {
+                        "status": "activated" if activated is not None else "not_activated",
+                    }
+                learning.update(self.skills.capability_status(slug))
+            except Exception as exc:  # noqa: BLE001 - candidate stays quarantined
+                learning["evaluation"] = {"status": "failed", "error": str(exc)}
+                learning["activation"] = {"status": "not_activated", "error": str(exc)}
             return slug, None
         except Exception as exc:  # noqa: BLE001 - distillation is best-effort
             return None, f"distillation failed: {exc}"

@@ -2,7 +2,7 @@
 slug: gh-benny-yahoo-ticker-symbol-downloader
 title: Benny-/Yahoo-ticker-symbol-downloader: scraper with a documented history of upstream breakage (held)
 stack: python
-tags: python, reference, github-distilled, hygiene:quarantine, review-held
+tags: python, reference, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

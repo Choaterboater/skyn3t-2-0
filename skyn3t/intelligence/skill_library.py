@@ -896,6 +896,10 @@ def _validate_skill_retirements(payload: object, *, source: str) -> dict[str, di
     return validated
 
 
+_SKILL_ADVICE_HEADING = "Relevant skills (advisory — apply only where they fit the task):"
+_STAGE_ADVICE_HEADING = "Relevant stage role guidance (advisory — apply only to this stage):"
+
+
 class SkillLibrary:
     """A scored, file-backed library of advisory skills."""
 
@@ -905,6 +909,7 @@ class SkillLibrary:
         self._hub_report: dict[str, Any] = {"schema_version": 1, "updated_at": 0.0, "reports": []}
         self._retirements: dict[str, dict[str, Any]] = {}
         self._capability_records: dict[str, list[dict[str, Any]]] = {}
+        self._admission_records: dict[str, dict[str, Any]] = {}
         if self.dir is not None:
             # Load + validate the retirement registry BEFORE reading any skill
             # files, so ``_load`` can exclude retired slugs from the very
@@ -915,6 +920,105 @@ class SkillLibrary:
             for skill in self._skills.values():
                 if self._is_capability(skill) and not self._capability_active(skill):
                     self._quarantine_capability(skill)
+
+    # ---- checks at the shared persistence seam ------------------------
+    def _admission_assessment(self, skill: Skill) -> dict[str, Any]:
+        from skyn3t.agents._common import _MAX_STAGE_ROLE_GUIDANCE
+        from skyn3t.intelligence.skill_catalog import describe_skill
+
+        metadata = describe_skill(
+            title=skill.title, body=skill.body, stack=skill.stack,
+            tags=skill.tags, source=skill.source, score=1.0,
+        )
+        descriptions = {
+            "empty_body": "No retained instructions.",
+            "reference_excerpt": "Distill the repository-reference extract into scoped instructions.",
+            "over_global_budget": "One skill plus its shared heading exceeds the global advice budget.",
+            "over_stage_budget": "One role plus its shared heading exceeds the stage guidance budget.",
+            "weak_build_example": "A low-scoring build must not be advertised as a winning example.",
+        }
+        audit = metadata["content_audit"]
+        blocking = set(descriptions).intersection(audit["flags"])
+        if audit["advice_chars"] + len(_SKILL_ADVICE_HEADING) + 2 > audit["global_budget_chars"]:
+            blocking.add("over_global_budget")
+        if (
+            any(tag.lower().startswith("stage:") for tag in skill.tags)
+            and audit["advice_chars"] + len(_STAGE_ADVICE_HEADING) + 2 > _MAX_STAGE_ROLE_GUIDANCE
+        ):
+            blocking.add("over_stage_budget")
+        return {
+            "schema_version": 1, "method": "skill-admission-v1", "slug": skill.slug,
+            "fingerprint": self._capability_fingerprint(skill),
+            "status": "review_required" if blocking else "passed",
+            "blocking_findings": [descriptions[flag] for flag in sorted(blocking)],
+            **metadata,
+        }
+
+    def _admission_path(self, slug: str) -> Path:
+        if self.dir is None:
+            raise ValueError("admission receipt requires a file-backed library")
+        root = self.dir / ".admission_checks"
+        path = root / f"{hashlib.sha256(slug.encode('utf-8')).hexdigest()}.json"
+        if root.is_symlink() or path.is_symlink():
+            raise ValueError("admission receipts must not use symlinks")
+        return path
+
+    def _read_admission(self, slug: str) -> dict[str, Any] | None:
+        if self.dir is None:
+            return self._admission_records.get(slug)
+        path = self._admission_path(slug)
+        if not path.exists():
+            return None
+        if not path.is_file() or not 0 < path.stat().st_size <= 64_000:
+            raise ValueError("invalid admission receipt file")
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if (
+            not isinstance(record, dict) or record.get("slug") != slug
+            or not isinstance(record.get("checked_at"), (int, float))
+            or isinstance(record.get("checked_at"), bool)
+            or not math.isfinite(record["checked_at"])
+            or record["checked_at"] <= 0
+        ):
+            raise ValueError("invalid admission receipt")
+        return record
+
+    def _ensure_admission_check(self, skill: Skill) -> None:
+        assessment = self._admission_assessment(skill)
+        previous = self._read_admission(skill.slug)
+        if previous and all(previous.get(key) == value for key, value in assessment.items()):
+            return
+        record = {**assessment, "checked_at": time.time()}
+        if self.dir is None:
+            self._admission_records[skill.slug] = record
+        else:
+            path = self._admission_path(skill.slug)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            atomic_write_text(path, json.dumps(record, sort_keys=True, ensure_ascii=True))
+        if _log:
+            _log.info("skills.admission_checked", slug=skill.slug, status=record["status"])
+
+    def admission_status(self, slug: str) -> dict[str, Any]:
+        """Read a current saved check; browsing never creates or upgrades receipts."""
+        skill = self.get(slug)
+        missing = {"slug": slug, "status": "not_checked"}
+        if skill is None:
+            return missing
+        try:
+            record = self._read_admission(slug)
+            expected = self._admission_assessment(skill)
+            if record is None or any(record.get(key) != value for key, value in expected.items()):
+                return missing
+            return json.loads(json.dumps(record))
+        except (OSError, ValueError, TypeError) as exc:
+            if _log:
+                _log.warning("skills.admission_read_failed", slug=slug, error=str(exc))
+            return {"slug": slug, "status": "failed", "error": str(exc)}
+
+    def _admission_ready(self, skill: Skill) -> bool:
+        return (
+            self.get(skill.slug) is skill
+            and self.admission_status(skill.slug)["status"] == "passed"
+        )
 
     # ---- evaluated advisory capabilities -----------------------------
     def _is_capability(self, skill: Skill) -> bool:
@@ -1021,6 +1125,7 @@ class SkillLibrary:
         checks = {
             "candidate_kind": self._is_capability(skill),
             "not_retired": not self.is_retired(skill.slug),
+            "prompt_admission": self._admission_ready(skill),
             "bounded_advisory": bool(skill.body.strip())
             and len(skill.body.encode("utf-8")) <= _MAX_RETAINED_EVIDENCE_BYTES,
             "provenance": (
@@ -1081,10 +1186,11 @@ class SkillLibrary:
         result: dict[str, Any] = {
             "slug": slug, "status": "not_checked", "active": False,
             "can_activate": False, "evaluation_id": None, "advisory_only": True,
-            "effectiveness": "not_checked",
+            "effectiveness": "not_checked", "managed": False,
         }
         if skill is None or not self._is_capability(skill):
             return result
+        result["managed"] = True
         try:
             records = self._read_capability_records(slug)
             evaluation = next((row for row in reversed(records) if row["kind"] == "evaluation"), None)
@@ -1126,6 +1232,48 @@ class SkillLibrary:
         return bool(
             current is skill and self.capability_status(skill.slug)["active"]
         )
+
+    def evaluate_pending_capabilities(self, *, activate: bool = False) -> dict[str, Any]:
+        """Check changed advisory evidence once; preserve operator lifecycle decisions."""
+        results: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        activated: list[str] = []
+        skipped = 0
+        for skill in self.all():
+            slug = skill.slug
+            if not self._is_capability(skill) or self.is_retired(slug):
+                skipped += 1
+                continue
+            try:
+                records = self._read_capability_records(slug)
+                lifecycle = [r for r in records if r.get("kind") in {"activation", "rollback"}]
+                if lifecycle and lifecycle[-1]["kind"] == "rollback":
+                    skipped += 1
+                    continue
+                current = self.capability_status(slug)
+                evaluation = next((r for r in reversed(records) if r.get("kind") == "evaluation"), None)
+                fingerprint = self._capability_fingerprint(skill)
+                if not evaluation or evaluation.get("fingerprint") != fingerprint:
+                    evaluation = self.evaluate_candidate(slug)
+                    current = self.capability_status(slug)
+                elif current["status"] == "not_checked":
+                    evaluation = self.evaluate_candidate(slug)
+                    current = self.capability_status(slug)
+                status = current["status"]
+                results.append({"slug": slug, "status": status, "evaluation_id": current["evaluation_id"]})
+                if status == "failed":
+                    failed.append({"slug": slug, "checks": self._capability_checks(skill)})
+                elif activate and current["can_activate"] and not current["active"]:
+                    if self.activate_candidate(slug) is not None:
+                        activated.append(slug)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                failed.append({"slug": slug, "error": str(exc)})
+        return {
+            "evaluated": len(results), "passed": sum(r["status"] == "passed" for r in results),
+            "failed_count": len(failed), "activated_count": len(activated),
+            "activated": activated, "skipped": skipped, "failed": failed, "results": results,
+        }
+
 
     def activate_candidate(self, slug: str) -> Skill | None:
         skill = self.get(slug)
@@ -1222,6 +1370,7 @@ class SkillLibrary:
                 _quarantine_unpinned_legacy_github_skill(sk)
                 _quarantine_unevidenced_agent_catalog_skill(sk)
                 self._skills[sk.slug] = sk
+                self._ensure_admission_check(sk)
             except Exception as exc:  # noqa: BLE001
                 if _log:
                     _log.warning("skills.parse_failed", file=str(f), error=str(exc))
@@ -1352,10 +1501,12 @@ class SkillLibrary:
 
     def _persist(self, skill: Skill) -> bool:
         if self.dir is None:
+            self._ensure_admission_check(skill)
             return False
         try:
             self.dir.mkdir(parents=True, exist_ok=True)
             atomic_write_text(self.dir / f"{skill.slug}.md", skill.to_markdown())
+            self._ensure_admission_check(skill)
             return True
         except Exception as exc:  # noqa: BLE001
             if _log:
@@ -1425,8 +1576,10 @@ class SkillLibrary:
             if skill.description and skill.description.lower() not in skill.body.lower():
                 skill.body = f"{skill.description}\n\n{skill.body}"
         _quarantine_unevidenced_agent_catalog_skill(skill)
+        persisted = self._persist(skill)
+        if self.dir is not None and not persisted:
+            raise OSError(f"could not persist skill and admission check: {slug}")
         self._skills[slug] = skill
-        self._persist(skill)
         return skill
 
     def get(self, slug: str) -> Skill | None:
@@ -1443,6 +1596,8 @@ class SkillLibrary:
         This keeps broad imported docs and wrong-domain repo patterns from
         crowding out stack-native guidance.
         """
+        if not self._admission_ready(skill):
+            return False
         if self._is_capability(skill) and not self._capability_active(skill):
             return False
         tagset = {t.lower() for t in (tags or [])}
@@ -1505,8 +1660,10 @@ class SkillLibrary:
                 content=raw,
                 source_path=f.relative_to(base).as_posix(),
             )
+            persisted = self._persist(sk)
+            if self.dir is not None and not persisted:
+                continue
             self._skills[sk.slug] = sk
-            self._persist(sk)
             count += 1
         return count
 
@@ -1833,6 +1990,7 @@ class SkillLibrary:
             "updated": 0,
             "active": 0,
             "quarantined": 0,
+            "review_required": 0,
             "skipped": 0,
         }
         if self.dir is None:
@@ -1970,8 +2128,10 @@ class SkillLibrary:
             tagset = {tag.strip().lower() for tag in candidate.tags if tag.strip()}
             if tagset & _QUARANTINE_TAGS:
                 report["quarantined"] += 1
-            else:
+            elif self._admission_ready(candidate):
                 report["active"] += 1
+            else:
+                report["review_required"] += 1
         report["status"] = "loaded"
         return report
 
@@ -2012,14 +2172,17 @@ class SkillLibrary:
 
     def render_selected(self, skills: list[Skill], *, stage: bool = False) -> str:
         """Revalidate selected capabilities at the final advisory injection seam."""
-        skills = [s for s in skills if not self._is_capability(s) or self._capability_active(s)]
+        skills = [
+            s for s in skills if self._admission_ready(s)
+            and (not self._is_capability(s) or self._capability_active(s))
+        ]
         if not skills:
             return ""
         blocks = "\n\n".join(s.as_advice() for s in skills)
         heading = (
-            "Relevant stage role guidance (advisory — apply only to this stage):"
+            _STAGE_ADVICE_HEADING
             if stage
-            else "Relevant skills (advisory — apply only where they fit the task):"
+            else _SKILL_ADVICE_HEADING
         )
         return f"{heading}\n\n{blocks}"
 
@@ -2303,7 +2466,11 @@ _SEED_SKILLS = [
         "Deliver an MCP stdio server with explicit tool schemas, initialize/list/call "
         "support, read-only safety for inspection tools, structured errors for bad "
         "arguments, README integration instructions, and tests that exercise each "
-        "tool without requiring network or secrets.",
+        "tool without requiring network or secrets. External API errors must remain "
+        "failures, never simulated success. Require documented endpoints, explicit "
+        "simulation, evidence-linked recommendations, approval for disruptive writes, "
+        "and refreshed observations before claiming an action fixed an issue. Test "
+        "authentication failure, timeouts and partial workflow failure with mocked HTTP.",
         ["mcp", "tools", "stdio"],
     ),
     (

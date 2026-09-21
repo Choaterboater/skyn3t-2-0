@@ -2,7 +2,7 @@
 slug: gh-frontendmasters-api-design-node-v3
 title: FrontendMasters/api-design-node-v3: Archived Express/Mongoose Course Exercises
 stack: react
-tags: design, frontend, javascript, node, react, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: design, frontend, javascript, node, react, ui, web, github-distilled, review-held, external-promoted
 uses: 9
 helpful: 9
 quality_sum: 3.9585

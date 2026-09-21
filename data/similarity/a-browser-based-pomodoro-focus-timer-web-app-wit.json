@@ -1,0 +1,22 @@
+{
+  "entries": {
+    "5280fb7d951414557b5c727345514622ebb314a4c739807ad1afa758393f0251": {
+      "cached_at": "2026-09-19T04:42:26.260185+00:00",
+      "report": {
+        "backlog": [],
+        "cache_hit": false,
+        "error": null,
+        "queries": [
+          "browser-based pomodoro focus timer web start react",
+          "react browser-based pomodoro focus timer web start",
+          "browser-based pomodoro focus timer web start"
+        ],
+        "requirements_modified": false,
+        "retrieved_at": "2026-09-19T04:42:26.260185+00:00",
+        "sources": [],
+        "status": "ok"
+      }
+    }
+  },
+  "schema_version": 2
+}

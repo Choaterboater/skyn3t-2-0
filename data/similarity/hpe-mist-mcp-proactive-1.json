@@ -1,0 +1,22 @@
+{
+  "entries": {
+    "46c7d033b2ac1d4d1e374e5dc30c3d102e6c014b13a423c2786a8ccd957e5759": {
+      "cached_at": "2026-09-18T14:22:35.439929+00:00",
+      "report": {
+        "backlog": [],
+        "cache_hit": false,
+        "error": null,
+        "queries": [
+          "substantially richer unofficial read-only hpe mist mcp",
+          "mcp discover all accessible sites bounded pagination",
+          "substantially richer unofficial discover all accessible sites bounded pagination"
+        ],
+        "requirements_modified": false,
+        "retrieved_at": "2026-09-18T14:22:35.439929+00:00",
+        "sources": [],
+        "status": "ok"
+      }
+    }
+  },
+  "schema_version": 2
+}

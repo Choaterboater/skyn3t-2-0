@@ -12,6 +12,9 @@ Offline + hermetic like its siblings.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+
+import pytest
 
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.cli.main import build_agents
@@ -21,7 +24,8 @@ from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio.runner import StudioRunner
 
 
-def test_offline_mcp_build_end_to_end(tmp_path):
+@pytest.mark.parametrize("mutate_late", [False, True])
+def test_offline_mcp_build_end_to_end(tmp_path, monkeypatch, mutate_late):
     async def run():
         bus = EventBus()
         settings = Settings(
@@ -35,6 +39,23 @@ def test_offline_mcp_build_end_to_end(tmp_path):
         for agent in build_agents(event_bus=bus, llm=llm, memory=None):
             await orch.register(agent)
         runner = StudioRunner(bus, orch, settings=settings, memory=None)
+        observed_sources = []
+        refresh = runner._refresh_mcp_check
+        terminal = runner._run_terminal_evidence
+
+        async def record_refresh(manifest, plan, project_dir):
+            observed_sources.append(Path(project_dir, "server.py").read_text())
+            return await refresh(manifest, plan, project_dir)
+
+        async def late_repair(*args, **kwargs):
+            result = await terminal(*args, **kwargs)
+            if mutate_late:
+                server = Path(args[2], "server.py")
+                server.write_text(server.read_text() + "\n# late authored-source change\n")
+            return result
+
+        monkeypatch.setattr(runner, "_refresh_mcp_check", record_refresh)
+        monkeypatch.setattr(runner, "_run_terminal_evidence", late_repair)
         outcome = await runner.start(
             "an mcp server that exposes a word-count tool to AI assistants",
             slug="wordcount-mcp")
@@ -59,5 +80,9 @@ def test_offline_mcp_build_end_to_end(tmp_path):
             assert mc.get("gaps") == [], "environment failures are not code-repair gaps"
         else:
             assert mc.get("ok") is True, mc.get("issues")
+        assert observed_sources
+        if mutate_late:
+            assert len(observed_sources) >= 2
+            assert "# late authored-source change" in observed_sources[-1]
 
     asyncio.run(run())

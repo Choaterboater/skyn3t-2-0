@@ -2582,6 +2582,7 @@ async def test_skills_payload_reports_active_quarantined_and_promotion_ready(tmp
         "active": 1,
         "quarantined": 2,
         "promotion_ready": 1,
+        "review_required": 0,
     }
     rows = {row["slug"]: row for row in payload["skills"]}
     assert rows["local-python"]["active"] is True

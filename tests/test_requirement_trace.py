@@ -134,6 +134,50 @@ def _proof(**detail: object) -> dict[str, object]:
     }
 
 
+def test_mcp_capability_requires_its_own_executed_source_bound_evidence():
+    product = _product(_requirement("Org inventory", "mcp:capability:mist.inventory"))
+    coverage = {
+        "schema_version": 1,
+        "source_tree": _snapshot(),
+        "cases": {
+            "mist.inventory": {"status": "passed", "assertions": 3, "reason": ""},
+        },
+    }
+    trace = _compile(product, {"mcp_check": {"checked": {"capability_coverage": coverage}}})
+    assert trace["go_eligible"] is True
+    assert trace["summary"]["must_proven"] == 1
+
+
+@pytest.mark.parametrize("case", [
+    None,
+    {"status": "skipped", "assertions": 0},
+    {"status": "passed", "assertions": 0},
+    {"status": "passed", "assertions": True},
+    {"status": "failed", "assertions": 3, "reason": "missing inventory records"},
+])
+def test_generic_mcp_success_cannot_substitute_for_required_capability(case):
+    product = _product(_requirement("Org inventory", "mcp:capability:mist.inventory"))
+    coverage = {
+        "schema_version": 1, "source_tree": _snapshot(),
+        "cases": {} if case is None else {"mist.inventory": case},
+    }
+    trace = _compile(product, {"mcp_check": {
+        "ok": True, "checked": {"capability_coverage": coverage},
+    }})
+    assert trace["blocks_delivery"] is True
+    assert trace["summary"]["must_proven"] == 0
+
+
+def test_rebinding_cannot_refresh_old_mcp_capability_receipts():
+    product = _product(_requirement("Org inventory", "mcp:capability:mist.inventory"))
+    trace = _compile(product, {"mcp_check": {"checked": {"capability_coverage": {
+        "schema_version": 1, "source_tree": _snapshot("b" * 64),
+        "cases": {"mist.inventory": {"status": "passed", "assertions": 3}},
+    }}}})
+    assert trace["status"] == "stale"
+    assert trace["blocks_delivery"] is True
+
+
 def _binding(
     product: ProductSpecV1 | dict[str, object],
     extra: dict[str, object],

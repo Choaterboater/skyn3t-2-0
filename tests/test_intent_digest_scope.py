@@ -23,6 +23,27 @@ from skyn3t.studio.intent_score import (
 )
 
 
+def test_review_digest_prioritizes_implementation_over_large_tests(tmp_path):
+    root = tmp_path / "build"
+    root.mkdir()
+    (root / "tests").mkdir()
+    (root / "tests" / "test_app.py").write_text("# fixture\n" * 1000)
+    (root / "tools.py").write_text("def diagnose_site(): return {'success': False}\n")
+    digest = _content_digest(root, max_bytes=200, max_file_bytes=200, raw_source=True)
+    assert "def diagnose_site" in digest
+    assert digest.index("def diagnose_site") < digest.index("fixture")
+
+
+def test_review_digest_preserves_inline_code_and_marks_omissions(tmp_path):
+    (tmp_path / "index.html").write_text(
+        "<html><script>function actualBehavior(){}</script>" + " " * 1000 + "</html>",
+    )
+    digest = _content_digest(tmp_path, max_bytes=300, max_file_bytes=250, raw_source=True)
+    assert "actualBehavior" in digest
+    assert "middle omitted" in digest
+    assert "</html>" in digest
+
+
 def _delivered_app(root: Path) -> None:
     """A realistic delivered tree: app source plus SkyN3t's own artifacts."""
     (root / "index.html").write_text(

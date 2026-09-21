@@ -53,10 +53,10 @@ from typing import Any
 
 from skyn3t.core.stacks import GAME_STACKS, WEB_STACKS
 from skyn3t.studio.liveness import _SKIP_PARTS, enumerate_routes
-from skyn3t.studio.qa_playtest import _dedup_cap
-from skyn3t.studio.visual_check import playwright_available
 from skyn3t.studio.product_spec import ProductSpecV1
+from skyn3t.studio.qa_playtest import _dedup_cap
 from skyn3t.studio.requirement_trace import INACTIVE_REQUIREMENT_STATUSES
+from skyn3t.studio.visual_check import playwright_available
 from skyn3t.worktree import source_tree_snapshot
 
 # Every HTTP-served stack except the game stack (which qa_playtest drives).

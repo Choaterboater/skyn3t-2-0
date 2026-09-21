@@ -5,6 +5,7 @@ lingers as a phantom 'running' build forever (observed: abfe... ran 3.5h)."""
 from __future__ import annotations
 
 import json
+
 import pytest
 
 from skyn3t.config.settings import Settings

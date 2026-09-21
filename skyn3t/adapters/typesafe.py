@@ -15,21 +15,44 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import structlog
 
-try:
-    from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
-except Exception:  # noqa: BLE001
-    Choice = None  # type: ignore[assignment,misc]
-    Noul = None  # type: ignore[assignment,misc]
-    Score = None  # type: ignore[assignment,misc]
-    TypeSafeClient = None  # type: ignore[assignment,misc]
-
 from skyn3t.config.settings import Settings, get_settings
 
 log = structlog.get_logger(__name__)
+
+
+@dataclass
+class _FallbackChoice:
+    instructions: str = ""
+    criteria: Any = None
+    type: str = "choice"
+
+
+@dataclass
+class _FallbackScore:
+    instructions: str = ""
+    criteria: Any = None
+    type: str = "score"
+
+
+@dataclass
+class _FallbackNoul:
+    instructions: str = ""
+    criteria: Any = None
+    type: str = "noul"
+
+
+try:
+    from typesafe_sdk import Choice, Noul, Score, TypeSafeClient
+except Exception:  # noqa: BLE001
+    Choice = _FallbackChoice  # type: ignore[assignment,misc]
+    Noul = _FallbackNoul  # type: ignore[assignment,misc]
+    Score = _FallbackScore  # type: ignore[assignment,misc]
+    TypeSafeClient = None  # type: ignore[assignment,misc]
 
 
 def _response_metadata(response: Any) -> dict[str, Any]:
@@ -66,7 +89,7 @@ class TypeSafeAdapter:
             or ""
         )
         self._client: Any = None
-        if TypeSafeClient and self._api_key:
+        if TypeSafeClient is not None and self._api_key:
             try:
                 self._client = TypeSafeClient(api_key=self._api_key)
             except Exception as exc:  # noqa: BLE001
@@ -131,9 +154,9 @@ class TypeSafeAdapter:
                     instructions = q.get("instructions", "")
                     criteria = q.get("criteria")
                     if q_type == "choice":
-                        sdk_questions[key] = Choice(instructions=instructions, criteria=criteria)
+                        sdk_questions[key] = Choice(instructions=instructions, criteria=criteria)  # type: ignore[arg-type]
                     elif q_type == "score":
-                        sdk_questions[key] = Score(instructions=instructions, criteria=criteria)
+                        sdk_questions[key] = Score(instructions=instructions, criteria=criteria)  # type: ignore[arg-type]
                     elif q_type == "noul":
                         sdk_questions[key] = Noul(instructions=instructions, criteria=criteria)
                     else:
@@ -232,7 +255,7 @@ class TypeSafeAdapter:
         - contains_explicit_code_request (Noul)
         - needs_database (Noul)
         """
-        if not self.available or not Choice or not Score or not Noul:
+        if not self.available:
             return {}
 
         questions = {
@@ -273,7 +296,7 @@ class TypeSafeAdapter:
         - code_quality (Score: broken -> production-ready)
         - risk_category (Choice: low_risk, minor_bugs, blocking_errors, security_flaw)
         """
-        if not self.available or not Choice or not Score or not Noul:
+        if not self.available:
             return {}
 
         questions = {

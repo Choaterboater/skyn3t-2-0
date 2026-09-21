@@ -725,31 +725,39 @@ class HandlerRegistry:
                 metadata=metadata,
                 compatibility=base.compatibility,
             )
-            if self.skills.is_retired(slug):
+            is_retired_fn = getattr(self.skills, "is_retired", None)
+            if callable(is_retired_fn) and is_retired_fn(slug):
                 return None, "skill is retired"
-            previous = self.skills.get(slug)
+            get_fn = getattr(self.skills, "get", None)
+            previous = get_fn(slug) if callable(get_fn) else None
             unchanged = (
                 previous is not None
-                and previous.provenance is not None
+                and getattr(previous, "provenance", None) is not None
                 and previous.provenance.content_hash == skill_provenance.content_hash
             )
             if unchanged:
-                records = self.skills._read_capability_records(slug)
-                current = self.skills.capability_status(slug)
-                lifecycle = [row for row in records if row["kind"] in {"activation", "rollback"}]
-                rolled_back = bool(lifecycle and lifecycle[-1]["kind"] == "rollback")
-                if records and (rolled_back or current["status"] in {"passed", "failed"}):
+                read_recs_fn = getattr(self.skills, "_read_capability_records", None)
+                cap_status_fn = getattr(self.skills, "capability_status", None)
+                records = read_recs_fn(slug) if callable(read_recs_fn) else []
+                current = cap_status_fn(slug) if callable(cap_status_fn) else {}
+                lifecycle = [row for row in records if row.get("kind") in {"activation", "rollback"}]
+                rolled_back = bool(lifecycle and lifecycle[-1].get("kind") == "rollback")
+                if records and (rolled_back or current.get("status") in {"passed", "failed"}):
                     learning["evaluation"] = {
                         "status": "skipped", "reason": "unchanged_content",
                     }
                     learning["activation"] = {"status": "preserved"}
-                    if activate and not rolled_back and current["can_activate"]:
-                        activated = self.skills.activate_candidate(slug)
+                    if activate and not rolled_back and current.get("can_activate"):
+                        act_fn = getattr(self.skills, "activate_candidate", None)
+                        activated = act_fn(slug) if callable(act_fn) else None
                         learning["activation"] = {
                             "status": "activated" if activated is not None else "not_activated",
                         }
-                    learning["admission_check"] = self.skills.admission_status(slug)
-                    learning.update(self.skills.capability_status(slug))
+                    adm_fn = getattr(self.skills, "admission_status", None)
+                    if callable(adm_fn):
+                        learning["admission_check"] = adm_fn(slug)
+                    if callable(cap_status_fn):
+                        learning.update(cap_status_fn(slug))
                     return slug, None
             if not unchanged:
                 self.skills.add(
@@ -768,22 +776,28 @@ class HandlerRegistry:
                     ),
                     provenance=skill_provenance,
                 )
+            adm_fn = getattr(self.skills, "admission_status", None)
             learning.update({
                 "slug": slug, "active": False, "advisory_only": True,
                 "effectiveness": "not_checked",
-                "admission_check": self.skills.admission_status(slug),
+                "admission_check": adm_fn(slug) if callable(adm_fn) else {},
                 "evaluation": {"status": "not_checked"},
                 "activation": {"status": "not_activated"},
             })
             try:
-                evaluation = self.skills.evaluate_candidate(slug)
-                learning["evaluation"] = evaluation
-                if activate and evaluation["status"] == "passed":
-                    activated = self.skills.activate_candidate(slug)
-                    learning["activation"] = {
-                        "status": "activated" if activated is not None else "not_activated",
-                    }
-                learning.update(self.skills.capability_status(slug))
+                eval_fn = getattr(self.skills, "evaluate_candidate", None)
+                if callable(eval_fn):
+                    evaluation = eval_fn(slug)
+                    learning["evaluation"] = evaluation
+                    if activate and evaluation.get("status") == "passed":
+                        act_fn = getattr(self.skills, "activate_candidate", None)
+                        activated = act_fn(slug) if callable(act_fn) else None
+                        learning["activation"] = {
+                            "status": "activated" if activated is not None else "not_activated",
+                        }
+                cap_fn = getattr(self.skills, "capability_status", None)
+                if callable(cap_fn):
+                    learning.update(cap_fn(slug))
             except Exception as exc:  # noqa: BLE001 - candidate stays quarantined
                 learning["evaluation"] = {"status": "failed", "error": str(exc)}
                 learning["activation"] = {"status": "not_activated", "error": str(exc)}

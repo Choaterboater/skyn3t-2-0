@@ -21,7 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from skyn3t.config.settings import Settings, get_settings
 from skyn3t.core.agent import TaskRequest, TaskResult
 from skyn3t.memory.models import (
-    Base, BuildRow, CommunicationPersonaRow, LessonRow, MessageRow, TaskRow,
+    Base,
+    BuildRow,
+    CommunicationPersonaRow,
+    LessonRow,
+    MessageRow,
+    TaskRow,
     UserCorrectionRow,
 )
 from skyn3t.process_utils import is_process_alive

@@ -246,8 +246,8 @@ async def test_llm_target_discovery_used_when_gaps_yield_no_targets(tmp_path):
 
 async def test_llm_target_discovery_skipped_on_stub_backend(tmp_path):
     # Default test-env backend is "stub" (conftest.py pins SKYN3T_LLM_BACKEND=stub).
-    # No repo_map-driven LLM call should happen, and the task must still succeed
-    # with zero files touched rather than raising.
+    # No repo_map-driven LLM call should happen. Missing targets are reported,
+    # not raised or disguised as a successful repair.
     routes = tmp_path / "src" / "routes"
     routes.mkdir(parents=True)
     (routes / "+page.svelte").write_text("<h1>Home</h1>\n")
@@ -258,7 +258,8 @@ async def test_llm_target_discovery_skipped_on_stub_backend(tmp_path):
         payload={"brief": "add a contact form", "worktree_dir": str(tmp_path),
                  "gaps": ["add a contact form"],
                  "repo_map": "src/routes/+page.svelte\n"}))
-    assert result.success
+    assert not result.success
+    assert "repair targets" in result.error
     assert result.output["files"] == []
 
 
@@ -279,14 +280,14 @@ async def test_llm_target_discovery_never_raises_when_llm_explodes(tmp_path):
             payload={"brief": "add a contact form", "worktree_dir": str(tmp_path),
                      "gaps": ["add a contact form"],
                      "repo_map": "src/routes/+page.svelte\n"}))
-    assert result.success  # never breaks the whole task
+    assert not result.success
+    assert "repair targets" in result.error
     assert result.output["files"] == []
 
 
 async def test_llm_target_discovery_skipped_when_no_repo_map(tmp_path):
     # No repo_map in the payload at all -- must not attempt an LLM call, and
-    # must not raise; degrade to whatever the deterministic fallback found
-    # (nothing, for this unconventional layout).
+    # must report that no target was found for this unconventional layout.
     routes = tmp_path / "src" / "routes"
     routes.mkdir(parents=True)
     (routes / "+page.svelte").write_text("<h1>Home</h1>\n")
@@ -300,5 +301,6 @@ async def test_llm_target_discovery_skipped_when_no_repo_map(tmp_path):
             type="code_improve",
             payload={"brief": "add a contact form", "worktree_dir": str(tmp_path),
                      "gaps": ["add a contact form"]}))
-    assert result.success
+    assert not result.success
+    assert "repair targets" in result.error
     assert result.output["files"] == []

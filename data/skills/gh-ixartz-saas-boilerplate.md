@@ -2,7 +2,7 @@
 slug: gh-ixartz-saas-boilerplate
 title: ixartz/SaaS-Boilerplate: Next.js 16 + Drizzle + Clerk SaaS Starter
 stack: nextjs
-tags: authentication, nextjs, react, reference, saas, github-distilled, hygiene:quarantine, review-held
+tags: authentication, nextjs, react, reference, saas, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

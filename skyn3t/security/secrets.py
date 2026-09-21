@@ -128,6 +128,7 @@ class SecretsStore:
         for attr in (
             "openrouter_api_key", "anthropic_api_key", "openai_api_key",
             "kimi_api_key", "auth_token", "replicate_api_token", "github_token",
+            "typesafe_api_key",
             # Deploy tokens (mirrors Settings.deploy_tokens). Omitting them
             # meant redact()/scrub_text could not see them, and golden_bench
             # documented several leaking VERBATIM into artifacts/run.json.

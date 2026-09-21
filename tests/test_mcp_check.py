@@ -20,7 +20,103 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from skyn3t.studio.mcp_check import McpVerdict, check_mcp
+from skyn3t.studio.product_spec import ProductSpecV1, RequirementRecord
+
+
+def test_required_capability_cannot_pass_just_because_protocol_works(tmp_path: Path):
+    (tmp_path / "server.py").write_text(_GOOD_SERVER)
+    ProductSpecV1(
+        project_id="limited-mcp",
+        acceptance_registry_version=1,
+        requirements=[RequirementRecord(
+            text="Implement real paginated inventory",
+            acceptance_ids=["mcp:capability:mist.inventory"],
+            provenance={"mcp_profile": "mist-readonly-proactive-v1"},
+        )],
+    ).save(tmp_path)
+    result = check_mcp(tmp_path, stack="mcp", python_exec=sys.executable)
+    assert result.ok is False
+    assert any("capability" in issue.lower() for issue in result.issues)
+
+
+def test_agent_can_exercise_the_profile_before_delivery_metadata_exists(tmp_path: Path):
+    (tmp_path / "server.py").write_text(_GOOD_SERVER)
+    result = check_mcp(
+        tmp_path, "mcp", python_exec=sys.executable,
+        capability_profile="mist-readonly-proactive-v1",
+    )
+    assert not result.ok
+    coverage = result.checked["capability_coverage"]
+    assert len(coverage["cases"]) == 13
+    assert coverage["cases"]["mist.worker"]["status"] == "failed"
+
+
+def test_mcp_profile_rejects_machine_specific_dependency_paths(tmp_path: Path):
+    from skyn3t.studio.mcp_capabilities import check_mcp_capabilities
+
+    (tmp_path / "server.py").write_text(_GOOD_SERVER)
+    (tmp_path / "environment_hack.py").write_text(
+        'DEPENDENCIES = "/opt/some-machine/.venv/lib/python3.13/site-packages"\n'
+    )
+    ProductSpecV1(
+        project_id="nonportable",
+        requirements=[RequirementRecord(
+            text="Portable credential-free startup",
+            acceptance_ids=["mcp:capability:mist.credentials"],
+            provenance={"mcp_profile": "mist-readonly-proactive-v1"},
+        )],
+    ).save(tmp_path)
+    result = check_mcp_capabilities(tmp_path, python_exec=sys.executable, tools=["diagnose_site"])
+    assert result is not None
+    case = result["cases"]["mist.credentials"]
+    assert case["status"] == "failed"
+    assert "machine-specific dependency" in case["reason"]
+
+
+def test_unprofiled_mcp_cannot_pass_with_host_dependency_override(tmp_path: Path):
+    (tmp_path / "server.py").write_text(
+        'import sys\nsys.path.insert(0, "/opt/developer/site-packages")\n' + _GOOD_SERVER
+    )
+    result = check_mcp(tmp_path, "mcp", python_exec=sys.executable)
+    assert not result.ok
+    assert any("machine-specific dependency" in issue for issue in result.issues)
+
+
+@pytest.mark.parametrize("drop_false", [False, True])
+def test_inventory_capability_exercises_actual_http_and_preserves_false_filters(tmp_path: Path, drop_false):
+    from skyn3t.studio.mcp_capabilities import check_mcp_capabilities
+    from skyn3t.studio.mcp_profiles import MIST_PROFILE, mcp_profile_product
+
+    adapter = '''
+import os, httpx
+original_handle = handle
+def handle(msg):
+    if msg.get("method") == "tools/call" and msg["params"]["name"] == "get_org_inventory":
+        args = msg["params"]["arguments"]
+        response = httpx.get(
+            "https://api.mist.com/api/v1/orgs/" + args["org_id"] + "/inventory",
+            headers={"Authorization": "Token " + os.environ["MIST_API_TOKEN"]},
+            params={"type": args["device_type"], "unassigned": args["unassigned"],
+                    "limit": args.get("limit", 100), "page": args.get("page", 1)})
+        response.raise_for_status()
+        return _result(msg["id"], json.dumps({
+            "success": True, "data": response.json(), "errors": [],
+            "coverage": {"complete": True, "limitations": []}}))
+    return original_handle(msg)
+'''
+    script = _GOOD_SERVER.replace("if __name__ == \"__main__\":", adapter + '\nif __name__ == "__main__":')
+    if drop_false:
+        script = script.replace('"unassigned": args["unassigned"]', '"unassigned": True')
+    (tmp_path / "server.py").write_text(script)
+    mcp_profile_product(MIST_PROFILE, "inventory-test", "Inventory contract").save(tmp_path)
+    receipt = check_mcp_capabilities(
+        tmp_path, python_exec=sys.executable, tools=["get_org_inventory"],
+    )
+    assert receipt is not None
+    assert receipt["cases"]["mist.inventory"]["status"] == ("failed" if drop_false else "passed"), receipt
 
 # ── raw JSON-RPC stdio fixture servers (no mcp SDK) ────────────────────────
 
@@ -318,3 +414,221 @@ def test_mcp_check_does_not_pass_host_secrets_to_server(tmp_path, monkeypatch):
     assert v.skipped
     assert "OPENAI_API_KEY" not in captured["env"]
     assert captured["env"]["PYTHONUNBUFFERED"] == "1"
+
+
+_HTTP_SERVER = r'''
+import json, sys
+import httpx
+
+def call(args):
+    if not args.get("api_token"):
+        return {"success": False, "error": "credentials_required"}
+    try:
+        response = httpx.get("https://mist.invalid/api/v1/sites",
+                             headers={"Authorization": "Token " + args["api_token"]})
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return FAILURE_RESULT
+    return {"success": True, "sites": response.json()}
+
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    if method == "notifications/initialized":
+        continue
+    if method == "initialize":
+        result = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "http-fixture", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "site_health", "description": "Read real site health.",
+                  "inputSchema": {"type": "object", "properties": {
+                      "api_token": {"type": "string", "default": ""}}}}]}
+    elif method == "tools/call":
+        value = call(request["params"].get("arguments", {}))
+        result = {"content": [{"type": "text", "text": json.dumps(value)}],
+                  "structuredContent": value, "isError": False}
+    else:
+        continue
+    print(json.dumps({"jsonrpc": "2.0", "id": request["id"], "result": result}), flush=True)
+'''
+
+
+def test_http_failures_cannot_be_replaced_with_success(tmp_path):
+    _write_server(tmp_path, _HTTP_SERVER.replace(
+        "FAILURE_RESULT", '{"success": True, "action_status": "completed", "devices": ["demo-ap"]}',
+    ))
+
+    verdict = check_mcp(tmp_path, "mcp", python_exec=sys.executable)
+
+    assert not verdict.ok, verdict.to_dict()
+    assert not verdict.unavailable
+    assert any("HTTP 401" in issue for issue in verdict.issues)
+    assert any("HTTP 503" in issue for issue in verdict.issues)
+    assert any("timeout" in issue for issue in verdict.issues)
+
+
+def test_http_failures_are_exercised_and_reported_honestly(tmp_path):
+    _write_server(tmp_path, _HTTP_SERVER.replace(
+        "FAILURE_RESULT", '{"success": False, "error": "upstream_failed"}',
+    ))
+
+    verdict = check_mcp(tmp_path, "mcp", python_exec=sys.executable)
+
+    assert verdict.ok, verdict.to_dict()
+    checks = verdict.checked["http_failure_handling"]
+    assert checks["exercised_tools"] == ["site_health"]
+    assert {case["fault"] for case in checks["cases"]} == {"HTTP 401", "HTTP 503", "timeout"}
+    assert all(case["status"] == "pass" for case in checks["cases"])
+
+
+def test_success_with_an_error_field_is_still_false_success(tmp_path):
+    _write_server(tmp_path, _HTTP_SERVER.replace(
+        "FAILURE_RESULT", '{"success": True, "error": "unauthorized"}',
+    ))
+
+    verdict = check_mcp(tmp_path, "mcp", python_exec=sys.executable)
+
+    assert not verdict.ok, verdict.to_dict()
+    assert any("site_health" in issue for issue in verdict.issues)
+
+
+def test_http_integration_without_exercisable_calls_is_unavailable(tmp_path):
+    source = _HTTP_SERVER.replace("if not args.get(\"api_token\"):", "if True:")
+    _write_server(tmp_path, source.replace(
+        "FAILURE_RESULT", '{"success": False, "error": "upstream_failed"}',
+    ))
+
+    verdict = check_mcp(tmp_path, "mcp", python_exec=sys.executable)
+
+    assert verdict.unavailable, verdict.to_dict()
+    assert not verdict.ok
+    assert verdict.gaps() == []
+    assert "not exercised" in verdict.reason
+
+
+@pytest.mark.parametrize("client", ["httpx_async", "requests", "urllib"])
+def test_supported_http_clients_report_injected_failures(tmp_path, client):
+    source = _HTTP_SERVER.replace("FAILURE_RESULT", '{"success": False, "error": "upstream_failed"}')
+    if client == "httpx_async":
+        setup = '''
+import asyncio
+async def _request(*args, **kwargs):
+    async with httpx.AsyncClient() as client:
+        return await client.get(*args, **kwargs)
+def request_api(*args, **kwargs):
+    return asyncio.run(_request(*args, **kwargs))
+'''
+        source = source.replace("httpx.get(", "request_api(")
+    elif client == "requests":
+        pytest.importorskip("requests")
+        setup = "\nimport requests\n"
+        source = source.replace("httpx.get(", "requests.get(").replace(
+            "except httpx.HTTPError:", "except (httpx.HTTPError, requests.RequestException):",
+        )
+    else:
+        setup = '''
+import urllib.request, urllib.error
+def request_api(url, headers):
+    return urllib.request.urlopen(urllib.request.Request(url, headers=headers))
+'''
+        source = source.replace("httpx.get(", "request_api(").replace(
+            "except httpx.HTTPError:", "except (httpx.HTTPError, urllib.error.URLError, TimeoutError):",
+        )
+    source = source.replace("import httpx", "import httpx\n" + setup, 1)
+    _write_server(tmp_path, source)
+
+    verdict = check_mcp(tmp_path, "mcp", python_exec=sys.executable)
+
+    assert verdict.ok, verdict.to_dict()
+    cases = verdict.checked["http_failure_handling"]["cases"]
+    assert len(cases) == 3 and all(case["requests"] == 1 for case in cases)
+
+
+@pytest.mark.parametrize("operation", [
+    'socket.create_connection(("127.0.0.1", 1))',
+    'subprocess.run([sys.executable, "-c", "open(\'unexpected-write\', \'w\').write(\'bad\')"])',
+])
+def test_http_probe_blocks_raw_network_and_subprocesses(tmp_path, operation):
+    source = _HTTP_SERVER.replace("FAILURE_RESULT", '{"success": False, "error": "blocked"}')
+    source = source.replace("import httpx", "import httpx, socket, subprocess", 1)
+    source = source.replace(
+        'response = httpx.get("https://mist.invalid/api/v1/sites",\n'
+        '                             headers={"Authorization": "Token " + args["api_token"]})',
+        f"response = {operation}",
+    ).replace("except httpx.HTTPError:", "except (httpx.HTTPError, OSError):")
+    _write_server(tmp_path, source)
+
+    verdict = check_mcp(tmp_path, "mcp", python_exec=sys.executable)
+
+    assert not verdict.ok
+    assert verdict.unavailable, verdict.to_dict()
+    assert not (tmp_path / "unexpected-write").exists()
+    assert all(
+        case["blocked_operation"]
+        for case in verdict.checked["http_failure_handling"]["cases"]
+    )
+
+
+def test_http_probe_uses_a_valid_time_window_and_scope():
+    from skyn3t.studio.mcp_check import _http_fixture_args
+
+    args = _http_fixture_args({
+        "type": "object", "required": ["start", "end", "site_id"],
+        "properties": {
+            "start": {"type": "integer"}, "end": {"type": "integer"},
+            "site_id": {"type": "string", "format": "uuid"},
+        },
+    })
+    assert args["end"] - args["start"] == 900
+    assert args["end"] < time.time()
+    assert args["site_id"] == "00000000-0000-4000-8000-000000000001"
+
+
+def test_http_probe_preserves_application_endpoint_defaults(tmp_path, monkeypatch):
+    monkeypatch.delenv("MIST_BASE_URL", raising=False)
+    source = _HTTP_SERVER.replace("import json, sys", "import json, sys, os")
+    source = source.replace(
+        "def call(args):",
+        'def call(args):\n'
+        '    if os.environ.get("MIST_BASE_URL", "https://api.mist.com") != "https://api.mist.com":\n'
+        '        return {"success": False, "error": "unsupported cloud hostname"}',
+    ).replace("FAILURE_RESULT", '{"success": False, "error": "upstream unavailable"}')
+    _write_server(tmp_path, source)
+
+    verdict = check_mcp(tmp_path, stack="mcp", python_exec=sys.executable)
+    assert verdict.ok, verdict.to_dict()
+
+
+@pytest.mark.parametrize("statement", [
+    "import urllib.request", "import json, httpx", "import os, requests as client",
+])
+def test_http_detection_handles_supported_import_forms(tmp_path, statement):
+    from skyn3t.studio.mcp_check import _http_requirements
+
+    _write_server(tmp_path, statement + "\n")
+    assert _http_requirements(tmp_path, "")[0]
+
+
+def test_http_credentials_must_not_be_required_for_startup(tmp_path):
+    source = _HTTP_SERVER.replace(
+        "import httpx",
+        'import httpx, os\n'
+        'if not os.getenv("MIST_API_TOKEN"):\n'
+        '    raise RuntimeError("credentials incorrectly required before tool listing")',
+    ).replace("FAILURE_RESULT", '{"success": False, "error": "upstream unavailable"}')
+    _write_server(tmp_path, source)
+
+    verdict = check_mcp(tmp_path, stack="mcp", python_exec=sys.executable)
+    assert not verdict.ok
+    assert any("startup" in issue for issue in verdict.issues)
+
+
+@pytest.mark.parametrize("success", [False, True])
+def test_failure_semantics_cover_sdk_wrappers_and_conflicting_error_flags(success):
+    from skyn3t.studio.mcp_check import _failure_reported
+
+    response = {"result": {
+        "content": [], "isError": success,
+        "structuredContent": {"result": {"success": success, "error": "upstream failed"}},
+    }}
+    assert _failure_reported(response) is not success

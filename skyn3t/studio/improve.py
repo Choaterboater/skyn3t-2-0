@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-from datetime import UTC
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock, RLock
 from typing import Any
@@ -35,6 +35,7 @@ from skyn3t.persistence.candidate_archive import CandidateArchive
 from skyn3t.rag.repo_map import build_repo_context_pack
 from skyn3t.security.secrets import SecretsStore, scrub_text
 from skyn3t.studio.design_tokens import read_design_md
+from skyn3t.studio.gate_posture import GatePosture
 from skyn3t.studio.grounding_check import check_grounding
 from skyn3t.studio.layout_profiles import (
     is_valid_profile_payload,
@@ -54,7 +55,6 @@ from skyn3t.studio.proof_run import (
     stabilize_node_dependencies,
 )
 from skyn3t.studio.web_interact_check import check_web_interact
-from skyn3t.studio.gate_posture import GatePosture
 from skyn3t.worktree import (
     cleanup_worktree,
     create_worktree,
@@ -555,7 +555,7 @@ class ImproveOutcome:
     goal: str
     files_changed: list[str] = field(default_factory=list)
     proof_passed: bool = False
-    score: float = 0.0
+    score: float | None = None
     status: str = "completed"  # completed | failed
     detail: dict[str, Any] = field(default_factory=dict)
 
@@ -630,6 +630,43 @@ class ImproveEngine:
         except Exception:  # noqa: BLE001 - routing discovery is best-effort
             pass
         return None
+
+    async def _assess_candidate(
+        self, project: Path, manifest: BuildManifest | None, goal: str,
+        stack: str, proof: Any, mcp_check: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        from skyn3t.agents.reviewer import ReviewerAgent
+        from skyn3t.studio.runner import StudioRunner
+
+        review = await ReviewerAgent(
+            event_bus=self.event_bus, llm_client=self._routing_client(),
+        ).execute(TaskRequest(type="review", payload={
+            "project_dir": str(project), "stack": stack,
+            "brief": "\n\n".join(filter(None, (getattr(manifest, "brief", ""), goal))),
+            "verification_evidence": {"proof": proof.to_dict(), "mcp_check": mcp_check},
+        }))
+        status = review.metadata["assessment_status"]
+        result: dict[str, Any] = {
+            "status": status, "at": datetime.now(UTC).isoformat(),
+            "source_tree": review.metadata["source_tree"],
+            "review_score": review.output["score"] if status == "assessed" else None,
+            "proof_score": float(proof.score), "score": None,
+            "verdict": review.output["verdict"], "gaps": review.output["gaps"],
+            "method": "semantic_review_and_proof" if status == "assessed" else status,
+        }
+        if status == "assessed":
+            current = BuildManifest(slug=project.name, brief="", stack=stack, extra={})
+            score = StudioRunner._honest_score(
+                0.6 * float(review.output["score"]) + 0.4 * float(proof.score), proof.passed,
+            )
+            score = StudioRunner._cap_degraded_proof_score(
+                self.settings, current, proof, score, result["verdict"],
+            )
+            result["score"] = StudioRunner._shape_final_score(current, proof, score, result["verdict"])
+            result["score_policy"] = current.extra
+        else:
+            _log.warning("improve.quality_unrated", status=status, slug=getattr(manifest, "slug", ""))
+        return result
 
     def _capture_routing_snapshot(self, client: Any | None) -> dict[str, Any]:
         if isinstance(self.routing_snapshot, dict):
@@ -756,9 +793,56 @@ class ImproveEngine:
             manifest.extra.get("layout_profile") if manifest is not None else None
         )
         layout_profile = profile_from_payload(stored_layout_profile).to_dict()
+        skill_receipts: list[dict[str, Any]] = []
+        skill_terminal_grading: dict[str, Any] = {}
+        skill_outcome_recorded = False
+
+        def record_skill_outcome(detail: dict[str, Any]) -> None:
+            nonlocal skill_outcome_recorded
+            grading = skill_terminal_grading or self._skill_grading(skill_receipts, {})
+            detail["skills_used"] = [row["slug"] for row in skill_receipts]
+            detail["skill_selection_receipts"] = {"improve": deepcopy(skill_receipts)}
+            detail["skill_terminal_grading"] = grading
+            if skill_outcome_recorded:
+                return
+            skill_outcome_recorded = True
+            if grading.get("proof_status") not in ("passed", "failed"):
+                return
+            gradeable = [row["slug"] for row in grading["post_use_checks"] if row["revision_matches"]]
+            if gradeable and self.skills is not None:
+                try:
+                    self.skills.record_use(
+                        gradeable,
+                        helpful=(
+                            grading["proof_status"] == "passed"
+                            and grading.get("acceptance_status") != "failed"
+                        ),
+                        quality=grading["quality"],
+                    )
+                except Exception as exc:  # noqa: BLE001 - advisory learning
+                    _log.warning("improve.skill_grading_failed", error=type(exc).__name__)
+
+        candidate_archive: CandidateArchive | None = None
 
         async def _emit_failed_outcome(outcome: ImproveOutcome) -> None:
             outcome.detail.setdefault("layout_profile", dict(layout_profile))
+            record_skill_outcome(outcome.detail)
+            if (
+                candidate_archive is not None and outcome.files_changed
+                and "candidate_retention" not in outcome.detail
+            ):
+                try:
+                    outcome.detail["candidate_retention"] = await asyncio.to_thread(
+                        candidate_archive.save, {}, {
+                            rel: None for rel in outcome.files_changed
+                            if Path(rel) not in _CONTROL_RELATIVE_PATHS
+                        },
+                    )
+                except (OSError, ValueError, RuntimeError) as exc:
+                    outcome.detail["candidate_retention"] = {
+                        "status": "unavailable", "reason": type(exc).__name__,
+                    }
+                    _log.warning("improve.candidate_retention_failed", error=type(exc).__name__)
             retention = outcome.detail.get("candidate_retention")
             if isinstance(retention, dict) and retention.get("status") == "unverified":
                 try:
@@ -810,7 +894,6 @@ class ImproveEngine:
         rollback_confirmed = False
         preserve_recovery_artifacts = False
         context_pack_summary: dict[str, object] = {}
-        candidate_archive: CandidateArchive | None = None
         try:
             try:
                 async with asyncio.timeout(improve_agentic_timeout) as _project_lock_timeout:
@@ -903,11 +986,20 @@ class ImproveEngine:
                     f"{improvement_prompt}\n\n"
                     f"{product_contract_prompt_block(product_spec)}"
                 )
+                from skyn3t.studio.mcp_profiles import mcp_profile_instructions, mcp_profile_name
+
+                mcp_profile = mcp_profile_name(product_spec)
+                if mcp_profile:
+                    improvement_prompt += "\n\n" + mcp_profile_instructions(mcp_profile)
             if has_stored_layout_profile:
                 improvement_prompt = "\n\n".join((
                     improvement_prompt,
                     layout_contract_block(profile),
                 ))
+            if stack == "mcp":
+                from skyn3t.agents._common import MCP_RELIABILITY_CONTRACT
+
+                improvement_prompt += "\n\n" + MCP_RELIABILITY_CONTRACT
             wt = create_worktree(
                 str(self.settings.projects_dir), f"improve-{slug}",
                 use_git=not existing_project,
@@ -956,6 +1048,26 @@ class ImproveEngine:
                     "failures):\n- " + "\n- ".join(grounding_hints)
                     + f"\n\n{repo_ctx}"
                 )
+            rendered = ""
+            if self.skills is not None:
+                try:
+                    from skyn3t.agents._common import _MAX_SKILL_ADVICE
+
+                    selected_skills = self.skills.relevant(stack, tags=["stage:improve"], limit=3)
+                    for skill in selected_skills:
+                        advice = self.skills.render_selected([skill]).strip()
+                        if not advice:
+                            continue
+                        candidate = (rendered + "\n\n" + advice).strip()
+                        if len(candidate) > _MAX_SKILL_ADVICE:
+                            continue
+                        rendered = candidate
+                        skill_receipts.append({
+                            "slug": skill.slug, "stage": "improve",
+                            "advisory_body_sha256": hashlib.sha256(skill.body.encode()).hexdigest(),
+                        })
+                except Exception as exc:  # noqa: BLE001 - skill advice is advisory
+                    _log.warning("improve.skill_injection_failed", error=type(exc).__name__)
             if self._learning is not None:
                 try:
                     injected = await self._learning.inject_for_build(
@@ -994,21 +1106,11 @@ class ImproveEngine:
             await self._emit(EventType.IMPROVE_STAGE,
                              {"slug": slug, "stage": "generating"}, cid)
             files_changed, improver_ok, improver_err, skipped, retention = await self._run_improver(
-                wt.dir,
-                slug,
-                stack,
-                improvement_prompt,
-                repo_ctx,
-                context_pack_summary,
-                routing_provider,
-                routing_model,
-                improve_agentic,
-                improve_agentic_timeout,
-                routing_summary,
-                cid,
-                layout_profile,
-                has_stored_layout_profile,
-                existing_project,
+                wt.dir, slug, stack, improvement_prompt, repo_ctx,
+                context_pack_summary, routing_provider, routing_model,
+                improve_agentic, improve_agentic_timeout, routing_summary, cid,
+                layout_profile, is_valid_profile_payload(stored_layout_profile), existing_project,
+                skills_advice=rendered,
             )
             if (routing_provider or existing_project) and not improver_ok:
                 # An explicit codegen CLI is a provider lock. Do not run
@@ -1166,6 +1268,7 @@ class ImproveEngine:
                 existing_project=existing_project,
             )
             proof_payload = proof.to_dict()
+            skill_terminal_grading = self._skill_grading(skill_receipts, proof_payload)
             if not proof.passed:
                 if self._learning is not None:
                     try:
@@ -1216,6 +1319,7 @@ class ImproveEngine:
                             slug,
                             files_changed=files_changed,
                             delivered_change=False,
+                            skill_terminal_grading=skill_terminal_grading,
                         )
                     except Exception as rec_exc:  # noqa: BLE001
                         _log.warning(
@@ -1258,12 +1362,60 @@ class ImproveEngine:
                     goal=goal,
                     files_changed=sorted(files_changed),
                     proof_passed=False,
-                    score=float(proof.score),
+                    score=None,
                     status="failed",
                     detail=failure_detail,
                 )
                 await _emit_failed_outcome(outcome)
                 return outcome
+
+            mcp_check: dict[str, Any] | None = None
+            if stack == "mcp":
+                from skyn3t.studio.mcp_check import check_mcp
+
+                await self._emit(
+                    EventType.IMPROVE_STAGE, {"slug": slug, "stage": "mcp_verification"}, cid
+                )
+                mcp_verdict = await asyncio.to_thread(
+                    check_mcp, wt.dir, stack,
+                    brief="\n\n".join((str(getattr(manifest, "brief", "") or ""), goal)),
+                )
+                mcp_check = mcp_verdict.to_dict()
+                from skyn3t.studio.mcp_capabilities import mcp_requirement_evidence
+
+                requirement_evidence = mcp_requirement_evidence(
+                    product_spec, mcp_check, wt.dir,
+                    str(getattr(manifest, "build_id", "") or cid),
+                )
+                trace = requirement_evidence.get("requirement_trace")
+                if trace and trace.get("go_eligible") is not True:
+                    mcp_verdict.issues.append("Required MCP capability evidence is missing, stale or failed")
+                    mcp_check = mcp_verdict.to_dict()
+                if not mcp_verdict.ok:
+                    _log.warning(
+                        "improve.mcp_verification_failed", slug=slug,
+                        issues=mcp_verdict.issues,
+                        requirement_status=trace.get("status") if trace else None,
+                    )
+                    skill_terminal_grading = self._skill_grading(
+                        skill_receipts, proof_payload, acceptance_passed=False,
+                    )
+                    outcome = ImproveOutcome(
+                        project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,
+                        files_changed=sorted(files_changed), proof_passed=True,
+                        score=None, status="failed",
+                        detail={
+                            "delivered": 0, "proof": proof_payload, "mcp_check": mcp_check,
+                            "requirement_trace": trace,
+                            "delivery_blocked": "mcp_verification_failed",
+                            "project_preserved": True,
+                        },
+                    )
+                    await _emit_failed_outcome(outcome)
+                    return outcome
+                skill_terminal_grading = self._skill_grading(
+                    skill_receipts, proof_payload, acceptance_passed=True,
+                )
 
             web_interact: dict[str, Any] | None = None
             if bool(getattr(self.settings, "web_interact_check_enabled", True)):
@@ -1280,7 +1432,7 @@ class ImproveEngine:
                     outcome = ImproveOutcome(
                         project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,
                         files_changed=sorted(files_changed), proof_passed=True,
-                        score=float(proof.score), status="failed",
+                        score=None, status="failed",
                         detail={
                             "delivered": 0, "proof": proof_payload,
                             "delivery_blocked": "required_browser_outcome_failed",
@@ -1304,7 +1456,7 @@ class ImproveEngine:
                     goal=goal,
                     files_changed=sorted(files_changed),
                     proof_passed=bool(proof.passed),
-                    score=float(proof.score),
+                    score=None,
                     status="failed",
                     detail={
                         "delivered": 0,
@@ -1318,6 +1470,32 @@ class ImproveEngine:
                 )
                 await _emit_failed_outcome(outcome)
                 return outcome
+
+            await self._emit(
+                EventType.IMPROVE_STAGE, {"slug": slug, "stage": "quality_review"}, cid,
+            )
+            assessment = await self._assess_candidate(
+                Path(wt.dir), manifest, goal, stack, proof, mcp_check,
+            )
+            if assessment["status"] == "unavailable" or (
+                assessment["status"] == "assessed" and assessment["verdict"] != "go"
+            ):
+                skill_terminal_grading = self._skill_grading(
+                    skill_receipts, proof_payload, acceptance_passed=False,
+                )
+                outcome = ImproveOutcome(
+                    project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,
+                    files_changed=sorted(files_changed), proof_passed=True,
+                    score=assessment["score"], status="failed",
+                    detail={
+                        "delivered": 0, "proof": proof_payload, "current_assessment": assessment,
+                        "delivery_blocked": "quality_review_failed", "project_preserved": True,
+                    },
+                )
+                await _emit_failed_outcome(outcome)
+                return outcome
+            if assessment["score"] is not None:
+                skill_terminal_grading["quality"] = assessment["score"] / 100
 
             candidate_after_proof = await asyncio.to_thread(
                 _source_snapshot,
@@ -1334,7 +1512,7 @@ class ImproveEngine:
                     goal=goal,
                     files_changed=sorted(files_changed),
                     proof_passed=bool(proof.passed),
-                    score=float(proof.score),
+                    score=None,
                     status="failed",
                     detail={
                         "delivered": 0,
@@ -1361,7 +1539,7 @@ class ImproveEngine:
                     goal=goal,
                     files_changed=sorted(files_changed),
                     proof_passed=bool(proof.passed),
-                    score=float(proof.score),
+                    score=None,
                     status="failed",
                     detail={
                         "delivered": 0,
@@ -1405,7 +1583,7 @@ class ImproveEngine:
                     goal=goal,
                     files_changed=sorted(files_changed),
                     proof_passed=bool(proof.passed),
-                    score=float(proof.score),
+                    score=None,
                     status="failed",
                     detail={
                         "delivered": 0,
@@ -1429,7 +1607,7 @@ class ImproveEngine:
                     goal=goal,
                     files_changed=sorted(files_changed),
                     proof_passed=bool(proof.passed),
-                    score=float(proof.score),
+                    score=None,
                     status="failed",
                     detail={
                         "delivered": 0,
@@ -1471,7 +1649,7 @@ class ImproveEngine:
                     goal=goal,
                     files_changed=sorted(files_changed),
                     proof_passed=bool(proof.passed),
-                    score=float(proof.score),
+                    score=None,
                     status="failed",
                     detail={
                         "delivered": 0,
@@ -1551,7 +1729,7 @@ class ImproveEngine:
                     goal=goal,
                     files_changed=sorted(files_changed),
                     proof_passed=bool(proof.passed),
-                    score=float(proof.score),
+                    score=None,
                     status="failed",
                     detail={
                         "delivered": 0,
@@ -1618,6 +1796,9 @@ class ImproveEngine:
                             config_summary,
                             files_changed=files_changed,
                             web_interact=web_interact,
+                            mcp_check=mcp_check,
+                            skill_terminal_grading=skill_terminal_grading,
+                            assessment=assessment,
                         )
                     except Exception as rec_exc:  # noqa: BLE001
                         _log.warning(
@@ -1625,6 +1806,7 @@ class ImproveEngine:
                             slug=slug,
                             error=str(rec_exc),
                         )
+                        raise
                     delivered = list_files(staged_project)
 
                 _copy_directory_metadata(backup_project, staged_project)
@@ -1787,8 +1969,12 @@ class ImproveEngine:
                 "routing_snapshot": routing_summary,
                 "layout_profile": layout_profile,
             }
+            record_skill_outcome(detail)
             if web_interact is not None:
                 detail["web_interact"] = web_interact
+            if mcp_check is not None:
+                detail["mcp_check"] = mcp_check
+            detail["current_assessment"] = assessment
             if skipped:
                 detail["skipped"] = skipped
             # An honest signal for the dashboard: 0 files touched must not read
@@ -1806,7 +1992,7 @@ class ImproveEngine:
             outcome = ImproveOutcome(
                 project_dir=str(project_dir), slug=slug, stack=stack, goal=goal,
                 files_changed=sorted(files_changed), proof_passed=bool(proof.passed),
-                score=float(proof.score), status="completed",
+                score=assessment["score"], status="completed",
                 detail=detail,
             )
             await self._emit(EventType.IMPROVE_COMPLETED, outcome.to_dict(), cid)
@@ -1824,10 +2010,14 @@ class ImproveEngine:
             if preserve_recovery_artifacts and backup_root is not None:
                 failure_payload["recovery_root"] = str(backup_root)
                 failure_payload["project_preserved"] = rollback_confirmed
+            record_skill_outcome(failure_payload)
             await self._emit(EventType.IMPROVE_FAILED, failure_payload, cid)
             return ImproveOutcome(project_dir=str(project_dir), slug=slug, stack=stack,
                                   goal=goal, status="failed",
                                   detail={
+                                      "skills_used": failure_payload["skills_used"],
+                                      "skill_selection_receipts": failure_payload["skill_selection_receipts"],
+                                      "skill_terminal_grading": failure_payload["skill_terminal_grading"],
                                       "error": str(exc),
                                       **(
                                           {
@@ -1887,6 +2077,39 @@ class ImproveEngine:
                         if project_lock_acquired:
                             project_lock.release()
 
+    def _skill_grading(
+        self, receipts: list[dict[str, Any]], proof: dict[str, Any],
+        *, acceptance_passed: bool | None = None,
+    ) -> dict[str, Any]:
+        """Keep observed proof separate from causal credit, bound to selected revisions."""
+        status = (
+            "passed" if proof.get("passed") is True
+            else "failed" if proof.get("passed") is False else "not_checked"
+        )
+        detail = proof.get("detail") or {}
+        checks = []
+        for receipt in receipts:
+            current = self.skills.get(receipt["slug"]) if self.skills is not None else None
+            body = getattr(current, "body", None)
+            digest = hashlib.sha256(body.encode()).hexdigest() if isinstance(body, str) else None
+            checks.append({
+                **receipt,
+                "revision_matches": digest == receipt["advisory_body_sha256"],
+                "exposure": "selected", "attribution": "inconclusive",
+                "proof_status": status,
+                "checks": {key: detail[key] for key in ("build", "tests") if key in detail},
+            })
+        return {
+            "schema_version": 1, "slugs": [row["slug"] for row in receipts],
+            "proof_status": status,
+            "acceptance_status": (
+                "passed" if acceptance_passed is True
+                else "failed" if acceptance_passed is False else "not_checked"
+            ),
+            "quality": 0.0 if acceptance_passed is False else float(proof.get("score", 0)) / 100,
+            "post_use_checks": checks,
+        }
+
     async def _run_improver(
         self,
         worktree_dir: str,
@@ -1904,19 +2127,20 @@ class ImproveEngine:
         layout_profile: dict[str, str | int | bool],
         layout_profile_is_stored: bool,
         existing_project: bool = False,
+        *,
+        skills_advice: str = "",
     ) -> tuple[list[str], bool, str, dict[str, str], dict[str, Any]]:
         task = TaskRequest(
             type="code_improver",
             payload={"worktree_dir": worktree_dir, "brief": goal, "slug": slug,
                      "stack": stack, "gaps": [goal], "repo_map": repo_ctx,
+                     "skills_advice": skills_advice,
                      "repo_context_pack": dict(context_pack_summary),
                      "routing_snapshot": deepcopy(routing_summary),
                      "layout_profile": dict(layout_profile),
                      "layout_profile_is_stored": layout_profile_is_stored,
                      "existing_project": existing_project,
-                     # Free-text goals get the whole-project agentic session
-                     # (multi-file, can create pages); the per-file path stays
-                     # the automatic fallback inside the improver.
+                     # Free-text goals use agentic generation, with per-file fallback.
                      "agentic": improve_agentic,
                      "agentic_timeout": improve_agentic_timeout,
                      "agentic_provider": routing_provider,
@@ -1967,14 +2191,74 @@ class ImproveEngine:
                         config_summary: dict[str, Any] | None = None,
                         files_changed: list[str] | None = None,
                         delivered_change: bool = True,
-                        web_interact: dict[str, Any] | None = None) -> None:
-        from datetime import datetime
-
+                        web_interact: dict[str, Any] | None = None,
+                        mcp_check: dict[str, Any] | None = None,
+                        skill_terminal_grading: dict[str, Any] | None = None,
+                        assessment: dict[str, Any] | None = None) -> None:
+        if delivered_change and stack == "mcp" and (
+            not mcp_check or mcp_check.get("ok") is not True
+        ):
+            raise ValueError("Cannot record an MCP improvement as GO without fresh MCP verification")
         man = manifest or BuildManifest(slug=slug, brief="", stack=stack, status="completed")
+        requirement_evidence: dict[str, Any] = {}
+        if delivered_change and stack == "mcp" and mcp_check is not None:
+            from skyn3t.studio.mcp_capabilities import mcp_requirement_evidence
+
+            requirement_evidence = mcp_requirement_evidence(
+                ProductSpecV1.load(project_dir), mcp_check, project_dir, man.build_id,
+            )
+            trace = requirement_evidence.get("requirement_trace")
+            if trace and trace.get("go_eligible") is not True:
+                raise ValueError("Cannot deliver MCP improvement without current required capability evidence")
         if manifest is None:
             man.extra["existing_project"] = True
+        if delivered_change:
+            old_keys = (
+                "final_score_shape", "proof_environment_gate", "quality_scorecard",
+                "rescore", "mcp_planning_failure", "review_refreshed",
+                "delivery_source_tree", "mcp_check_source_tree",
+                "intent", "intent_gate",
+            )
+            previous = {
+                "score": man.score, "verdict": man.verdict, "status": man.status,
+                "superseded_at": datetime.now(UTC).isoformat(),
+                "current_assessment": deepcopy(man.extra.get("current_assessment")),
+                "gate_findings": deepcopy(man.extra.get("gate_findings", [])),
+                "requirement_trace": deepcopy(man.extra.get("requirement_trace")),
+                **{key: man.extra[key] for key in old_keys if key in man.extra},
+            }
+            man.extra.setdefault("assessment_history", []).append(previous)
+            for key in old_keys:
+                man.extra.pop(key, None)
+            covered = {"proof"}
+            if assessment and assessment.get("status") == "assessed":
+                covered.add("code_degraded")
+                covered.add("intent")
+            if mcp_check and mcp_check.get("ok") is True:
+                covered.add("mcp_verification")
+            if requirement_evidence:
+                covered.add("requirement_trace")
+                man.extra.update(requirement_evidence)
+                man.extra.pop("requirement_trace_gate", None)
+            man.extra["gate_findings"] = [
+                finding for finding in man.extra.get("gate_findings", [])
+                if finding.get("gate") not in covered
+            ]
+            man.extra["current_assessment"] = deepcopy(assessment or {
+                "status": "unavailable", "score": None, "proof_score": float(proof.score),
+            })
+            man.extra.update(deepcopy((assessment or {}).get("score_policy", {})))
+            if assessment and assessment.get("status") == "assessed":
+                from skyn3t.studio.intent_score import score_intent
+
+                intent = score_intent(man.brief, project_dir, stack, llm_score=assessment["review_score"])
+                intent.detail["semantic_source"] = "current_source_review"
+                man.extra["intent"] = intent.to_dict()
         if delivered_change and web_interact is not None:
             man.extra["web_interact"] = deepcopy(web_interact)
+        if delivered_change and mcp_check is not None:
+            man.extra["mcp_check"] = deepcopy(mcp_check)
+            man.extra["mcp_check_source_tree"] = _source_snapshot(project_dir)
         hist = man.extra.setdefault("improve_history", [])
         # `files` is the TOTAL delivered to the project dir (kept for compat);
         # `files_changed` is the honest signal — it stayed at "files: 261" while
@@ -1982,20 +2266,50 @@ class ImproveEngine:
         history_entry = {"goal": goal, "files": len(delivered),
                      "files_changed": len(files_changed or []),
                      "at": datetime.now(UTC).isoformat(),
-                     "proof_passed": bool(proof.passed), "score": float(proof.score),
+                     "proof_passed": bool(proof.passed), "score": (assessment or {}).get("score"),
+                     "proof_score": float(proof.score),
                      "delivered": bool(delivered_change)}
         if delivered_change and "web_interact" in man.extra:
             history_entry["web_interact"] = deepcopy(man.extra["web_interact"])
+        if delivered_change and mcp_check is not None:
+            history_entry["mcp_check"] = deepcopy(mcp_check)
+        if skill_terminal_grading is not None:
+            history_entry["skill_terminal_grading"] = deepcopy(skill_terminal_grading)
+            history_entry["skills_used"] = list(skill_terminal_grading.get("slugs") or [])
         hist.append(history_entry)
         if delivered_change and config_summary:
             man.extra["config_spec"] = config_summary.get("config_spec", {})
             man.extra["config_wiring"] = config_summary.get("wiring", {})
         if delivered_change:
-            man.status = "completed"
-            man.verdict = "go"
+            blocked = any(f.get("blocked") for f in man.extra.get("gate_findings", []))
+            man.status = "completed_no_go" if blocked else "completed"
+            man.verdict = "no_go" if blocked else "go"
             man.files = list(delivered)
             man.extra["proof"] = proof.to_dict()
-            if is_imported_project(man) or man.extra.get("existing_project") is True:
-                man.score = float(proof.score)
+            man.extra["delivery_source_tree"] = {**_source_snapshot(project_dir), "verdict": man.verdict}
+            man.score = (assessment or {}).get("score")
+            if blocked:
+                from skyn3t.studio.runner import StudioRunner
+
+                blockers = [
+                    str(f.get("gate", "unknown")) for f in man.extra["gate_findings"] if f.get("blocked")
+                ]
+                _log.warning("improve.unrechecked_blockers", slug=slug, gates=blockers)
+                if man.score is not None:
+                    man.score = StudioRunner._shape_final_score(man, proof, man.score, "no_go")
+                if skill_terminal_grading is not None:
+                    skill_terminal_grading.update(quality=0.0, acceptance_status="failed")
+                    history_entry["skill_terminal_grading"] = deepcopy(skill_terminal_grading)
+                if assessment is not None:
+                    assessment.update(score=man.score, verdict="no_go")
+                    assessment["gaps"] = list(assessment.get("gaps") or []) + [
+                        "Unrechecked blocking gates remain: " + ", ".join(blockers),
+                    ]
+                    if "final_score_shape" in man.extra:
+                        assessment.setdefault("score_policy", {})["final_score_shape"] = deepcopy(
+                            man.extra["final_score_shape"]
+                        )
+                    man.extra["current_assessment"] = deepcopy(assessment)
+            history_entry["score"] = man.score
         man.touch()
         man.save(project_dir)

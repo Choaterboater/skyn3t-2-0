@@ -2,7 +2,7 @@
 slug: gh-antoineross-hikari
 title: antoineross/Hikari: Next.js/Supabase/Stripe SaaS starter, feature list only (held)
 stack: react
-tags: nextjs, reference, github-distilled, hygiene:quarantine, review-held
+tags: nextjs, reference, github-distilled, review-held, external-promoted
 uses: 2
 helpful: 1
 quality_sum: 1.4900

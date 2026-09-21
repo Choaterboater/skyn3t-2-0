@@ -2,7 +2,7 @@
 slug: gh-baugarten-node-restful
 title: baugarten/node-restful: Express + Mongoose auto-REST pattern (held, license receipt unresolved)
 stack: react
-tags: api, backend, express, mongoose, node, reference, github-distilled, hygiene:quarantine, review-held
+tags: api, backend, express, mongoose, node, reference, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

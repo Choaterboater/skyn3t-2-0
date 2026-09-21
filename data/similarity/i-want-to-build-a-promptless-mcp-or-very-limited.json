@@ -1,0 +1,21 @@
+{
+  "entries": {
+    "7293490f704ede3a473c776d29021e34b187c370c4a444fb6a18040fd04b3498": {
+      "cached_at": "2026-09-17T21:03:02.169164+00:00",
+      "report": {
+        "backlog": [],
+        "cache_hit": false,
+        "error": null,
+        "queries": [
+          "want promptless mcp very limited prompting",
+          "mcp want promptless very limited prompting"
+        ],
+        "requirements_modified": false,
+        "retrieved_at": "2026-09-17T21:03:02.169164+00:00",
+        "sources": [],
+        "status": "ok"
+      }
+    }
+  },
+  "schema_version": 2
+}

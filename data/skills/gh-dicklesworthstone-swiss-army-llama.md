@@ -2,7 +2,7 @@
 slug: gh-dicklesworthstone-swiss-army-llama
 title: Dicklesworthstone/swiss_army_llama: FastAPI LLM Embedding/Document Microservice (license unverified)
 stack: python
-tags: api, backend, python, github-distilled, hygiene:quarantine, review-held
+tags: api, backend, python, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

@@ -2,7 +2,7 @@
 slug: gh-adilmoujahid-kaggle-talkingdata-visualization
 title: adilmoujahid/kaggle-talkingdata-visualization: 2016 Flask/Kaggle-dataset tutorial (held)
 stack: react
-tags: data-visualization, flask, python, reference, github-distilled, hygiene:quarantine, review-held
+tags: data-visualization, flask, python, reference, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

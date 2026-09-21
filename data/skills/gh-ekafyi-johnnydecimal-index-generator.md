@@ -2,7 +2,7 @@
 slug: gh-ekafyi-johnnydecimal-index-generator
 title: ekafyi/johnnydecimal-index-generator: Svelte PWA Index Builder (pre-SvelteKit tooling)
 stack: generic
-tags: svelte, github-distilled, hygiene:quarantine, review-held
+tags: svelte, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

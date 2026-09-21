@@ -391,6 +391,67 @@ async def test_fix_loop_stalls_after_two_identical_tree_and_proof_rounds(
     assert stalled[0].payload["attempt"] == 2
 
 
+@pytest.mark.parametrize("changing_error,changing_source,expected_attempts", [
+    (False, False, 2),
+    (True, False, 6),
+    (False, True, 6),
+])
+async def test_fix_loop_ignores_timing_noise_but_preserves_progress(
+    tmp_path, monkeypatch, changing_error, changing_source, expected_attempts,
+):
+    from skyn3t.studio.proof_run import ProofResult
+
+    runner = _runner()
+    plan = Planner(Settings()).plan("a python tool", "t")
+    project = tmp_path / "project"
+    project.mkdir()
+    source = project / "main.py"
+    source.write_text("print('hi')\n")
+    calls = 0
+
+    def failed_proof(attempt):
+        error = attempt if changing_error else 0
+        return ProofResult(
+            passed=False, mode="local", missing=["<tests>"],
+            detail={
+                "tests": "failed",
+                "test_summary": (
+                    f"AssertionError: expected {error}, got -1\n"
+                    f"================ 1 failed in {attempt + 1}.23s ================\n"
+                    f"Duration  {attempt + 1}.23s (transform {attempt + 10}ms)\n"
+                    f"Start at  00:00:{attempt:02d}\n"
+                ),
+                "build_summary": (
+                    f"Build failed in {attempt + 100}ms\n"
+                    "Could not resolve ./utils/storage from src/tests/storage.test.js\n"
+                ),
+            },
+        )
+
+    def reproof(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return failed_proof(calls)
+
+    def repair(*args):
+        if changing_source:
+            source.write_text(f"print({calls})\n")
+        return {}
+
+    monkeypatch.setattr(runner, "_fill_missing", lambda *args: 0)
+    monkeypatch.setattr(runner, "_deterministic_repairs", repair)
+    monkeypatch.setattr("skyn3t.studio.runner.proof_run", reproof)
+    manifest = BuildManifest(slug="t", brief="a python tool")
+    result = await runner._fix_loop(
+        manifest, plan, str(project), failed_proof(0), "cid", {"max_fix_attempts": 6},
+    )
+    assert not result.passed
+    assert calls == expected_attempts
+    assert ("fix_stalled" in manifest.extra) == (expected_attempts == 2)
+    # Only the comparison is normalized; original diagnostics remain available.
+    assert f"{calls + 1}.23s" in manifest.extra["proof"]["detail"]["test_summary"]
+
+
 # ---- substance gate + best-of-N richness ranking -------------------------
 def test_largest_source_bytes(tmp_path):
     runner = _runner()

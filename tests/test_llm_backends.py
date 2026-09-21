@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import textwrap
 
 import pytest
 
@@ -1013,6 +1015,13 @@ def _install_fake_cli(monkeypatch, captured):
 
         async def communicate(self, _stdin=None):
             captured["stdin"] = _stdin
+            argv = captured["argv"]
+            if "--output-format" in argv and argv[argv.index("--output-format") + 1] == "json":
+                events = [
+                    {"type": "assistant.message", "data": {"content": '{"ok": true}'}},
+                    {"type": "result", "exitCode": 0},
+                ]
+                return "\n".join(json.dumps(event) for event in events).encode(), b""
             return (b'{"ok": true}', b"")
 
     async def _fake_exec(*argv, **kw):
@@ -1037,6 +1046,72 @@ def _cli_prompt(captured) -> str:
     return captured["argv"][-1]
 
 
+@pytest.mark.parametrize("json_mode", [False, True])
+async def test_copilot_completion_preserves_unwrapped_json_and_source(monkeypatch, json_mode):
+    expected = (
+        json.dumps({"summary": "diagnostics " * 2_000, "files": [{"path": "server.py"}]})
+        if json_mode else 'MESSAGE = "' + "diagnostics " * 2_000 + '"\n'
+    )
+    argv = []
+    monkeypatch.setattr(LLMClient, "_cli_cache", {"copilot": True})
+
+    class Proc:
+        returncode = 0
+
+        async def communicate(self):
+            if "--output-format" not in argv:
+                return textwrap.fill(expected, width=100).encode(), b""
+            assert argv[argv.index("--output-format") + 1] == "json"
+            events = [
+                {"type": "assistant.message", "data": {"content": "Interim explanation"}},
+                {"type": "assistant.message", "data": {"content": expected, "toolRequests": []}},
+                {"type": "assistant.reasoning", "data": {"content": "Not completion output"}},
+                {"type": "result", "exitCode": 0},
+            ]
+            return "\n".join(json.dumps(event) for event in events).encode(), b""
+
+    async def spawn(*args, **kwargs):
+        argv.extend(args)
+        return Proc()
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", spawn)
+    result = await _client("copilot_cli")._cli("copilot", "Return exact content", "", json_mode)
+
+    assert result.backend == "copilot_cli"
+    assert result.text == expected
+    if json_mode:
+        assert json.loads(result.text)["files"] == [{"path": "server.py"}]
+    else:
+        compile(result.text, "generated.py", "exec")
+
+
+@pytest.mark.parametrize("events", [
+    [{"type": "assistant.message", "data": {"content": "partial"}}],
+    [{"type": "assistant.message", "data": {"content": "partial"}},
+     {"type": "result", "exitCode": 1}],
+    [{"type": "result", "exitCode": 0}],
+    [{"type": "assistant.reasoning", "data": {"content": "not an answer"}},
+     {"type": "result", "exitCode": 0}],
+])
+async def test_copilot_completion_rejects_incomplete_or_failed_jsonl(monkeypatch, events):
+    monkeypatch.setattr(LLMClient, "_cli_cache", {"copilot": True})
+
+    class Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return "\n".join(json.dumps(event) for event in events).encode(), b""
+
+    async def spawn(*args, **kwargs):
+        return Proc()
+
+    monkeypatch.setattr(llm_mod.asyncio, "create_subprocess_exec", spawn)
+    result = await _client("copilot_cli")._cli("copilot", "Return JSON", "", True)
+    assert result.backend == "copilot_cli"
+    assert result.status == "failed_cli_invalid_response"
+    assert result.text == ""
+
+
 @pytest.mark.parametrize("with_image", [False, True])
 async def test_copilot_completion_cannot_write_or_delegate(monkeypatch, tmp_path, with_image):
     captured = {}
@@ -1059,6 +1134,22 @@ async def test_copilot_completion_cannot_write_or_delegate(monkeypatch, tmp_path
     assert captured["argv"][-2] == "-p"
     if with_image:
         assert str(image) in _cli_prompt(captured)
+
+
+async def test_large_copilot_review_uses_lossless_read_only_stdin(monkeypatch):
+    captured = {}
+    _install_fake_cli(monkeypatch, captured)
+    prompt = "BEGIN_REVIEW\n" + "actual source\n" * 14000 + "\nEND_REVIEW"
+    result = await _client("copilot_cli")._cli("copilot", prompt, "Review all evidence", True)
+    assert result.status == "cli_response"
+    assert captured["stdin"] == (
+        "Review all evidence\n\n" + prompt
+        + "\n\nRespond with ONLY valid JSON — no prose, no code fences."
+    ).encode("utf-8")
+    assert "-p" not in captured["argv"]
+    assert "--available-tools=view" in captured["argv"]
+    assert "--allow-all-tools" not in captured["argv"]
+    assert all(len(arg) < 100000 for arg in captured["argv"])
 
 
 async def test_cli_references_image_file_path(monkeypatch):

@@ -2,7 +2,7 @@
 slug: gh-kinngh-shopify-node-express-mongodb-app
 title: kinngh/shopify-node-express-mongodb-app: Shopify Embedded App Boilerplate (setup docs external, not fetched)
 stack: react
-tags: frontend, javascript, node, react, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: frontend, javascript, node, react, ui, web, github-distilled, review-held, external-promoted
 uses: 18
 helpful: 18
 quality_sum: 10.6185

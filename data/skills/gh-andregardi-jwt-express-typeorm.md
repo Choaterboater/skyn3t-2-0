@@ -2,7 +2,7 @@
 slug: gh-andregardi-jwt-express-typeorm
 title: andregardi/jwt-express-typeorm: Medium-article README with non-visible embedded code (held)
 stack: react
-tags: node, reference, typeorm, typescript, github-distilled, hygiene:quarantine, review-held
+tags: node, reference, typeorm, typescript, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

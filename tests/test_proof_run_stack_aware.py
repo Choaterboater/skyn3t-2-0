@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from skyn3t.studio.proof_run import _stack_artifact_check, proof_run
 
 # ---------------------------------------------------------------------------
@@ -477,6 +479,8 @@ def test_python_deps_install_is_bounded_and_sandboxed(tmp_path, monkeypatch):
 
 
 def test_python_package_build_runs_pip_wheel_and_cleans_output(tmp_path, monkeypatch):
+    import zipfile
+
     import skyn3t.studio.proof_run as proof_mod
 
     (tmp_path / "pyproject.toml").write_text(
@@ -490,7 +494,8 @@ def test_python_package_build_runs_pip_wheel_and_cleans_output(tmp_path, monkeyp
         calls.append({"command": command, "cwd": cwd, "timeout": timeout, "env": env, "network": network})
         wheel_dir = cwd / command[command.index("--wheel-dir") + 1]
         wheel_dir.mkdir(exist_ok=True)
-        (wheel_dir / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+        with zipfile.ZipFile(wheel_dir / "demo-0.1.0-py3-none-any.whl", "w") as wheel:
+            wheel.writestr("demo-0.1.0.dist-info/METADATA", "Name: demo\nVersion: 0.1.0\n")
         return proof_mod._ProofCommandResult(0, "built wheel", "")
 
     monkeypatch.setattr(proof_mod, "_run_proof_command", fake_run)
@@ -506,6 +511,36 @@ def test_python_package_build_runs_pip_wheel_and_cleans_output(tmp_path, monkeyp
     assert not wheel_arg.startswith("..")
     assert calls[0]["network"] is True
     assert calls[0]["env"]["PIP_NO_INPUT"] == "1"
+    assert not list(tmp_path.glob(".skyn3t-wheel-proof-*"))
+
+
+@pytest.mark.parametrize("include_main", [False, True])
+def test_python_wheel_must_include_its_local_console_module(tmp_path, monkeypatch, include_main):
+    import zipfile
+
+    import skyn3t.studio.proof_run as proof_mod
+
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname="mist"\nversion="0.1.0"\n[project.scripts]\nmist="main:main"\n'
+    )
+    (tmp_path / "main.py").write_text("def main():\n    pass\n")
+
+    def fake_run(ctx, command, *, cwd, **kwargs):
+        wheel_dir = cwd / ".skyn3t-wheels"
+        with zipfile.ZipFile(wheel_dir / "mist-0.1.0-py3-none-any.whl", "w") as wheel:
+            wheel.writestr(
+                "mist-0.1.0.dist-info/entry_points.txt", "[console_scripts]\nmist = main:main\n"
+            )
+            if include_main:
+                wheel.writestr("main.py", "def main():\n    pass\n")
+        return proof_mod._ProofCommandResult(0, "built wheel", "")
+
+    monkeypatch.setattr(proof_mod, "_run_proof_command", fake_run)
+    ran, passed, summary = proof_mod._run_python_package_build(tmp_path, 30)
+    assert ran
+    assert passed is include_main
+    if not include_main:
+        assert "main" in summary and "pyproject.toml" in summary
     assert not list(tmp_path.glob(".skyn3t-wheel-proof-*"))
 
 

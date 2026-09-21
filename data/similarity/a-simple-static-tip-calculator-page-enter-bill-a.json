@@ -1,0 +1,21 @@
+{
+  "entries": {
+    "332b5bf96c0c8ade8193737bc495f7a007ffae1db0892f41dd4c99618e1f9a4a": {
+      "cached_at": "2026-09-19T03:43:30.803735+00:00",
+      "report": {
+        "backlog": [],
+        "cache_hit": false,
+        "error": null,
+        "queries": [
+          "simple static tip calculator page enter",
+          "static simple tip calculator page enter"
+        ],
+        "requirements_modified": false,
+        "retrieved_at": "2026-09-19T03:43:30.803735+00:00",
+        "sources": [],
+        "status": "ok"
+      }
+    }
+  },
+  "schema_version": 2
+}

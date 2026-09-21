@@ -63,6 +63,10 @@ class AutomaticCandidates:
     async def tick(self) -> None:
         if not getattr(self.settings, "autonomous_improvement", False):
             return
+        if self.skills is not None:
+            evaluate = getattr(self.skills, "evaluate_pending_capabilities", None)
+            if callable(evaluate):
+                await asyncio.to_thread(evaluate, activate=True)
         # Drain one previously gated research/feature proposal per cycle. Never
         # replay operator-rejected proposals or already completed work.
         for proposal in self.cortex.store.all():

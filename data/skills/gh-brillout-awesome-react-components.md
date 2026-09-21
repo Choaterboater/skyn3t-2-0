@@ -2,7 +2,7 @@
 slug: gh-brillout-awesome-react-components
 title: brillout/awesome-react-components: curated link list, no procedure to extract (held)
 stack: generic
-tags: react, reference, github-distilled, hygiene:quarantine, review-held
+tags: react, reference, github-distilled, review-held, external-promoted
 uses: 9
 helpful: 1
 quality_sum: 5.3710

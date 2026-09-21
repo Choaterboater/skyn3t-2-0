@@ -539,7 +539,10 @@ def _tree_snapshot(
                     )
                     or (
                         not deliverable
-                        and _source_tree_internal_output(relative_path)
+                        and (
+                            _source_tree_internal_output(relative_path)
+                            or entry.name.casefold().endswith((".egg-info", ".dist-info"))
+                        )
                     )
                     or is_alias
                 ):

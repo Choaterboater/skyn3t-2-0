@@ -182,6 +182,41 @@ def test_unchanged_tree_keeps_the_stale_verdict_without_redispatch(tmp_path, mon
     assert outcome.verdict == "no_go"
 
 
+def test_passing_review_is_invalidated_by_terminal_source_change(tmp_path, monkeypatch):
+    class RegressingReviewer(_RecoveringReviewer):
+        async def execute(self, task):
+            self.calls.append(str(task.payload["worktree_dir"]))
+            return TaskResult(
+                task_id=task.task_id, success=True,
+                output={"score": 90 if len(self.calls) == 1 else 20,
+                        "verdict": "go" if len(self.calls) == 1 else "no_go",
+                        "gaps": [] if len(self.calls) == 1 else ["Terminal change broke behavior"]},
+            )
+
+    def snapshot(root):
+        changed = (Path(root) / "terminal-change.txt").exists()
+        return {"valid": True, "algorithm": SOURCE_TREE_DIGEST_ALGORITHM,
+                "sha256": hashlib.sha256(b"after" if changed else b"before").hexdigest(),
+                "file_count": 1, "byte_count": 1}
+
+    original = StudioRunner._run_terminal_evidence
+
+    async def change_after_proof(self, manifest, product_spec, project_dir, *args, **kwargs):
+        result = await original(self, manifest, product_spec, project_dir, *args, **kwargs)
+        (Path(project_dir) / "terminal-change.txt").write_text("Changed after early review\n")
+        return result
+
+    monkeypatch.setattr(runner_mod, "source_tree_snapshot", snapshot)
+    monkeypatch.setattr(StudioRunner, "_run_terminal_evidence", change_after_proof)
+    outcome, reviewer = _build(tmp_path, RegressingReviewer)
+    assert len(reviewer.calls) == 2
+    assert outcome.verdict == "no_go"
+    assessment = outcome.manifest["extra"]["current_assessment"]
+    assert assessment["review_score"] == 20
+    assert assessment["source_tree"]["sha256"] == hashlib.sha256(b"after").hexdigest()
+    assert assessment["source_tree"]["valid"] is True
+
+
 def test_rescore_error_sentinel_is_not_a_no_go(tmp_path, monkeypatch):
     import skyn3t.agents.reviewer as reviewer_mod
 

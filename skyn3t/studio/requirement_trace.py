@@ -1516,10 +1516,46 @@ def _observe_acceptance(
     )
 
 
+def _observe_mcp_capability(
+    extra: Mapping[str, Any], acceptance_id: str, source_snapshot: Mapping[str, Any],
+) -> _Observation:
+    capability = acceptance_id.removeprefix("mcp:capability:")
+    source = f"manifest.extra.mcp_check.checked.capability_coverage.cases.{capability}"
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,95}", capability):
+        return _failed(source, "invalid MCP capability identifier")
+    gate = extra.get("mcp_check")
+    checked = gate.get("checked") if isinstance(gate, Mapping) else None
+    coverage = checked.get("capability_coverage") if isinstance(checked, Mapping) else None
+    if not isinstance(coverage, Mapping) or type(coverage.get("schema_version")) is not int:
+        return _missing(source, "no executed MCP capability evidence")
+    if coverage["schema_version"] != 1:
+        return _failed(source, "unsupported MCP capability evidence version")
+    cases = coverage.get("cases")
+    if not isinstance(cases, Mapping) or len(cases) > MAX_DYNAMIC_EVIDENCE_RECORDS:
+        return _failed(source, "invalid MCP capability cases")
+    case = cases.get(capability)
+    if not isinstance(case, Mapping):
+        return _missing(source, "required MCP capability was not exercised")
+    if case.get("status") == "skipped":
+        return _skipped(source, "MCP capability was skipped, not verified")
+    assertions = case.get("assertions")
+    if case.get("status") != "passed" or type(assertions) is not int or assertions < 1:
+        return _failed(source, str(case.get("reason") or "MCP capability did not pass")[:500])
+    recorded = coverage.get("source_tree")
+    if (
+        not isinstance(recorded, Mapping)
+        or _source_error(recorded, label="MCP source")
+        or _compact_source(recorded) != _compact_source(source_snapshot)
+    ):
+        return _Observation("stale", source, "MCP capability evidence is not for current source")
+    return _Observation("passed", source)
+
+
 def _collect_observations(
     requirements: Sequence[_Requirement],
     extra: Mapping[str, Any],
     index: _EvidenceIndex,
+    source_snapshot: Mapping[str, Any],
 ) -> dict[str, _Observation]:
     observations: dict[str, _Observation] = {}
     for requirement in requirements:
@@ -1527,7 +1563,9 @@ def _collect_observations(
             continue
         for acceptance_id in requirement.acceptance_ids:
             if acceptance_id not in observations:
-                observations[acceptance_id] = _observe_acceptance(
+                observations[acceptance_id] = _observe_mcp_capability(
+                    extra, acceptance_id, source_snapshot,
+                ) if acceptance_id.startswith("mcp:capability:") else _observe_acceptance(
                     extra,
                     index,
                     acceptance_id,
@@ -1607,7 +1645,7 @@ def requirement_evidence_binding(
     source = _validated_source(source_snapshot, label="source_snapshot")
     _, requirements = _requirements(product_spec)
     index = _build_evidence_index(manifest_extra)
-    observations = _collect_observations(requirements, manifest_extra, index)
+    observations = _collect_observations(requirements, manifest_extra, index, source_snapshot)
     ladder_run_ids = {
         observation.run_id
         for observation in observations.values()
@@ -1990,7 +2028,7 @@ def compile_requirement_trace(
     registry_enabled = registry == ACCEPTANCE_REGISTRY_V1
     index = _build_evidence_index(manifest_extra) if registry_enabled else _EvidenceIndex()
     observed = (
-        _collect_observations(requirements, manifest_extra, index)
+        _collect_observations(requirements, manifest_extra, index, source_snapshot)
         if registry_enabled
         else {}
     )

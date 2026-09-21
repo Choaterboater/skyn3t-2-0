@@ -2,7 +2,7 @@
 slug: gh-tretapey-svelte-pwa
 title: tretapey/svelte-pwa: legacy Rollup-based Svelte PWA template (held, license unresolved)
 stack: react
-tags: frontend, javascript, pwa, reference, svelte, github-distilled, hygiene:quarantine, review-held
+tags: frontend, javascript, pwa, reference, svelte, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

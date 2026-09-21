@@ -210,6 +210,35 @@ def _capture_agentic_output_text(evt: dict, parts: list[str], budget: list[int])
     if text:
         parts.append(_mask_agentic_text(text)[: budget[0]])
         budget[0] -= len(parts[-1])
+
+
+def _copilot_completion_text(output: str) -> str:
+    """Extract the final answer without terminal reflow or observability truncation."""
+    answer: str | None = None
+    completed = False
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if not isinstance(event, dict):
+            raise ValueError("Copilot JSONL event must be an object")
+        if event.get("type") == "assistant.message":
+            data = event.get("data")
+            answer = None
+            if isinstance(data, dict):
+                content = data.get("content")
+                if isinstance(content, str) and not data.get("toolRequests"):
+                    answer = content
+        elif event.get("type") == "result":
+            exit_code = event.get("exitCode")
+            if type(exit_code) is not int or exit_code != 0:
+                raise ValueError("Copilot JSONL reported an unsuccessful result")
+            completed = True
+    if not completed or answer is None or not answer.strip():
+        raise ValueError("Copilot JSONL is missing a completed final answer")
+    return answer
+
+
 _BUDGET_LEDGER_LOCK = threading.RLock()
 _LEDGER_LOCK_TIMEOUT_S = 15.0
 
@@ -285,7 +314,7 @@ _CLI_COMMANDS: dict[str, list[str]] = {
     # disable tools in Copilot, so use an explicit read-only allowlist.
     "copilot": [
         "copilot", "--available-tools=view", "--no-custom-instructions", "--no-ask-user",
-        "--silent",
+        "--silent", "--output-format", "json", "--stream", "off",
     ],
 }
 # Flags whose VALUE is the prompt. These must be the last argv before the
@@ -310,14 +339,10 @@ _CLI_PROMPT_FLAG: dict[str, str] = {
 # injected into the codegen prompt as if it were real guidance. Codex already
 # used stdin for the same reason (command-line length ceiling).
 _CLI_STDIN_PROMPT: frozenset[str] = frozenset({"codex", "claude"})
-# kimi and copilot CANNOT read the prompt from stdin: kimi's ``--prompt`` is a
-# commander option requiring an argv value (verified against the binary and
-# ``--help``), and copilot documents that piped stdin is IGNORED when ``-p``
-# is present (github/copilot-cli#1046 tracks stdin support). So when argv
-# cannot carry the prompt intact (see ``_argv_prompt_hazard``) the agentic
-# path hands it over via a transient FILE plus a short bootstrap prompt, and
-# the plain completion path — which cannot rely on file-read tools — fails
-# loudly instead of letting a silently truncated prompt count as success.
+# Kimi requires an argv prompt. Copilot's current CLI accepts piped stdin ONLY
+# without -p; oversized read-only completions select that form separately.
+# Agentic Kimi/Copilot keep the existing transient-file handoff when argv cannot
+# carry the prompt intact, preserving their streamed invocation contracts.
 _CLI_PROMPT_FILENAME = "skyn3t-agentic-prompt.md"
 
 
@@ -3590,7 +3615,9 @@ class LLMClient:
             *model_args,
             *_no_mcp_args(self.settings, provider),
         ]
-        stdin_prompt = provider in _CLI_STDIN_PROMPT
+        stdin_prompt = provider in _CLI_STDIN_PROMPT or (
+            provider == "copilot" and _argv_prompt_hazard(command, full) is not None
+        )
         if provider == "codex":
             for path in paths:
                 argv.extend(("--image", path))
@@ -3601,9 +3628,8 @@ class LLMClient:
         elif stdin_prompt:
             pass  # prompt goes over stdin; no positional argument
         else:
-            # kimi/copilot cannot read the prompt from stdin, and in print
-            # mode file-read tools are not guaranteed, so there is no safe
-            # alternate transport here. When argv cannot carry the prompt
+            # Providers without a stdin transport cannot rely on file-read
+            # tools in print mode. When argv cannot carry the prompt
             # intact (cmd.exe shim re-parse / CreateProcess ceiling — see
             # _argv_prompt_hazard) fail LOUDLY: a silently truncated prompt
             # produces a plausible reply that counts as success, which is
@@ -3695,6 +3721,14 @@ class LLMClient:
             return self._failed_cli_fallback(
                 provider, prompt, system, json_mode, status="failed_cli_empty"
             )
+        if provider == "copilot":
+            try:
+                text = _copilot_completion_text(text)
+            except (ValueError, TypeError) as exc:
+                log.warning("llm.cli_invalid_response", provider=provider, reason=str(exc)[:160])
+                return self._cli_attempt_result(
+                    provider, prompt, status="failed_cli_invalid_response",
+                )
         if json_mode:
             text = _strip_code_fences(text)
         approx_p = max(1, len(full) // 4)
@@ -4929,8 +4963,8 @@ class LLMClient:
         # shim truncating it fails silently, returning a plausible short reply
         # that counts as a successful build.
         stdin_prompt = provider in _CLI_STDIN_PROMPT
-        # kimi/copilot cannot take stdin (see _CLI_PROMPT_FILENAME's comment),
-        # so when argv cannot carry the prompt intact it is handed over via a
+        # Preserve the agentic Kimi/Copilot invocation contract: when argv
+        # cannot carry the prompt intact it is handed over via a
         # transient file in its own temp dir plus a newline-free bootstrap
         # prompt on argv. Both CLIs run agentically here with file-read tools
         # and get the temp dir allow-listed via --add-dir, so the handoff is

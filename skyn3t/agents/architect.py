@@ -12,6 +12,7 @@ from typing import Any
 
 from skyn3t.adapters.llm import LLMClient
 from skyn3t.agents._common import (
+    MCP_RELIABILITY_CONTRACT,
     canonical_project_relpath,
     detect_stack,
     knowledge_block,
@@ -388,6 +389,8 @@ class ArchitectAgent(BaseAgent):
                        "a ModelContainer for offline-first inventory, plus a VisionKit scanning "
                        "flow with a manual-entry fallback. Use ONLY Swift/Xcode files — NEVER "
                        "package.json, npm, index.html, JavaScript/TypeScript, Vite, or web files.")
+        if stack == "mcp":
+            prompt += "\n\n" + MCP_RELIABILITY_CONTRACT
         ref = p.get("reference_image")
         if ref:
             prompt += "\n\nNote: the user provided a reference image that informs the visual design."
@@ -413,6 +416,39 @@ class ArchitectAgent(BaseAgent):
             and isinstance(parsed.get("plan"), dict)
         ):
             parsed = parsed["plan"]
+
+        invalid = (
+            not isinstance(parsed, dict) or parsed.get("stub") is True
+            or not isinstance(parsed.get("files"), list) or not parsed["files"]
+        )
+        if stack == "mcp" and result.backend != "stub" and invalid:
+            result = await self.llm.complete(
+                prompt + "\n\nThe previous response was not a usable plan. Return ONLY "
+                'JSON {"stack":"mcp","summary":str,"files":[{"path":str,"purpose":str}],'
+                '"build_order":[str],"components":[str]}. Include real implementation '
+                "and failure-handling tests. Do not return prose or an offline scaffold.\n"
+                "Previous response:\n" + result.text[:6000],
+                tier=Tier.STRONG, system=self.system_prompt(_SYSTEM),
+                max_tokens=_STANDARD_ARCHITECT_TOKENS, json_mode=True,
+                task_type=self.agent_type,
+            )
+            parsed = parse_json(result.text)
+            if (
+                isinstance(parsed, dict) and not parsed.get("files")
+                and isinstance(parsed.get("plan"), dict)
+            ):
+                parsed = parsed["plan"]
+            if (
+                result.backend == "stub" or not isinstance(parsed, dict)
+                or parsed.get("stub") is True or not isinstance(parsed.get("files"), list)
+                or not parsed["files"]
+            ):
+                reason = "Live MCP architecture did not produce a valid file plan after two attempts."
+                return TaskResult(
+                    task_id=task.task_id, success=False, error=reason,
+                    output={"degraded": True, "degraded_reason": reason,
+                            "backend": result.backend, "model": result.model},
+                )
 
         if (not isinstance(parsed, dict) or parsed.get("stub") is True
                 or result.backend == "stub" or not parsed.get("files")):

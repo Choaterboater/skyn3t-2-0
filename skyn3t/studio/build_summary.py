@@ -726,6 +726,7 @@ def build_summary(manifest: dict[str, Any]) -> dict[str, Any]:
         "status": manifest.get("status", ""),
         "verdict": manifest.get("verdict", ""),
         "score": manifest.get("score"),
+        "current_assessment": _as_dict(extra.get("current_assessment")),
         "proof_passed": _ok(proof),
         "build": proof_detail.get("build", ""),
         "tests": proof_detail.get("tests", ""),

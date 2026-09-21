@@ -70,11 +70,21 @@ function eventLine(e) {
             : "the model did not produce a usable change — try a more specific goal";
         return { glyph: "△", tone: "text-ember", text: `finished, but NO files were changed — ${why}` };
       }
-      const ok = p.proof_passed ? "go" : "no_go";
+      const proof = p.detail?.proof?.detail || {};
+      const gaps = [
+        ...(proof.build && proof.build !== "passed" ? [`build ${proof.build}`] : []),
+        ...(proof.tests && proof.tests !== "passed" ? [`tests ${proof.tests}`] : []),
+      ];
+      const skills = (p.detail?.skills_used || []).length;
+      const suffix = [
+        ...gaps,
+        ...(skills.length ? [`skills: ${p.detail.skills_used.join(", ")}`] : []),
+      ].join(" · ");
+      const ok = p.proof_passed ? (gaps.length ? "go (partial proof)" : "go") : "no_go";
       return {
-        glyph: p.proof_passed ? "✔" : "✕",
-        tone: p.proof_passed ? "text-plasma" : "text-ember",
-        text: `done · ${files} file${files !== 1 ? "s" : ""} · score ${p.score ?? "—"} · ${ok}`,
+        glyph: p.proof_passed ? (gaps.length ? "△" : "✔") : "✕",
+        tone: p.proof_passed && !gaps.length ? "text-plasma" : "text-ember",
+        text: `done · ${files} file${files !== 1 ? "s" : ""} · score ${p.score ?? "—"} · ${ok}${suffix ? ` — ${suffix}` : ""}`,
       };
     }
     case "improve.failed":

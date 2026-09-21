@@ -167,7 +167,7 @@ async def test_slice_partial_delivery_retries_and_remains_degraded(tmp_path):
     assert result.output["agentic"]["complete"] is False
     assert result.output["agentic"]["missing_files"] == ["src/components/Chart.jsx"]
     assert (tmp_path / "src/components/Card.jsx").read_text() == original
-    assert (tmp_path / "src/components/Chart.jsx").exists(), "missing path gets a floor"
+    assert not (tmp_path / "src/components/Chart.jsx").exists(), "failed live slices must not fabricate files"
     assert "RESUME THIS SLICE IN PLACE" in result.output["prompts"][1]["text"]
 
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
@@ -41,6 +43,24 @@ def _runner(tmp_path, **overrides) -> StudioRunner:
 
 def _findings(manifest, gate: str) -> list[dict]:
     return [f for f in manifest.extra.get("gate_findings", []) if f["gate"] == gate]
+
+
+@pytest.mark.parametrize("posture", ["lab", "release"])
+@pytest.mark.parametrize("extra", [
+    {"mcp_check": {"ok": False, "issues": ["HTTP failure returned success"]}},
+    {"mcp_check": {"ok": False, "unavailable": True, "reason": "No HTTP request exercised"}},
+    {"mcp_check": {"ok": True}, "mcp_planning_failure": "Live planning failed"},
+])
+def test_failed_mcp_verification_or_planning_always_withholds_go(tmp_path, posture, extra):
+    runner = _runner(tmp_path, build_posture=posture, ai_native_gates_verdict=False)
+    manifest = BuildManifest(slug="mist", brief="Mist MCP", stack="mcp", extra=dict(extra))
+
+    verdict = runner._apply_ai_native_gates(
+        manifest, "go", posture=GatePosture(posture=posture),
+    )
+
+    assert verdict == "no_go"
+    assert manifest.extra["gate_findings"][-1]["blocked"] is True
 
 
 def test_security_finding_records_but_does_not_block_in_lab(tmp_path):

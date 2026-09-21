@@ -2,7 +2,7 @@
 slug: gh-end3r-gamedev-canvas-workshop
 title: end3r/Gamedev-Canvas-workshop: Breakout Tutorial Index (external content, not local procedure)
 stack: generic
-tags: github-distilled, hygiene:quarantine, review-held
+tags: github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

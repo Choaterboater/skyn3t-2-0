@@ -2,7 +2,7 @@
 slug: gh-d3-d3-hierarchy
 title: d3/d3-hierarchy: Hierarchical Layout Module (reference pointer only)
 stack: react
-tags: frontend, javascript, node, react, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: frontend, javascript, node, react, ui, web, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

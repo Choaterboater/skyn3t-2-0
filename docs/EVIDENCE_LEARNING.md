@@ -4,7 +4,8 @@ SkyN3t’s learning features are deliberately split into three distinct steps:
 
 1. Record a build decision and its outcome.
 2. Evaluate a small configuration candidate against already-produced Golden evidence.
-3. Let an operator explicitly promote only an externally derived skill that has immutable provenance.
+3. Evaluate discovered advisory skills immediately; activate only with immutable
+   provenance, passed admission checks, and separate operator or autonomous-improvement permission.
 
 Nothing in this flow runs a build, changes a prompt, changes routing, imports a
 remote skill, or executes remote instructions merely because an evaluation passes.
@@ -140,6 +141,28 @@ README keeps the repository's stable skill slug. Other Markdown documents use
 separate path-derived slugs, so no guide can overwrite a README candidate or a
 similarly named guide in another directory. Thin or non-actionable documents
 are reported as skipped instead of creating placeholder skills.
+
+### Evaluation during continuous discovery
+
+Each discovered candidate receives its saved admission assessment and complete
+local provenance/evidence evaluation before that ingestion operation returns.
+This is not deferred to a dashboard visit, a scheduled library sweep, or the next
+build. `autonomous_learning` permits skills-only discovery when the optional RAG
+index is absent or unavailable; it does not grant automatic activation.
+Ingestion with RAG also evaluates new candidates when autonomous improvement is off.
+
+The ingestion result retains `advisory_learning` entries with separate
+`admission_check`, `evaluation`, and `activation` results. Review-required extracts
+remain stored and searchable, but cannot become usable merely because their
+source URL and content hash are valid. An ingestion result's `applied` field means
+the evidence/candidate was retained, not that the skill was activated.
+
+An unchanged candidate reuses its current evaluation without duplicating journal
+entries. Missing or stale evaluation is performed immediately; explicit rollback
+decisions are preserved. Changed source content requires a fresh evaluation.
+Automatic activation is attempted only when `autonomous_improvement` is separately
+enabled and all existing gates pass. These checks do not execute source code or
+claim measured skill effectiveness.
 
 Quarantined skills cannot be selected for normal build advice. A local operator
 can make an eligible one advisory with:

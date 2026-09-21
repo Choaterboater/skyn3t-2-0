@@ -73,3 +73,58 @@ def test_pattern_shape_keeps_semantic_pipeline_without_brief_noise():
     }
     direct_plan = SimpleNamespace(stages=[code, verify], test_first=False, best_of_n=1)
     assert StudioRunner._build_pattern_shape(direct_plan) != shape
+
+
+async def test_post_use_check_keeps_selected_revision_and_rejects_new_revision_credit(tmp_path):
+    import hashlib
+
+    from skyn3t.core.events import EventBus
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.intelligence.skill_library import SkillLibrary
+    from skyn3t.studio.manifest import BuildManifest
+    from skyn3t.studio.stages import StageSpec
+
+    skills = SkillLibrary(tmp_path / "skills")
+    skill = skills.add("Python advice", "Validate inputs before processing.", stack="python")
+    original_hash = hashlib.sha256(skill.body.encode()).hexdigest()
+    bus = EventBus()
+    runner = StudioRunner(bus, Orchestrator(bus), settings=Settings(llm_backend="stub"), skills=skills)
+    manifest = BuildManifest(slug="revision-check", brief="test", stack="python", status="completed", verdict="go", score=90)
+    runner._record_skill_selection(manifest, [skill.slug], stage="code", extra={})
+    manifest.extra["proof"] = {"passed": True, "detail": {"tests": "passed"}}
+    skill.body = "Different advice supplied after generation finished."
+    plan = SimpleNamespace(stack="python", stages=[StageSpec(name="code", agent_type="code", capability="codegen")])
+    await runner._record_learning(manifest, plan, [skill.slug], helpful=True)
+    assert skill.uses == 0
+    check = manifest.extra["skill_terminal_grading"]["post_use_checks"][0]
+    assert check["advisory_body_sha256"] == original_hash
+    assert check["revision_matches"] is False
+    assert check["proof_status"] == "passed"
+    assert check["attribution"] == "inconclusive"
+
+
+async def test_post_use_failure_records_evidence_without_claiming_skill_caused_failure(tmp_path):
+    from skyn3t.core.events import EventBus
+    from skyn3t.core.orchestrator import Orchestrator
+    from skyn3t.intelligence.skill_library import SkillLibrary
+    from skyn3t.studio.manifest import BuildManifest
+    from skyn3t.studio.stages import StageSpec
+
+    skills = SkillLibrary(tmp_path / "skills")
+    skill = skills.add("Python advice", "Validate inputs before processing.", stack="python")
+    bus = EventBus()
+    runner = StudioRunner(bus, Orchestrator(bus), settings=Settings(llm_backend="stub"), skills=skills)
+    manifest = BuildManifest(slug="failed-check", brief="test", stack="python", status="completed_no_go", verdict="no_go", score=44)
+    runner._record_skill_selection(manifest, [skill.slug], stage="code", extra={})
+    manifest.extra["proof"] = {"passed": False, "detail": {"tests": "failed"}}
+    plan = SimpleNamespace(stack="python", stages=[StageSpec(name="code", agent_type="code", capability="codegen")])
+    await runner._record_learning(manifest, plan, [skill.slug], helpful=False)
+    await runner._record_learning(manifest, plan, [skill.slug], helpful=False)
+    checks = manifest.extra["skill_terminal_grading"]["post_use_checks"]
+    assert len(checks) == 1
+    assert checks[0]["proof_status"] == "failed"
+    assert checks[0]["revision_matches"] is True
+    assert checks[0]["attribution"] == "inconclusive"
+    assert checks[0]["checks"]["tests"] == "failed"
+    assert skill.uses == 1
+    assert skill.helpful == 0

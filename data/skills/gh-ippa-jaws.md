@@ -2,7 +2,7 @@
 slug: gh-ippa-jaws
 title: Jaws.js game-state lifecycle pattern for vanilla canvas 2D games (legacy, script-tag era)
 stack: react
-tags: canvas, game, javascript, reference, github-distilled, hygiene:quarantine, review-held
+tags: canvas, game, javascript, reference, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

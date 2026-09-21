@@ -3,10 +3,10 @@ slug: api-and-interface-design
 title: api-and-interface-design
 stack: generic
 tags: api, backend, github-distilled, interface-design, verification, external-promoted
-uses: 163
-helpful: 117
-quality_sum: 106.2699
-score: 0.652
+uses: 170
+helpful: 118
+quality_sum: 109.5343
+score: 0.644
 source: github-distilled
 name: api-and-interface-design
 description: "Design stable interfaces; for HTTP APIs, prove status, representation, payload, and application-error semantics."

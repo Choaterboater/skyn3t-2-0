@@ -2,7 +2,7 @@
 slug: gh-adilmoujahid-donorschoose-visualization
 title: adilmoujahid/DonorsChoose_Visualization: 2016 Vagrant+MongoDB tutorial (held)
 stack: react
-tags: data-visualization, mongodb, python, reference, github-distilled, hygiene:quarantine, review-held
+tags: data-visualization, mongodb, python, reference, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

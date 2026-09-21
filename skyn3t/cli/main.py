@@ -388,7 +388,7 @@ def doctor(
     optional_deps = [
         "rich", "httpx", "fastapi", "uvicorn", "chromadb",
         "sentence_transformers", "docker", "prometheus_client",
-        "playwright", "tree_sitter",
+        "playwright", "tree_sitter", "typesafe_sdk",
     ]
     for dep in core_deps:
         present = _has_module(dep)
@@ -410,6 +410,19 @@ def doctor(
     # Sandbox backend.
     sandbox_detail = _check_sandbox(settings)
     table.add_row("sandbox", "[green]OK[/green]", sandbox_detail)
+
+    # TypeSafe System One decisions adapter.
+    try:
+        from skyn3t.adapters.typesafe import TypeSafeAdapter
+
+        ts_adapter = TypeSafeAdapter(settings)
+        ts_ok = ts_adapter.available
+        ts_status = _ok(ts_ok) if ts_ok else "[yellow]optional[/yellow]"
+        ts_detail = "typesafe-sdk ready (Jev model)" if ts_ok else "configured key or typesafe-sdk missing"
+    except Exception as exc:  # noqa: BLE001
+        ts_status = "[yellow]optional[/yellow]"
+        ts_detail = f"unavailable: {exc}"
+    table.add_row("typesafe systemone", ts_status, ts_detail)
 
     # Blocking external proof tools. Readiness means the command actually runs;
     # Docker in particular checks the daemon rather than only the CLI binary.
@@ -504,6 +517,9 @@ def studio_build(
     slug: str = typer.Option("", "--slug", help="Override the project slug."),
     stack: str = typer.Option("", "--stack", help="Pin the stack: react|nextjs|fastapi|static|python|express|phaser|…"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the plan confirmation and build immediately."),
+    mcp_profile: str = typer.Option(
+        "", "--mcp-profile", help="Factory-owned MCP capability contract, e.g. mist-readonly-proactive-v1.",
+    ),
     activity_file: Annotated[
         Path | None, typer.Option("--activity-file", help="Write safe, live JSONL activity to a new file."),
     ] = None,
@@ -537,11 +553,14 @@ def studio_build(
     from skyn3t.observability.activity import run_with_activity
 
     try:
+        if mcp_profile and stack and stack != "mcp":
+            raise ValueError("MCP capability profiles require --stack mcp")
         outcome = asyncio.run(run_with_activity(
             activity_file, "build", slug,
             lambda: _run_build(
                 brief, best_of=best_of, no_critic=no_critic, slug=slug, stack=stack,
-                confirm=(_confirm_plan if interactive else None)),
+                confirm=(_confirm_plan if interactive else None),
+                **({"mcp_profile": mcp_profile} if mcp_profile else {})),
         ))
     except (ValueError, OSError) as exc:
         console.print(f"Cannot start build: {exc}", style="red", markup=False)
@@ -566,6 +585,23 @@ def studio_build(
     table.add_row("artifact", str(outcome.get("project_dir", "")))
     for label, value in _verdict_explanation(outcome):
         table.add_row(label, value)
+    ts_advisory = outcome.get("typesafe_advisory")
+    if isinstance(ts_advisory, dict) and ts_advisory:
+        risk = ts_advisory.get("risk_category", {})
+        runnable = ts_advisory.get("is_runnable", {})
+        quality = ts_advisory.get("code_quality", {})
+        if risk:
+            table.add_row(
+                "typesafe: risk",
+                f"{risk.get('choice', '?')} (confidence {risk.get('confidence', 0):.0%})",
+            )
+        if runnable:
+            table.add_row("typesafe: is_runnable", f"{runnable.get('noul', 0):.2f}")
+        if quality:
+            table.add_row(
+                "typesafe: code_quality",
+                f"{quality.get('score', 0):.2f} (confidence {quality.get('confidence', 0):.0%})",
+            )
     console.print(table)
     fo = outcome.get("fanout")
     if isinstance(fo, dict):
@@ -636,6 +672,16 @@ def _verdict_explanation(outcome: dict[str, Any]) -> list[tuple[str, str]]:
     extra = outcome.get("extra")
     if not isinstance(extra, dict):
         return rows
+    mcp = extra.get("mcp_check")
+    checked = mcp.get("checked") if isinstance(mcp, dict) else None
+    coverage = checked.get("capability_coverage") if isinstance(checked, dict) else None
+    if isinstance(coverage, dict):
+        cases = coverage.get("cases", {})
+        if isinstance(cases, dict):
+            passed = sum(isinstance(case, dict) and case.get("status") == "passed" for case in cases.values())
+            rows.append(("capability_contract", f"{passed}/{len(cases)} groups passed (synthetic HTTP)"))
+        rows.append(("live_tenant", str(coverage.get("live_validation") or "not_verified")))
+        rows.append(("vendor_response_conformance", str(coverage.get("vendor_response_conformance") or "not_verified")))
 
     findings = extra.get("gate_findings")
     if isinstance(findings, list) and findings:
@@ -1290,7 +1336,7 @@ def _trash_fanout_losers(settings: Any, base: str, cands: list, winner_id: str |
     return trashed
 
 
-async def _plan_preview(brief: str, stack: str, llm: Any) -> dict[str, Any]:
+async def _plan_preview(brief: str, stack: str, llm: Any, settings: Any | None = None) -> dict[str, Any]:
     """Classify a brief WITHOUT building — the same stack the build will use, its
     confidence + rationale, the app-type/engine, how it ships, and any clarifying
     questions. This is the 'here's what I'll build — confirm?' data, so a wrong
@@ -1298,7 +1344,7 @@ async def _plan_preview(brief: str, stack: str, llm: Any) -> dict[str, Any]:
     from skyn3t.studio.clarification import analyze
     from skyn3t.studio.stack_selector import classify_build, select_stack
 
-    choice = await select_stack(brief, pin=stack, llm=llm, attended=True)
+    choice = await select_stack(brief, pin=stack, llm=llm, attended=True, settings=settings)
     cls = classify_build(brief, choice.stack)
     clar = analyze(brief)
     try:
@@ -1316,12 +1362,22 @@ async def _plan_preview(brief: str, stack: str, llm: Any) -> dict[str, Any]:
 
 
 async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, stack: str = "",
-                     confirm: Any = None) -> dict[str, Any] | None:
+                     confirm: Any = None, mcp_profile: str = "") -> dict[str, Any] | None:
     try:
         from skyn3t.studio.runner import StudioRunner
     except Exception:  # noqa: BLE001
         return None
 
+    source_product = None
+    if mcp_profile:
+        from skyn3t.studio.mcp_profiles import mcp_profile_instructions, mcp_profile_product
+        from skyn3t.studio.runner import _slugify
+
+        if stack and stack != "mcp":
+            raise ValueError("MCP capability profiles require --stack mcp")
+        stack = "mcp"
+        source_product = mcp_profile_product(mcp_profile, _slugify(slug or brief), brief)
+        brief = brief + "\n\n" + mcp_profile_instructions(mcp_profile)
     spine = await _assemble_spine()
     from skyn3t.observability.activity import bind_activity_bus
 
@@ -1380,6 +1436,8 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, st
         return {"fanout": summary, "winner": None}
 
     extra: dict[str, Any] = {}
+    if source_product is not None:
+        extra["source_product_spec"] = source_product.to_dict()
     # ``--best-of 1`` is an explicit request to suppress the configured
     # best-of-two default for a controlled, single-trajectory build. Preserve
     # every positive CLI value instead of treating one as if it were omitted.
@@ -1392,7 +1450,7 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, st
     # full build. Skipped when confirm is None (unattended / --yes / non-TTY). The
     # confirmed stack is pinned so the build matches exactly what was previewed.
     if confirm is not None:
-        plan = await _plan_preview(brief, stack, spine.get("llm"))
+        plan = await _plan_preview(brief, stack, spine.get("llm"), settings=settings)
         if not confirm(plan):
             return {"aborted": True, "stack": plan.get("stack", "")}
         extra["stack"] = plan["stack"]
@@ -1438,7 +1496,42 @@ async def _run_build(brief: str, *, best_of: int, no_critic: bool, slug: str, st
     except Exception:  # noqa: BLE001 - learning is best-effort; never fail a build
         pass
 
-    return outcome.to_dict()
+    result = outcome.to_dict()
+    manifest = getattr(outcome, "manifest", None)
+    if isinstance(manifest, dict):
+        result["extra"] = manifest.get("extra", {})
+        result["stages"] = manifest.get("stages", [])
+    result["typesafe_advisory"] = _typesafe_build_advisory(result, settings)
+    return result
+
+
+def _typesafe_build_advisory(result: dict[str, Any], settings: Any) -> dict[str, Any] | None:
+    """Best-effort, ADVISORY-ONLY second opinion on a completed build.
+
+    Runs TypeSafe System One's ``evaluate_verdict`` against the build's own
+    verdict/score/gaps evidence — never gates or blocks the build, and any
+    failure (no key, no SDK, network) degrades to ``None`` silently (design
+    rule #6: degrade, don't crash). Measured latency is sub-second, so this
+    never meaningfully slows a build that already ran for minutes.
+    """
+    if result.get("status") not in ("completed", "completed_no_go"):
+        return None
+    try:
+        from skyn3t.adapters.typesafe import TypeSafeAdapter
+
+        adapter = TypeSafeAdapter(settings)
+        if not adapter.available:
+            return None
+        gaps = (result.get("extra") or {}).get("gaps") or []
+        proof_summary = (
+            f"verdict={result.get('verdict')} score={result.get('score')} "
+            f"files={len(result.get('files') or [])} stack={result.get('stack')} "
+            f"cost_usd={result.get('cost_usd')} gaps={gaps[:5]!r}"
+        )
+        return adapter.evaluate_verdict(proof_summary) or None
+    except Exception:  # noqa: BLE001 - advisory only, never fail the build
+        return None
+
 
 
 async def _run_improve(project: str, *, goal: str) -> dict[str, Any] | None:
@@ -2320,30 +2413,39 @@ def studio_improve(
         console.print("[red]Improve pipeline unavailable (studio package missing).[/red]")
         raise typer.Exit(code=1)
     color = "green" if outcome.get("proof_passed") else "yellow"
+    detail = outcome.get("detail")
+    detail = detail if isinstance(detail, dict) else {}
     table = _table("Improve result", ["field", "value"])
     table.add_row("slug", str(outcome.get("slug", "")))
     table.add_row("stack", str(outcome.get("stack", "")))
-    table.add_row("goal", str(outcome.get("goal", "")))
+    goal_summary = str(outcome.get("goal", ""))
+    table.add_row("goal", goal_summary if len(goal_summary) <= 240 else goal_summary[:237] + "...")
     table.add_row("status", str(outcome.get("status", "")))
     table.add_row("files_changed", str(len(outcome.get("files_changed", []))))
     table.add_row("proof", f"[{color}]{'passed' if outcome.get('proof_passed') else 'check'}[/{color}]")
     table.add_row("score", str(outcome.get("score", "")))
     table.add_row("project", str(outcome.get("project_dir", "")))
+    for label, value in _verdict_explanation({"extra": detail}):
+        table.add_row(label, value)
+    retention = detail.get("candidate_retention")
+    if isinstance(retention, dict) and retention.get("status") == "unverified":
+        table.add_row("retained_candidate", str(retention.get("path", "")) + " (unverified)")
     console.print(table)
     if outcome.get("status") != "completed":
         from skyn3t.security.secrets import mask_secrets, scrub_text
         from skyn3t.studio.proof_run import extract_error_gaps
 
-        detail = outcome.get("detail")
-        detail = detail if isinstance(detail, dict) else {}
         reason = (
             outcome.get("error") or detail.get("error")
             or detail.get("improver_error") or detail.get("delivery_blocked")
             or "Improve did not complete."
         )
         messages = [str(reason)]
+        mcp = detail.get("mcp_check")
+        if isinstance(mcp, dict) and isinstance(mcp.get("issues"), list):
+            messages.extend(str(issue) for issue in mcp["issues"])
         proof = detail.get("proof")
-        if isinstance(proof, dict):
+        if isinstance(proof, dict) and outcome.get("proof_passed") is not True:
             proof_detail = proof.get("detail")
             syntax_errors = proof.get("syntax_errors")
             messages.extend(extract_error_gaps(

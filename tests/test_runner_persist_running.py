@@ -127,6 +127,9 @@ def test_running_build_is_persisted_immediately(tmp_path):
         runner = StudioRunner(bus, orch, settings=settings, memory=memory)
         outcome = await runner.start("Build a python tool", slug="demo")
 
+        selection = outcome.manifest["extra"]["stack_selection"]
+        assert isinstance(selection["elapsed_s"], float)
+        assert selection["elapsed_s"] >= 0
         build_id = outcome.build_id
         # The store should have seen the build record
         assert build_id in memory._builds, "build_id must be persisted in the store"

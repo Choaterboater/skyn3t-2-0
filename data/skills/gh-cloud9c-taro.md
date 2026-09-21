@@ -2,7 +2,7 @@
 slug: gh-cloud9c-taro
 title: three.js entity-component registration pattern for lightweight 3D web scenes
 stack: react
-tags: game, javascript, reference, threejs, github-distilled, hygiene:quarantine, review-held
+tags: game, javascript, reference, threejs, github-distilled, review-held, external-promoted
 uses: 9
 helpful: 5
 quality_sum: 6.6767

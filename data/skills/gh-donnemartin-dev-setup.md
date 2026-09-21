@@ -2,7 +2,7 @@
 slug: gh-donnemartin-dev-setup
 title: donnemartin/dev-setup: OS X 10.10/10.11-era Developer Machine Bootstrap Scripts (stale)
 stack: python
-tags: cli, python, github-distilled, hygiene:quarantine, review-held
+tags: cli, python, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

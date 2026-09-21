@@ -2,7 +2,7 @@
 slug: gh-johnpapa-shopathome
 title: johnpapa/shopathome: Multi-Framework Azure Static Web Apps Reference Architecture
 stack: react
-tags: design, frontend, javascript, react, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: design, frontend, javascript, react, ui, web, github-distilled, review-held, external-promoted
 uses: 2
 helpful: 1
 quality_sum: 1.4900

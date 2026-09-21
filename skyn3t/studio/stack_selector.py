@@ -1,18 +1,27 @@
 # skyn3t/studio/stack_selector.py
-"""Best-fit stack selection: explicit pin -> LLM best-fit -> keyword fallback.
+"""Best-fit stack selection: pin -> confident TypeSafe -> LLM -> keywords.
 Works in PLANNER vocab, restricted to stacks that have a real builder. Never
 raises; degrades to keyword/default."""
 
 from __future__ import annotations
 
+import asyncio
 import json
+import math
 import re
 import shutil
+import time
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
+
 from skyn3t.studio.layout_profiles import resolve_layout_profile
 from skyn3t.studio.planner import detect_stack as _planner_detect
+
+log = structlog.get_logger(__name__)
+_TYPESAFE_MIN_CONFIDENCE = 0.6
+_TYPESAFE_STACK_INSTRUCTIONS = "Pick the single best-fit tech stack for this project brief."
 
 # Planner-vocab stacks that map to a real builder, with one-line "best for" hints.
 REAL_BUILDER_STACKS: dict[str, str] = {
@@ -119,7 +128,7 @@ def _demote_unbuildable(choice: StackChoice) -> StackChoice:
 @dataclass(slots=True)
 class StackChoice:
     stack: str
-    method: str  # pin|llm|keyword|default
+    method: str  # pin|typesafe|llm|keyword|default
     confidence: float
     rationale: str
 
@@ -277,6 +286,65 @@ def _infer_engine(low: str, stack: str) -> str:
     return "none"
 
 
+def typesafe_choice_from_answer(result: dict[str, Any]) -> StackChoice | None:
+    """Apply the same response validation and confidence policy in builds and evaluations."""
+    if not result or "choice" not in result:
+        log.warning("typesafe.stack_fallback", reason="missing_choice")
+        return None
+    stack = result["choice"]
+    if not isinstance(stack, str) or stack not in REAL_BUILDER_STACKS:
+        log.warning("typesafe.stack_fallback", reason="invalid_choice")
+        return None
+    conf = result.get("confidence")
+    if (
+        isinstance(conf, bool)
+        or not isinstance(conf, (float, int))
+        or not math.isfinite(conf)
+        or not 0 <= conf <= 1
+    ):
+        log.warning("typesafe.stack_fallback", reason="invalid_confidence")
+        return None
+    if conf < _TYPESAFE_MIN_CONFIDENCE:
+        log.info(
+            "typesafe.stack_fallback", reason="low_confidence",
+            confidence=conf, threshold=_TYPESAFE_MIN_CONFIDENCE,
+        )
+        return None
+    return StackChoice(
+        stack, "typesafe", conf, f"TypeSafe Jev choice (confidence {conf:.0%})"
+    )
+
+
+async def _typesafe_choice(brief: str, settings: Any | None) -> StackChoice | None:
+    """Accept only valid, sufficiently confident choices; otherwise defer."""
+    if settings is None:
+        return None
+    started = time.perf_counter()
+    try:
+        from skyn3t.adapters.typesafe import TypeSafeAdapter
+
+        adapter = TypeSafeAdapter(settings)
+        if not adapter.available:
+            return None
+        result = await asyncio.to_thread(
+            adapter.ask_choice,
+            state=brief,
+            instructions=_TYPESAFE_STACK_INSTRUCTIONS,
+            criteria=REAL_BUILDER_STACKS,
+            question_name="stack",
+        )
+        choice = typesafe_choice_from_answer(result)
+        if choice is not None:
+            log.info(
+                "typesafe.stack_selected", stack=choice.stack, confidence=choice.confidence,
+                elapsed_s=round(time.perf_counter() - started, 4),
+            )
+        return choice
+    except Exception as exc:  # noqa: BLE001 - preserve the LLM/keyword fallback
+        log.warning("typesafe.stack_fallback", reason="request_failed", error_type=type(exc).__name__)
+        return None
+
+
 async def _llm_choice(brief: str, llm: Any) -> StackChoice | None:
     menu = "\n".join(f"- {k}: {v}" for k, v in REAL_BUILDER_STACKS.items())
     prompt = (
@@ -324,7 +392,8 @@ def _extract_json(text: str) -> str:
 
 
 async def select_stack(
-    brief: str, *, pin: str = "", llm: Any | None = None, attended: bool = False
+    brief: str, *, pin: str = "", llm: Any | None = None, attended: bool = False,
+    settings: Any | None = None,
 ) -> StackChoice:
     # `attended` is reserved for the deferred clarify-on-low-confidence gate; currently unused.
     norm = _validate_pin(pin)
@@ -332,6 +401,9 @@ async def select_stack(
         # A pin is explicit user intent — never demoted; a missing toolchain
         # surfaces through the proof's logged soft-skip instead.
         return StackChoice(norm, "pin", 1.0, "explicit pin")
+    ts_choice = await _typesafe_choice(brief, settings)
+    if ts_choice is not None:
+        return _demote_unbuildable(ts_choice)
     if llm is not None:
         choice = await _llm_choice(brief, llm)
         if choice is not None:

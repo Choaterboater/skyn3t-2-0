@@ -2,7 +2,7 @@
 slug: gh-gloomyson-sc-js
 title: gloomyson/SC_Js: HTML5 canvas RTS engine requiring copyrighted game assets (held, unsafe)
 stack: react
-tags: canvas, game, javascript, reference, github-distilled, hygiene:quarantine, review-held
+tags: canvas, game, javascript, reference, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

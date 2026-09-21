@@ -235,8 +235,8 @@ async def test_runner_closes_budget_context_when_early_delegate_fails(monkeypatc
         cost_tracker=tracker,
     )
 
-    async def fail_in_selector(brief, pin=None, llm=None, attended=False):
-        del brief, pin, attended
+    async def fail_in_selector(brief, pin=None, llm=None, attended=False, settings=None):
+        del brief, pin, attended, settings
         assert llm is tracked_llm
         budget.record(_result(0.1))
         raise RuntimeError("selector failed")

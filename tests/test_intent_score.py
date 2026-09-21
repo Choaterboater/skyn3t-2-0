@@ -90,6 +90,13 @@ def test_intent_gate_fails_only_when_llm_concurs_low():
     assert intent_gate("anthropic", high, 34.0) is True
 
 
+def test_keyword_stuffing_cannot_override_semantic_rejection(tmp_path):
+    _proj(tmp_path, {"main.py": "# coloring kids dinosaurs\npass\n"})
+    result = score_intent("coloring kids dinosaurs", tmp_path, llm_score=0)
+    assert result.detail["heuristic_score"] == 100
+    assert intent_gate("copilot_cli", result, 34.0) is False
+
+
 def test_compound_identifier_terms_match(tmp_path):
     # camelCase/PascalCase/snake/kebab identifiers split so brief terms inside
     # compound names still surface (the dominant React/TS/Java convention).
@@ -133,6 +140,38 @@ def test_llm_intent_score_swallows_bad_json(tmp_path):
             return SimpleNamespace(text="not json at all")
 
     assert asyncio.run(llm_intent_score("a brief", tmp_path, llm=_LLM())) is None
+
+
+def test_failed_provider_stub_is_not_live_intent_evidence(tmp_path):
+    _proj(tmp_path, {"main.py": "x = 1"})
+
+    class FailedJudge:
+        backend = "copilot_cli"
+
+        async def complete(self, *args, **kwargs):
+            return SimpleNamespace(text='{"score":95}', backend="copilot_cli", status="failed")
+
+    assert asyncio.run(llm_intent_score("a brief", tmp_path, llm=FailedJudge())) is None
+
+
+def test_intent_judge_sees_workflow_after_large_client_modules(tmp_path):
+    _proj(tmp_path, {
+        "client.py": "# HTTP client implementation\n" * 150,
+        "config.py": "# configuration implementation\n" * 150,
+        "diagnosis.py": "# diagnosis implementation\n" * 150,
+        "models.py": "# model implementation\n" * 150,
+        "scope.py": "# scope implementation\n" * 150,
+        "tools.py": "def diagnose_site():\n    return gather_observations_and_diagnose()\n",
+    })
+
+    class Judge:
+        backend = "copilot_cli"
+
+        async def complete(self, prompt, **kwargs):
+            assert "return gather_observations_and_diagnose()" in prompt
+            return SimpleNamespace(text='{"score":75}', status="cli_response")
+
+    assert asyncio.run(llm_intent_score("Diagnostic MCP", tmp_path, llm=Judge())) == 75
 
 
 class _SeqLLM:

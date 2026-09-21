@@ -2,7 +2,7 @@
 slug: gh-formidablelabs-react-game-kit
 title: FormidableLabs/react-game-kit: React/React Native Game Component Library (Archived)
 stack: react
-tags: design, expo, frontend, javascript, mobile, node, react, react-native, ui, web, github-distilled, hygiene:quarantine, review-held
+tags: design, expo, frontend, javascript, mobile, node, react, react-native, ui, web, github-distilled, review-held, external-promoted
 uses: 4
 helpful: 1
 quality_sum: 2.4700

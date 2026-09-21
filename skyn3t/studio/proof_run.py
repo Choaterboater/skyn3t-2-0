@@ -5057,6 +5057,20 @@ def _python_project_paths(pdir: Path, *, use_container_names: bool) -> list[str]
 def _project_python_import_roots(pdir: Path) -> set[str]:
     """Top-level import names supplied by the delivered Python tree."""
     roots: set[str] = set()
+    # Packaging declarations remain evidence of local ownership even when a
+    # generated file was omitted. Otherwise its collection error becomes a
+    # misleading external-dependency skip.
+    try:
+        import tomllib
+
+        metadata = tomllib.loads((pdir / "pyproject.toml").read_text(encoding="utf-8"))
+        tool = metadata.get("tool", {})
+        setuptools = tool.get("setuptools", {}) if isinstance(tool, dict) else {}
+        modules = setuptools.get("py-modules", []) if isinstance(setuptools, dict) else []
+        if isinstance(modules, list):
+            roots.update(name.split(".", 1)[0] for name in modules if isinstance(name, str))
+    except (OSError, UnicodeError, ValueError):
+        pass
     for base in (pdir, pdir / "src"):
         try:
             if not base.is_dir():
@@ -5859,6 +5873,45 @@ def _is_python_package(pdir: Path) -> bool:
     return isinstance(data.get("build-system"), dict) or isinstance(data.get("project"), dict)
 
 
+def _wheel_missing_local_entrypoints(wheel_path: Path, project: Path) -> list[str]:
+    """Reject console targets present in root/src source but absent from the wheel."""
+    from configparser import ConfigParser
+    from zipfile import ZipFile
+
+    missing: list[str] = []
+    with ZipFile(wheel_path) as wheel:
+        names = wheel.namelist()
+        installed = {
+            name.split(".data/purelib/", 1)[-1].split(".data/platlib/", 1)[-1]
+            for name in names
+        }
+        for name in names:
+            if not name.endswith(".dist-info/entry_points.txt"):
+                continue
+            metadata = ConfigParser(interpolation=None)
+            metadata.read_string(wheel.read(name).decode("utf-8"))
+            for group in ("console_scripts", "gui_scripts"):
+                if not metadata.has_section(group):
+                    continue
+                for target in metadata[group].values():
+                    module = target.split(":", 1)[0].strip()
+                    if not all(part.isidentifier() for part in module.split(".")):
+                        raise ValueError("invalid wheel console entrypoint module")
+                    relative = module.replace(".", "/")
+                    candidates = (relative + ".py", relative + "/__init__.py")
+                    local = any(
+                        (root / candidate).is_file()
+                        for root in (project, project / "src") for candidate in candidates
+                    )
+                    packaged = any(candidate in installed for candidate in candidates) or any(
+                        item.startswith(relative + ".") and item.endswith((".so", ".pyd"))
+                        for item in installed
+                    )
+                    if local and not packaged:
+                        missing.append(module)
+    return sorted(set(missing))
+
+
 def _run_python_package_build(
     pdir: Path,
     timeout: int,
@@ -5939,8 +5992,30 @@ def _run_python_package_build(
             if _pip_build_is_offline(output):
                 return (False, False, "pip wheel failed (offline registry) — build skipped")
             return (True, False, output[-700:] or "pip wheel failed")
-        if not any(wheel_dir.glob("*.whl")):
+        wheels = list(wheel_dir.glob("*.whl"))
+        if not wheels:
             return (True, False, "pip wheel reported success but produced no wheel")
+        from configparser import Error as ConfigError
+        from zipfile import BadZipFile
+
+        try:
+            missing_modules = sorted({
+                module for wheel in wheels
+                for module in _wheel_missing_local_entrypoints(wheel, staged_project)
+            })
+        except (OSError, UnicodeError, ValueError, BadZipFile, ConfigError) as exc:
+            return (True, False, f"wheel entrypoint metadata could not be verified: {exc}")
+        if missing_modules:
+            metadata_files = [
+                name for name in ("pyproject.toml", "setup.cfg", "setup.py")
+                if (pdir / name).is_file()
+            ]
+            return (
+                True, False,
+                "Wheel omits local console entrypoint module(s): "
+                + ", ".join(missing_modules)
+                + ". Fix module/package discovery in " + " or ".join(metadata_files) + ".",
+            )
         return (True, True, output[-300:] or "pip wheel ok")
     finally:
         shutil.rmtree(proof_root, ignore_errors=True)

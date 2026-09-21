@@ -183,6 +183,11 @@ class Settings(BaseSettings):
     replicate_api_token: str = ""
     replicate_model: str = ""
 
+    # ---- TypeSafe System One --------------------------------------------
+    # API key (env SKYN3T_TYPESAFE_API_KEY or TYPESAFE_API_KEY) for System One
+    # typed decisions (Choice, Score, Noul) via TypeSafe Jev API.
+    typesafe_api_key: str = ""
+
     # ---- Deploy (Ship pillar) -------------------------------------------
     # Per-provider tokens for a REAL, token-gated deploy. Empty => the keyless
     # plan / dry-run only (never blocks). Configure via the GUI Settings page —
@@ -796,6 +801,15 @@ class Settings(BaseSettings):
         """True when a Replicate token is configured — the build then KNOWS it can
         generate real images. The asset-gen step additionally requires asset_gen."""
         return bool(self.replicate_api_token)
+
+    @property
+    def typesafe_available(self) -> bool:
+        """True when a TypeSafe API key is configured for System One decisions."""
+        return bool(
+            self.typesafe_api_key
+            or os.getenv("SKYN3T_TYPESAFE_API_KEY")
+            or os.getenv("TYPESAFE_API_KEY")
+        )
 
     @property
     def deploy_tokens(self) -> dict[str, str]:

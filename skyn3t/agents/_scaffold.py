@@ -4978,18 +4978,16 @@ def _mcp(app_name: str, brief: str) -> dict[str, str]:
       dependency on the ``mcp`` SDK, so ``tests/test_tools.py`` exercises them
       headlessly (and the mcp_check gate soft-skips a missing SDK cleanly).
     - ``server.py`` — registers thin wrappers around ``tools.py`` as MCP tools via
-      the official Python SDK (``mcp.server.fastmcp.FastMCP``) and runs the stdio
+      the official Python SDK (``mcp.server.mcpserver.MCPServer``) and runs the stdio
       loop. Tool docstrings are load-bearing: clients pick tools by name +
       description.
 
     The proof story is fully DETERMINISTIC (zero LLM): mcp_check.py spawns this
     server and speaks the JSON-RPC protocol to it.
 
-    NOTE ON THE SDK API: written to the documented stable ``FastMCP`` API (part of
-    the official ``mcp`` package). FastMCP derives each tool's JSON Schema from the
-    Python type hints, so tools ship typed params for free; it's markedly more
-    stable across SDK releases than the low-level ``Server`` + ``InitializationOptions``
-    API. The gate speaks the raw protocol, so it is SDK-version-agnostic regardless.
+    Uses the SDK v2 MCPServer API with an explicit major-version bound.
+    Tool schemas are derived from Python type hints. The gate speaks raw
+    JSON-RPC and verifies startup, discovery, and tool calls independently.
     """
     title = (brief.strip() or app_name).split("\n")[0][:120]
     server_name = _mcp_server_name(app_name)
@@ -5006,9 +5004,9 @@ def _mcp(app_name: str, brief: str) -> dict[str, str]:
             "registers thin wrappers with the server and runs the stdio loop.\n"
             '"""\n'
             "from __future__ import annotations\n\n"
-            "from mcp.server.fastmcp import FastMCP\n\n"
+            "from mcp.server.mcpserver import MCPServer\n\n"
             "import tools\n\n"
-            f'mcp = FastMCP("{server_name}")\n\n\n'
+            f'mcp = MCPServer("{server_name}")\n\n\n'
             "@mcp.tool()\n"
             "def add(a: float, b: float) -> float:\n"
             '    """Add two numbers and return their sum."""\n'
@@ -5071,7 +5069,7 @@ def _mcp(app_name: str, brief: str) -> dict[str, str]:
         ),
         "requirements.txt": (
             f"# Runtime dependencies for {str_title}.\n"
-            "mcp>=1.2         # official Model Context Protocol Python SDK (FastMCP + stdio)\n"
+            "mcp>=2.2,<3      # official Model Context Protocol Python SDK (MCPServer + stdio)\n"
             "\n"
             "# Dev/test (optional): `pip install pytest` to run tests/test_tools.py.\n"
         ),

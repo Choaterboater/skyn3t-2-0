@@ -2,7 +2,7 @@
 slug: gh-absadiki-subsai
 title: Subsai: multi-backend Whisper subtitle generation (CLI, Web-UI, Python API)
 stack: python
-tags: cli, machine-learning, media, python, reference, github-distilled, hygiene:quarantine, review-held
+tags: cli, machine-learning, media, python, reference, github-distilled, review-held, external-promoted
 uses: 0
 helpful: 0
 quality_sum: 0.0000

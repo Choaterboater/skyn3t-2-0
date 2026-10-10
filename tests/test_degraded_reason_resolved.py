@@ -219,10 +219,13 @@ def test_owned_path_ignores_the_baseline(tmp_path):
     assert degraded_reason_resolved(_REASON, tmp_path, baseline_sha256=baseline) is True
 
 
-def test_owned_path_stand_in_still_never_resolves(tmp_path):
+def test_owned_path_keeps_the_original_rule_even_for_a_stand_in(tmp_path):
+    """Owned paths are judged exactly as before the baseline existed (exists
+    non-empty). A marker match could also hit a real repair that kept the stub
+    header, which would be a new false no_go, so stand-in checks are planned-only."""
     _write(tmp_path, "app/globals.css", _STYLESHEET_STUB_CONTENT)
     baseline = degraded_baseline_sha256(_REASON, tmp_path)
-    assert degraded_reason_resolved(_REASON, tmp_path, baseline_sha256=baseline) is False
+    assert degraded_reason_resolved(_REASON, tmp_path, baseline_sha256=baseline) is True
 
 
 def test_planned_path_with_a_none_baseline_entry_counts_as_repaired(tmp_path):
@@ -250,21 +253,22 @@ def test_degraded_planned_sha256_names_only_planned_paths_of_a_degraded_stage(tm
     assert degraded_planned_sha256(None, tmp_path) == {}
 
 
-def test_degraded_unchanged_lists_planned_paths_still_at_their_baseline(tmp_path):
+def test_degraded_deterministic_lists_planned_paths_absent_or_at_baseline(tmp_path):
+    """Whatever a deterministic step puts at these paths is no repair, so the
+    fix loop and the recovery repairs move their baseline along with it."""
     from types import SimpleNamespace
 
-    from skyn3t.studio.runner import StudioRunner
-
-    reason = "agentic build incomplete after 1 retry: missing 2 planned file(s): a.py, b.py"
+    reason = ("agentic build incomplete after 1 retry: missing 3 planned file(s): "
+              "a.py, b.py, c.py; ui: completion slice 'ui' missed 1 owned file(s): d.py")
     _write(tmp_path, "a.py", "x = 1\n")
     _write(tmp_path, "b.py", "y = 1\n")
     manifest = SimpleNamespace(extra={
         "degraded_baseline_sha256": degraded_baseline_sha256(reason, tmp_path)})
-    _write(tmp_path, "b.py", "y = 2\n")
-    code_out = {"degraded": True, "degraded_reason": reason}
-    assert StudioRunner._degraded_unchanged(manifest, str(tmp_path), code_out) == ["a.py"]
-    assert StudioRunner._degraded_unchanged(
-        SimpleNamespace(extra={}), str(tmp_path), code_out) == []
+    _write(tmp_path, "b.py", "y = 2\n")  # repaired since the baseline
+    assert StudioRunner._degraded_deterministic(manifest, str(tmp_path), reason) == [
+        "a.py", "c.py"]
+    assert StudioRunner._degraded_deterministic(
+        SimpleNamespace(extra={}), str(tmp_path), reason) == []
 
 
 def test_scaffold_stylesheet_and_readme_are_not_exempt(tmp_path):
@@ -283,15 +287,13 @@ def test_scaffold_stylesheet_and_readme_are_not_exempt(tmp_path):
 
 
 @pytest.mark.parametrize(("stack", "paths"), [
-    ("react_vite", ["vite.config.js", "package.json", ".gitignore"]),
-    ("react_native", ["app.json", "tsconfig.json", "babel.config.js"]),
-    ("swift", ["Package.swift"]),
-    ("tauri", ["src-tauri/Cargo.toml", "src-tauri/tauri.conf.json"]),
-    ("python_cli", ["pyproject.toml", "requirements.txt"]),
+    ("react_vite", ["vite.config.js", ".gitignore"]),
+    ("react_native", ["tsconfig.json", "babel.config.js"]),
+    ("tauri", ["src-tauri/tauri.conf.json"]),
 ])
-def test_config_and_manifests_unchanged_since_baseline_resolve(tmp_path, stack, paths):
-    """A deterministic copy of config/manifests is already a working delivery, so
-    once proof passed it must not pin the gate shut (no false no_go)."""
+def test_tool_config_unchanged_since_baseline_resolves(tmp_path, stack, paths):
+    """A deterministic copy of pure tool config is already a working delivery,
+    so once proof passed it must not pin the gate shut (no false no_go)."""
     scaffold = scaffold_for(stack, "app", "an app")
     for rel in paths:
         _write(tmp_path, rel, scaffold[rel] or "# deps\n")
@@ -304,6 +306,24 @@ def test_config_and_manifests_unchanged_since_baseline_resolve(tmp_path, stack, 
         (".jsx", ".tsx", ".swift", ".rs", ".py")) and scaffold[rel].strip())
     _write(tmp_path, source, scaffold[source])
     reason = _planned(*paths, source)
+    baseline = degraded_baseline_sha256(reason, tmp_path)
+    assert degraded_reason_resolved(reason, tmp_path, baseline_sha256=baseline) is False
+
+
+@pytest.mark.parametrize(("stack", "rel"), [
+    ("react_vite", "package.json"),
+    ("react_native", "app.json"),
+    ("swift", "Package.swift"),
+    ("tauri", "src-tauri/Cargo.toml"),
+    ("python_cli", "pyproject.toml"),
+    ("python_cli", "requirements.txt"),
+])
+def test_build_manifests_unchanged_since_baseline_never_resolve(tmp_path, stack, rel):
+    """Manifests decide what is built and tested: a starter package.json with no
+    test script lets proof pass without running the app's tests. Same as before
+    this resolver accepted planned reasons at all: never cleared."""
+    _write(tmp_path, rel, scaffold_for(stack, "app", "an app").get(rel) or "# deps\n")
+    reason = _planned(rel)
     baseline = degraded_baseline_sha256(reason, tmp_path)
     assert degraded_reason_resolved(reason, tmp_path, baseline_sha256=baseline) is False
 
@@ -469,10 +489,9 @@ def test_import_stub_at_a_missing_path_never_resolves(tmp_path):
     board = tmp_path / "src" / "components" / "Board.jsx"
     assert "Auto-scaffolded by SkyN3t" in board.read_text()
     planned = _planned("src/components/Board.jsx")
-    for reason, baseline in ((planned, degraded_baseline_sha256(planned, tmp_path)),
-                             (planned, {"src/components/Board.jsx": None}),
-                             (_owned("src/components/Board.jsx"), None)):
-        assert degraded_reason_resolved(reason, tmp_path, baseline_sha256=baseline) is False
+    for baseline in (degraded_baseline_sha256(planned, tmp_path),
+                     {"src/components/Board.jsx": None}):
+        assert degraded_reason_resolved(planned, tmp_path, baseline_sha256=baseline) is False
     baseline = degraded_baseline_sha256(planned, tmp_path)
     board.write_text("export default function Board(){return <section>board</section>}\n")
     assert degraded_reason_resolved(planned, tmp_path, baseline_sha256=baseline) is True
@@ -482,9 +501,8 @@ def test_stub_stylesheet_never_resolves(tmp_path):
     _write(tmp_path, "src/main.jsx", "import './index.css'\nimport App from './App.jsx'\n")
     assert "src/index.css" in scaffold_missing_imports(tmp_path, stack="react_vite")
     planned = _planned("src/index.css")
-    for reason, baseline in ((planned, {"src/index.css": None}),
-                             (_owned("src/index.css"), None)):
-        assert degraded_reason_resolved(reason, tmp_path, baseline_sha256=baseline) is False
+    assert degraded_reason_resolved(
+        planned, tmp_path, baseline_sha256={"src/index.css": None}) is False
     baseline = degraded_baseline_sha256(planned, tmp_path)
     (tmp_path / "src" / "index.css").write_text("body{margin:0}\n")
     assert degraded_reason_resolved(planned, tmp_path, baseline_sha256=baseline) is True
@@ -495,12 +513,13 @@ def test_smoke_test_stub_never_resolves(tmp_path):
     assert _runner()._fill_missing(str(tmp_path), plan, "a tool", ["tests/test_tool.py"]) == 1
     test_file = tmp_path / "tests" / "test_tool.py"
     assert test_file.read_text() == StudioRunner._stub_for("tests/test_tool.py", plan, "a tool")
-    reason = "backend: completion slice 'backend' missed 1 owned file(s): tests/test_tool.py"
-    assert degraded_reason_resolved(reason, tmp_path) is False
+    reason = _planned("tests/test_tool.py")
+    baseline = {"tests/test_tool.py": None}  # absent at the baseline, filled later
+    assert degraded_reason_resolved(reason, tmp_path, baseline_sha256=baseline) is False
     test_file.write_text("def test_smoke() :\r\n\tassert   True")  # whitespace only differs
-    assert degraded_reason_resolved(reason, tmp_path) is False
+    assert degraded_reason_resolved(reason, tmp_path, baseline_sha256=baseline) is False
     test_file.write_text("from tool import add\n\ndef test_add():\n    assert add(1, 2) == 3\n")
-    assert degraded_reason_resolved(reason, tmp_path) is True
+    assert degraded_reason_resolved(reason, tmp_path, baseline_sha256=baseline) is True
 
 
 class _Proof:

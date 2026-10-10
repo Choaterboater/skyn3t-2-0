@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 import tomllib
 from typing import Any
 
@@ -37,6 +38,9 @@ _REVIEW_MAX_TOKENS = 4_000
 # A failed provider reply or a reply without a valid score gets one
 # retry; a review still unavailable after that stays explicitly unavailable (score 0).
 _REVIEW_ATTEMPTS = 2
+# Only a quick failure is retried: retrying a slow one (a CLI timeout, a long
+# reasoning pass) would double the review's share of the stage time budget.
+_REVIEW_RETRY_WITHIN_S = 60.0
 _REVIEW_MAX_GAPS = 12
 _REVIEW_MAX_GAP_CHARS = 1000
 # A reply that is exactly one fenced block (```json ... ```). Its body must be
@@ -321,6 +325,7 @@ class ReviewerAgent(BaseAgent):
             prompt += "\nReview against these factory-owned rules; report missing evidence:\n" + MCP_RELIABILITY_CONTRACT
         error = ""
         for attempt in range(1, _REVIEW_ATTEMPTS + 1):
+            started = time.monotonic()
             try:
                 res = await self.llm.complete(
                     prompt, tier=Tier.STRONG, json_mode=True, max_tokens=_REVIEW_MAX_TOKENS,
@@ -334,10 +339,12 @@ class ReviewerAgent(BaseAgent):
             if getattr(res, "status", "succeeded") not in {"succeeded", "cli_response"} or getattr(res, "backend", "") == "stub":
                 log.warning("review.failed_provider_reply", status=getattr(res, "status", "unknown"), attempt=attempt)
                 error = "provider did not return a successful live review"
-                continue
-            try:
-                return _parse_review(res.text), "", attempt
-            except Exception as exc:  # noqa: BLE001 - explicit unavailable, never a passing fallback
-                error = type(exc).__name__
-                log.warning("review.semantic_unavailable", error=error, attempt=attempt)
-        return None, error, _REVIEW_ATTEMPTS
+            else:
+                try:
+                    return _parse_review(res.text), "", attempt
+                except Exception as exc:  # noqa: BLE001 - explicit unavailable, never a passing fallback
+                    error = type(exc).__name__
+                    log.warning("review.semantic_unavailable", error=error, attempt=attempt)
+            if time.monotonic() - started >= _REVIEW_RETRY_WITHIN_S:
+                break
+        return None, error, attempt

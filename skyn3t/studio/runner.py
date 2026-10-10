@@ -153,16 +153,15 @@ _UNCONFIRMED_COMPLETION_RE = re.compile(
 # stylesheet, and the fix-loop's smoke test (_stub_for). None is delivery.
 _AUTO_SCAFFOLD_MARKER = "Auto-scaffolded by SkyN3t"
 _SMOKE_TEST_STUB = "def test_smoke():\n    assert True\n"
-# Pure config/manifests: a deterministic copy (scaffold, fix-loop fill) is
-# already a working delivery, so these are exempt from the unchanged-since-
-# baseline rule (never from the stand-in markers). README, stylesheets,
-# index.html and source modules are not. Matched on the lowercased basename.
+# Pure tool config: a deterministic copy (scaffold, fix-loop fill) is already a
+# working delivery, so these are exempt from the unchanged-since-baseline rule
+# (never from the stand-in markers). Manifests that decide what is built or
+# tested (package.json, pyproject.toml, Package.swift, ...), README,
+# stylesheets, index.html and source modules are not. Lowercased basename.
 _PURE_CONFIG_GLOBS = (
     "*.config.js", "*.config.mjs", "*.config.cjs", "*.config.ts",
-    "tsconfig*.json", "jsconfig.json", "package.json", "pyproject.toml",
-    "requirements.txt", ".gitignore", ".eslintrc*", ".prettierrc*",
-    "app.json", "info.plist", "package.swift", "*.pbxproj", "contents.json",
-    ".env.example", "cargo.toml", "tauri.conf.json",
+    "tsconfig*.json", "jsconfig.json", ".gitignore", ".eslintrc*", ".prettierrc*",
+    ".env.example", "contents.json", "tauri.conf.json",
 )
 
 
@@ -250,15 +249,15 @@ def degraded_reason_resolved(
     from. Anything else (stub/under-delivery, prose, a truncated list) stays
     degraded: we only clear what we can verify on disk.
 
-    A named path holding a runner stand-in (_is_placeholder) was never repaired.
+    A planned path holding a runner stand-in (_is_placeholder) was never repaired.
     ``baseline_sha256`` (degraded_baseline_sha256, moved by the fix loop along
     its deterministic edits of planned paths) holds what deterministic work left
     at each path: bytes still matching it were never repaired either, unless the
     path is pure config/manifest (_PURE_CONFIG_GLOBS). Monolithic/completion
     codegen back-fills "planned" paths from the scaffold AFTER writing the
     reason, so a planned path without a baseline entry fails closed. Slice
-    codegen leaves "owned" paths missing, so they keep "now exists non-empty =>
-    resolved" (plus the stand-in markers) and ignore the baseline."""
+    codegen leaves "owned" paths missing, so they keep the original rule: now
+    exists non-empty => resolved."""
     root = Path(project_dir)
     baseline: Mapping[str, str | None] = baseline_sha256 or {}
     saw_missing = False
@@ -281,11 +280,13 @@ def degraded_reason_resolved(
                 return False
             if not data.decode("utf-8", errors="replace").strip():
                 return False
+            if kind != "planned":
+                continue
             if _is_placeholder(rel, data):
                 return False
             base = baseline.get(rel)
-            if (kind == "planned" and base is not None
-                    and hashlib.sha256(data).hexdigest() == base and not _is_pure_config(rel)):
+            if (base is not None and hashlib.sha256(data).hexdigest() == base
+                    and not _is_pure_config(rel)):
                 return False
         saw_missing = True
     return saw_missing
@@ -3695,17 +3696,20 @@ class StudioRunner:
             return {}
 
     @staticmethod
-    def _degraded_unchanged(manifest, project_dir: str, code_out: object) -> list[str]:
-        """Planned paths of the code stage's degraded_reason still matching their
-        code_degraded baseline: a deterministic step about to run must move it."""
+    def _degraded_deterministic(manifest, project_dir: str, reason: str) -> list[str]:
+        """Planned paths of the code stage's degraded_reason that are still absent
+        or at their code_degraded baseline: whatever a deterministic step about to
+        run puts there is no repair, so their baseline must follow it."""
         baseline = manifest.extra.get("degraded_baseline_sha256")
-        if not isinstance(baseline, dict) or not isinstance(code_out, dict):
+        if not isinstance(baseline, dict):
             return []
         root = Path(project_dir)
-        return [
-            rel for rel in _named_missing_paths(code_out.get("degraded_reason", ""), "planned")
-            if baseline.get(rel) is not None and _content_sha256(root / rel) == baseline[rel]
-        ]
+        held = []
+        for rel in _named_missing_paths(reason, "planned"):
+            current = _content_sha256(root / rel)
+            if current is None or (baseline.get(rel) is not None and current == baseline[rel]):
+                held.append(rel)
+        return held
 
     def _fill_missing(self, project_dir: str, plan: BuildPlan, brief: str, missing: list[str]) -> int:
         """Deterministically create missing checklist files.
@@ -5432,13 +5436,8 @@ class StudioRunner:
         stalled = False
         repair_guidance: str | None = None  # council advises at most once per build
         # Deterministic edits of a planned path (a _fill_missing back-fill, a
-        # repair reformatting an untouched one) are no repair: its baseline
-        # follows them. Owned (slice) paths keep "now exists => resolved".
-        degraded_baseline = manifest.extra.get("degraded_baseline_sha256")
-        rebaseline_paths = (
-            _named_missing_paths(degraded_reason, "planned")
-            if isinstance(degraded_baseline, dict) else []
-        )
+        # repair creating or reformatting one) are no repair: its baseline
+        # follows them (_degraded_deterministic). Owned paths need none.
         runtime_self_heal = str(getattr(plan, "stack", "") or "") not in _GAME_STACKS
         if runtime_self_heal:
             manifest.extra["runtime_self_heal"] = {
@@ -5460,16 +5459,10 @@ class StudioRunner:
                 {"build_id": manifest.build_id, "stage": f"fix#{attempt}", "agent_type": "fix"},
                 correlation_id=correlation_id,
             )
-            absent = [rel for rel in rebaseline_paths if not (root / rel).exists()]
+            # Planned paths still absent or at their baseline: whatever this
+            # round's fill and deterministic repairs put there is no repair.
+            held = self._degraded_deterministic(manifest, project_dir, degraded_reason)
             filled = self._fill_missing(project_dir, plan, manifest.brief, list(proof.missing or []))
-            # Planned paths still holding deterministic bytes: just back-filled,
-            # or unchanged since their baseline.
-            unrepaired = [
-                rel for rel in rebaseline_paths
-                if (rel in absent and (root / rel).exists())
-                or (degraded_baseline.get(rel) is not None
-                    and _content_sha256(root / rel) == degraded_baseline.get(rel))
-            ]
             # Re-run the deterministic repairs every iteration: an improver pass can
             # introduce a new missing import / undeclared dep, and when no
             # code_improve agent is registered these are the loop's only real fix
@@ -5481,10 +5474,10 @@ class StudioRunner:
             # `_stub_dangling_stylesheets` this used to also call is retired;
             # its job is fully subsumed here.
             repairs = self._deterministic_repairs(project_dir, plan)
-            # Re-baseline them as this round's repairs left them (ruff format
+            # Re-baseline them as the fill and repairs left them (ruff format
             # included), before the improver can touch them.
-            for rel in unrepaired:
-                degraded_baseline[rel] = _content_sha256(root / rel)
+            for rel in held:
+                manifest.extra["degraded_baseline_sha256"][rel] = _content_sha256(root / rel)
 
             # LLM content repair on the flagged gaps, when an improver is present.
             if self._has_capability("code_improve"):
@@ -7330,7 +7323,8 @@ class StudioRunner:
             # _final_consistency_check (near the very end of the build) is
             # what actually runs last and can only ever DOWNGRADE the verdict.
             if not proof.passed and (getattr(proof, "detail", None) or {}).get("unresolved_imports"):
-                held = self._degraded_unchanged(manifest, project_dir, code_out)
+                held = self._degraded_deterministic(
+                    manifest, project_dir, str(code_out.get("degraded_reason", "")))
                 recovery_repairs = self._deterministic_repairs(project_dir, plan)
                 for rel in held:
                     manifest.extra["degraded_baseline_sha256"][rel] = _content_sha256(

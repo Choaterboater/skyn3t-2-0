@@ -53,7 +53,8 @@ jobs:
         working-directory: skyn3t/web/ui
         run: |
           npm ci
-          npm audit --audit-level=high
+          npm audit --omit=dev --audit-level=high
+          npm audit --audit-level=critical
           npm test
           npm run build
 

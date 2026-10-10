@@ -130,6 +130,15 @@ def _docker_execution_failed(result: SandboxResult, cwd: Path | None) -> tuple[b
     return False, ""
 
 
+def _host_user_spec() -> str | None:
+    """``uid:gid`` of the host process for ``docker run --user``, POSIX only."""
+    getuid = getattr(os, "getuid", None)
+    getgid = getattr(os, "getgid", None)
+    if getuid is None or getgid is None:  # Windows: no POSIX identity to map
+        return None
+    return f"{getuid()}:{getgid()}"
+
+
 @dataclass
 class SandboxRunner:
     """Runs commands under the safest available backend."""
@@ -271,6 +280,21 @@ class SandboxRunner:
         if cwd is not None:
             host = str(Path(cwd).resolve())
             docker_cmd += ["-v", f"{host}:/work:rw", "-w", "/work"]
+            # Run as the HOST user that owns the mounted project. With
+            # --cap-drop ALL the image's default root loses CAP_DAC_OVERRIDE,
+            # so on a native Linux daemon it is just another uid and cannot
+            # read a 0700 project dir owned by the host user (pytest tmp_path,
+            # mkdtemp) — every proof command died with EACCES. Docker Desktop
+            # (macOS) masks this because its file sharing ignores host perms.
+            # Matching the owner keeps the container unprivileged (non-root
+            # is strictly tighter) and leaves no root-owned files behind.
+            user = _host_user_spec()
+            if user:
+                docker_cmd += ["--user", user]
+                if not any(k.upper() == "HOME" for k in (env or {})):
+                    # An arbitrary uid has no passwd entry/home; point HOME at
+                    # the writable tmpfs so tool caches don't hit the RO rootfs.
+                    docker_cmd += ["-e", "HOME=/tmp"]
             if self.settings.sandbox_hardening:
                 # Allow writes only to an isolated tmpfs under the mounted workdir
                 # (rootfs is --read-only). Was dead code (`if False else []`).

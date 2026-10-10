@@ -53,6 +53,52 @@ def test_sandbox_hardening_adds_workdir_tmpfs(tmp_path):
     assert "--tmpfs" in cmd and any("/work/.tmp" in c for c in cmd)
 
 
+# --- sandbox: container must run as the host owner of the mounted project -----
+# With --cap-drop ALL, container root has no CAP_DAC_OVERRIDE; on a native Linux
+# daemon it could not read a 0700 tmp project owned by the host user, so every
+# docker-backed proof failed in CI (Docker Desktop on macOS masked it).
+
+def _capture_docker_cmd(tmp_path, env, **settings):
+    from skyn3t.security.sandbox import SandboxResult, SandboxRunner
+
+    runner = SandboxRunner(settings=_docker_settings(**settings))
+    captured = {}
+
+    async def fake_exec(cmd, *, cwd, timeout, backend):
+        captured["cmd"] = cmd
+        return SandboxResult(0, "", "", backend, 0.0)
+
+    runner._exec = fake_exec  # type: ignore[method-assign]
+    asyncio.run(runner._run_docker("echo hi", cwd=tmp_path, timeout=5,
+                                   image=None, stack=None, env=env, network=False))
+    return captured["cmd"]
+
+
+def test_sandbox_docker_runs_as_host_user_when_mounting(tmp_path):
+    import os
+
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX-only uid mapping")
+    cmd = _capture_docker_cmd(tmp_path, {}, sandbox_drop_caps=True)
+    assert "--user" in cmd
+    assert cmd[cmd.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
+    assert "HOME=/tmp" in cmd
+    # Isolation flags stay intact.
+    assert "--cap-drop" in cmd and "--network" in cmd and "--read-only" in cmd
+    # --user is a docker option, so it must precede the image.
+    assert cmd.index("--user") < cmd.index("python:3.11-slim")
+
+
+def test_sandbox_docker_keeps_caller_home(tmp_path):
+    import os
+
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX-only uid mapping")
+    cmd = _capture_docker_cmd(tmp_path, {"HOME": "/x"})
+    assert "HOME=/tmp" not in cmd
+    assert "HOME=/x" in cmd
+
+
 def test_sandbox_docker_timeout_removes_named_container(tmp_path, monkeypatch):
     import skyn3t.security.sandbox as sandbox_mod
     from skyn3t.security.sandbox import SandboxResult, SandboxRunner

@@ -857,11 +857,55 @@ def test_studio_runner_best_of_n(tmp_path):
         assert code_stage["output_summary"]["best_of_n"] == evidence
         on_disk = BuildManifest.load(outcome.project_dir)
         assert on_disk is not None and on_disk.extra["best_of_n"] == evidence
+        # Non-design stack: no trajectory was design-seeded, so no winning seed
+        # is recorded and delivery keeps the brief-derived design path.
+        assert "design_seed_index" not in outcome.manifest["extra"]
         completed = [event for event in bus.history() if event.type is EventType.BUILD_COMPLETED]
         live_evidence = completed[-1].payload["best_of_n"]
         assert live_evidence["winner_index"] == evidence["winner_index"]
         assert live_evidence["candidate_count"] == 3
         assert len(live_evidence["candidates"]) == 3
+
+    asyncio.run(run())
+
+
+def test_studio_runner_promotes_the_best_of_n_winners_design_seed(tmp_path, monkeypatch):
+    """The code stage's winning design seed index must reach manifest.extra —
+    the persisted value _deliver_design_md writes DESIGN.md and the visual
+    design contract from."""
+    original = StudioRunner._run_code_best_of_n
+
+    async def seeded_winner(self, *args, **kwargs):
+        result = await original(self, *args, **kwargs)
+        result.output["design_seed_index"] = 1
+        return result
+
+    monkeypatch.setattr(StudioRunner, "_run_code_best_of_n", seeded_winner)
+
+    async def run():
+        settings = Settings(
+            projects_dir=tmp_path / "Projects",
+            data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs",
+            critic_enabled=False,
+            approval_gates=False,
+            best_of_n=2,
+            run_generated_tests=False,
+            run_generated_build=False,
+        )
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _StubCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        await orch.register(code)
+
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+        outcome = await runner.start(
+            "Build a python tool", slug="bon-seed", extra={"best_of_n": 2}
+        )
+        assert outcome.manifest["extra"]["design_seed_index"] == 1
+        on_disk = BuildManifest.load(outcome.project_dir)
+        assert on_disk is not None and on_disk.extra["design_seed_index"] == 1
 
     asyncio.run(run())
 

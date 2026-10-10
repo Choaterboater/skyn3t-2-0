@@ -329,6 +329,7 @@ _DOM_SNAPSHOT_SCRIPT = r"""() => {
     const rect = el.getBoundingClientRect();
     return {
       tag: el.tagName.toLowerCase(),
+      type: el.tagName === 'INPUT' ? String(el.type || 'text').toLowerCase() : '',
       label: cleanText(el.innerText || el.value || el.getAttribute('aria-label')).slice(0, 100),
       width: Math.round(rect.width), height: Math.round(rect.height),
     };
@@ -477,6 +478,32 @@ def _high_confidence_overlap(pair: dict[str, Any], *, game_canvas: bool) -> bool
     return bool(a.get("interactive") or b.get("interactive") or (a_text and b_text))
 
 
+# Native inputs whose own box is not the tap target: a checkbox/radio's label
+# is (WCAG 2.5.8 exempts them inline), and hidden inputs have no box at all.
+_CONTROL_SIZE_EXEMPT_INPUTS = frozenset({"checkbox", "radio", "hidden"})
+
+
+def _undersized_control(item: Mapping[str, Any], min_target: int) -> bool:
+    """Whether one collected control misses the contract's mobile tap size.
+
+    Buttons, text inputs, selects and button-like controls must clear
+    ``min_target`` in BOTH dimensions. Checkbox/radio/hidden inputs and
+    zero-size boxes are exempt, and a range slider is short by nature, so only
+    its width (the drag track) is held to the minimum.
+    """
+    width = int(item.get("width") or 0)
+    height = int(item.get("height") or 0)
+    if width <= 1 or height <= 1:
+        return False
+    if str(item.get("tag") or "").lower() == "input":
+        kind = str(item.get("type") or "").lower()
+        if kind in _CONTROL_SIZE_EXEMPT_INPUTS:
+            return False
+        if kind == "range":
+            return width < min_target
+    return width < min_target or height < min_target
+
+
 def analyze_viewport_snapshot(
     snapshot: dict[str, Any], *,
     stack: str = "",
@@ -546,8 +573,7 @@ def analyze_viewport_snapshot(
         controls = raw_controls if isinstance(raw_controls, list) else []
         undersized = [
             item for item in controls if isinstance(item, Mapping)
-            and (int(item.get("width") or 0) < min_target
-                 or int(item.get("height") or 0) < min_target)
+            and _undersized_control(item, min_target)
         ][:12]
         metrics["visual_design_contract"] = {
             "checked": True,

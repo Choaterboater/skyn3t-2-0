@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from skyn3t.atomic_io import atomic_write_text
+from skyn3t.studio.design_seeds import design_seed_for
 from skyn3t.studio.design_tokens import (
     derive_archetype,
     derive_font_pair,
@@ -47,11 +48,32 @@ def _contract_id(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(clean).encode("utf-8")).hexdigest()[:20]
 
 
-def derive_visual_design_contract(brief: str, design_summary: str = "") -> dict[str, Any]:
-    """Return the stable visual contract for a delivered web project."""
+def derive_visual_design_contract(
+    brief: str,
+    design_summary: str = "",
+    *,
+    design_seed_index: int = 0,
+) -> dict[str, Any]:
+    """Return the stable visual contract for a delivered web project.
+
+    ``design_seed_index`` > 0 is the seeded best-of-N trajectory that won: the
+    contract then records THAT variant's fonts/tokens/theme/shape/archetype —
+    the design the delivered app was generated from — so responsive proof and
+    the visual editor check the shipped look. 0 keeps the brief-derived
+    contract, byte-identical to the unseeded path."""
     normalized_brief = str(brief or "").strip()
-    heading, body = derive_font_pair(normalized_brief)
-    tokens = dict(derive_tokens(normalized_brief))
+    if design_seed_index > 0:
+        # The raw brief, exactly as the runner seeded the trajectory with it.
+        seed = design_seed_for(str(brief or ""), design_seed_index)
+        heading, body = seed["font_heading"], seed["font_body"]
+        tokens = dict(seed["tokens"])
+        theme, shape, archetype = seed["theme"], seed["style"], seed["archetype"]
+    else:
+        heading, body = derive_font_pair(normalized_brief)
+        tokens = dict(derive_tokens(normalized_brief))
+        theme = derive_theme(normalized_brief)
+        shape = derive_style(normalized_brief)
+        archetype = derive_archetype(normalized_brief)
     # ``derive_tokens`` intentionally owns colour/shape values only; the
     # existing DESIGN.md prompt emits its font variables separately. Include
     # both here so the editor and proof checker share the complete root token
@@ -65,11 +87,11 @@ def derive_visual_design_contract(brief: str, design_summary: str = "") -> dict[
         "kind": "skyn3t.visual-design-contract",
         "managed_by": "skyn3t",
         "brief_sha256": hashlib.sha256(normalized_brief.encode("utf-8")).hexdigest(),
-        "theme": derive_theme(normalized_brief),
+        "theme": theme,
         "tokens": tokens,
         "typography": {"heading": heading, "body": body},
-        "shape_language": derive_style(normalized_brief),
-        "layout_archetype": derive_archetype(normalized_brief),
+        "shape_language": shape,
+        "layout_archetype": archetype,
         "imagery": {
             "policy": "prefer-user-supplied-or-licensed-real-assets",
             "generated_imagery": "only-when-the-brief-explicitly-requests-it",
@@ -83,6 +105,8 @@ def derive_visual_design_contract(brief: str, design_summary: str = "") -> dict[
             "require_mobile_collapse": True,
         },
     }
+    if design_seed_index > 0:
+        payload["design_seed_index"] = design_seed_index
     if design_summary:
         payload["design_summary"] = str(design_summary).strip()[:1_500]
     payload["contract_id"] = _contract_id(payload)
@@ -123,6 +147,8 @@ def write_visual_design_contract(
     root: str | Path,
     brief: str,
     design_summary: str = "",
+    *,
+    design_seed_index: int = 0,
 ) -> dict[str, Any] | None:
     """Persist a managed contract without overwriting a non-SkyN3t file."""
     path = Path(root) / VISUAL_DESIGN_CONTRACT_RELATIVE_PATH
@@ -133,7 +159,9 @@ def write_visual_design_contract(
             return None
         if not isinstance(existing, dict) or existing.get("managed_by") != "skyn3t":
             return None
-    contract = derive_visual_design_contract(brief, design_summary)
+    contract = derive_visual_design_contract(
+        brief, design_summary, design_seed_index=design_seed_index
+    )
     atomic_write_text(path, json.dumps(contract, indent=2, sort_keys=True) + "\n")
     return contract
 

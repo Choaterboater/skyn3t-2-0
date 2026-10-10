@@ -578,26 +578,42 @@ DESIGN_MD_HEADER = (
 )
 
 
-def render_design_md(brief: str, design_summary: str = "") -> str:
+def render_design_md(brief: str, design_summary: str = "", *,
+                     design_seed_index: int = 0) -> str:
     """The DESIGN.md content for a delivered web build: the deterministic token
-    block verbatim, plus the designer stage's one-line direction when there is one."""
+    block verbatim, plus the designer stage's one-line direction when there is one.
+
+    ``design_seed_index`` > 0 means a seeded best-of-N trajectory won: the block
+    is THAT variant's ``tokens_md`` (the exact block the winner was generated
+    from), so improve re-reads the shipped look, not trajectory 0's. 0 is the
+    brief-derived block, byte-identical to the unseeded path."""
+    if design_seed_index > 0:
+        # Local import: design_seeds builds on this module.
+        from skyn3t.studio.design_seeds import design_seed_for
+
+        block = design_seed_for(brief, design_seed_index)["tokens_md"]
+    else:
+        block = design_md_block(brief)
     parts = [
         DESIGN_MD_HEADER,
         "",
         "Machine-readable companion: `.skyn3t/visual-design-contract.json` shares these "+
         "design decisions with the visual editor and responsive proof.",
         "",
-        design_md_block(brief),
+        block,
     ]
     if design_summary:
         parts += ["", "## Design direction", design_summary]
     return "\n".join(parts) + "\n"
 
 
-def write_design_md(root: str | Path, brief: str, design_summary: str = "") -> bool:
+def write_design_md(root: str | Path, brief: str, design_summary: str = "", *,
+                    design_seed_index: int = 0) -> bool:
     """Write DESIGN.md into the delivered project tree. Writes only when the
     file is absent or is one we wrote before (the header marker is ours) — a
-    DESIGN.md codegen produced itself always wins. Returns True when written."""
+    DESIGN.md codegen produced itself always wins. Returns True when written.
+    ``design_seed_index`` is the winning best-of-N design seed (see
+    render_design_md)."""
     path = Path(root) / DESIGN_MD_NAME
     if path.exists():
         try:
@@ -606,7 +622,10 @@ def write_design_md(root: str | Path, brief: str, design_summary: str = "") -> b
             return False
         if not existing.startswith(DESIGN_MD_HEADER):
             return False
-    path.write_text(render_design_md(brief, design_summary), encoding="utf-8")
+    path.write_text(
+        render_design_md(brief, design_summary, design_seed_index=design_seed_index),
+        encoding="utf-8",
+    )
     return True
 
 

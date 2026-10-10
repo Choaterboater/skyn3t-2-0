@@ -22,6 +22,7 @@ from skyn3t.studio.design_tokens import (
     derive_font_pair,
     derive_style,
     derive_theme,
+    derive_tokens,
     design_md_block,
 )
 
@@ -88,6 +89,19 @@ def test_seed_tokens_md_extraction():
     assert _seed_tokens_md(None) == ""
     assert _seed_tokens_md({"design_seed": "garbage"}) == ""
     assert _seed_tokens_md({"design_seed": {"tokens_md": 42}}) == ""
+
+
+def test_seed_tokens_are_the_map_behind_tokens_md():
+    """``tokens`` is the variant's concrete :root map (what a winning seed's
+    visual design contract records): the control's is derive_tokens(brief),
+    and every variant's entries are exactly what its tokens_md declares."""
+    for brief in _BRIEFS:
+        assert design_seed_for(brief, 0)["tokens"] == derive_tokens(brief)
+        for index in range(1, 6):
+            seed = design_seed_for(brief, index)
+            assert seed["tokens"]["--accent"] == seed["accent"]
+            for name, value in seed["tokens"].items():
+                assert f"  {name}: {value};" in seed["tokens_md"]
 
 
 _DESIGN = {
@@ -167,8 +181,9 @@ def test_seed_reaches_resume_slice_and_single_file_prompts():
 
 def test_runner_threads_distinct_design_seeds(tmp_path, monkeypatch):
     """_run_code_best_of_n must give each trajectory extra['design_seed'] for
-    design web stacks — distinct per index, variant 0 the control — and skip
-    seeding entirely for non-design stacks."""
+    design web stacks — distinct per index, variant 0 the control — record the
+    WINNING trajectory's seed index for delivery, and skip seeding entirely for
+    non-design stacks."""
     from pathlib import Path
 
     from skyn3t.core.agent import TaskResult
@@ -193,13 +208,14 @@ def test_runner_threads_distinct_design_seeds(tmp_path, monkeypatch):
     winner_wt = create_worktree(tmp_path, "bon-winner")
     (Path(winner_wt.dir) / "index.html").write_text("<html></html>", encoding="utf-8")
     sample_kwargs: dict = {}
+    winner_index = {"value": 0}
 
     async def fake_sample(base_dir, slug, n, trajectory, **kwargs):
         sample_kwargs.update(kwargs)
         for i in range(n):
             await trajectory(create_worktree(tmp_path, f"bon-cand{i}"), i)
         winner = Candidate(
-            index=0, worktree=winner_wt,
+            index=winner_index["value"], worktree=winner_wt,
             result=TaskResult(task_id="w", success=True, output={"files_written": 1}),
             files_written=1,
         )
@@ -226,8 +242,9 @@ def test_runner_threads_distinct_design_seeds(tmp_path, monkeypatch):
         best_of_n_across_models=False,
     )
 
-    def _run(stack: str) -> None:
+    def _run(stack: str, winner: int = 0):
         submitted.clear()
+        winner_index["value"] = winner
         plan = SimpleNamespace(
             best_of_n=3, slug=f"seeded-{stack}", stack=stack,
             brief="a habit tracker for busy parents", checklist=[],
@@ -239,14 +256,23 @@ def test_runner_threads_distinct_design_seeds(tmp_path, monkeypatch):
             plan, spec, str(tmp_path / "proj"), {}, [], {"build_id": "b1"},
             "cid", main_wt, []))
         assert result.success is True
+        return result
 
-    _run("react")
+    result = _run("react")
     assert len(submitted) == 3
     seeds = [p["extra"]["design_seed"] for p in submitted]
     assert seeds[0]["tokens_md"] == design_md_block("a habit tracker for busy parents")
     assert len({s["tokens_md"] for s in seeds}) == 3  # one distinct seed per trajectory
     assert sample_kwargs["vision_fn"] is None  # patched judge threads through
+    # The winning trajectory's seed index is recorded for delivery.
+    assert result.output["design_seed_index"] == 0
 
-    _run("python")  # non-design stack: no seeding, byte-identical extra
+    result = _run("react", winner=1)
+    assert result.output["design_seed_index"] == 1
+    assert submitted[1]["extra"]["design_seed"] == design_seed_for(
+        "a habit tracker for busy parents", 1)
+
+    result = _run("python")  # non-design stack: no seeding, byte-identical extra
     assert len(submitted) == 3
     assert all("design_seed" not in p.get("extra", {}) for p in submitted)
+    assert "design_seed_index" not in result.output

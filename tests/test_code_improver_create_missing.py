@@ -324,3 +324,23 @@ def test_targets_from_gaps_keeps_real_root_js_files(tmp_path):
     targets = _make_agent()._targets_from_gaps(
         ["TypeError at server.js:12 and missing utils.js"], tmp_path)
     assert "server.js" in targets and "utils.js" in targets
+
+
+def test_targets_from_gaps_prefers_source_over_failing_test_and_drops_ghosts(tmp_path):
+    # bellwork-v3: a css-contract test failed naming components/Logo.jsx and
+    # app/globals.css. Targets came back test-file FIRST (the fix-loop then kept
+    # editing the test), plus a bare 'globals.css' (would CREATE a stray root
+    # file) and a '//tests/...' fragment from a file:/// stack URL.
+    for rel in ("tests/css-contract.test.mjs", "app/globals.css", "components/Logo.jsx"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x\n")
+    gap = ("NODE TESTS FAILED — fix these failing tests:\n"
+           "✖ every class used has a rule in globals.css\n"
+           "  AssertionError: classes without a rule in app/globals.css:\n"
+           "    components/Logo.jsx: .light\n"
+           f"      at TestContext (file://{tmp_path}/tests/css-contract.test.mjs:232:12)\n")
+    targets = _make_agent()._targets_from_gaps([gap], tmp_path)
+    assert "globals.css" not in targets
+    assert not any(t.startswith("/") for t in targets)
+    assert targets.index("app/globals.css") < targets.index("tests/css-contract.test.mjs")
+    assert targets.index("components/Logo.jsx") < targets.index("tests/css-contract.test.mjs")

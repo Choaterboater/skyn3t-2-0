@@ -121,6 +121,53 @@ def _posix_modes_available() -> bool:
         return False
 
 
+# Deterministic test-file sharding for parallel CI jobs: SKYN3T_TEST_SHARD=i/N
+# (1-based) keeps only shard i. Files are bin-packed by size (largest first onto
+# the lightest shard, ties by path) so the split is stable and balanced. Kept
+# inline: some tests copy this conftest alone into a temp dir.
+def parse_shard(value: str) -> tuple[int, int] | None:
+    """``"i/N"`` -> zero-based ``(index, total)``; None when unset or invalid."""
+    try:
+        i, n = (int(x) for x in str(value or "").split("/"))
+    except ValueError:
+        return None
+    if n < 1 or not 1 <= i <= n:
+        return None
+    return i - 1, n
+
+
+def assign_shards(costs: dict[str, int], total: int) -> list[list[str]]:
+    shards: list[list[str]] = [[] for _ in range(total)]
+    loads = [0] * total
+    for path, cost in sorted(costs.items(), key=lambda kv: (-kv[1], kv[0])):
+        k = min(range(total), key=lambda j: (loads[j], j))
+        shards[k].append(path)
+        loads[k] += cost
+    return shards
+
+
+def _apply_ci_shard(config, items) -> None:
+    """Keep only this CI shard's files when SKYN3T_TEST_SHARD=i/N is set.
+
+    The variable is consumed here so child pytest processes spawned by tests
+    (e.g. the environment-isolation probes) run their own suites unsharded."""
+    shard = parse_shard(os.environ.pop("SKYN3T_TEST_SHARD", ""))
+    if shard is None:
+        return
+    index, total = shard
+    costs = {}
+    for path in sorted({str(item.path) for item in items}):
+        try:
+            costs[path] = max(1, os.path.getsize(path))
+        except OSError:
+            costs[path] = 1
+    keep = set(assign_shards(costs, total)[index])
+    deselected = [item for item in items if str(item.path) not in keep]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for item in items if str(item.path) in keep]
+
+
 def pytest_collection_modifyitems(config, items):
     """Skip on MISSING CAPABILITY, never on a known-bad list.
 
@@ -129,6 +176,7 @@ def pytest_collection_modifyitems(config, items):
     real product bug (proof-artifact reuse being broken on Windows) sat
     undetected inside a "these always fail here" pile.
     """
+    _apply_ci_shard(config, items)
     loopback_ok = _loopback_bind_available()
     capabilities = (
         ("requires_loopback", loopback_ok,

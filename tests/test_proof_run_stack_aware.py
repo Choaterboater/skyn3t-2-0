@@ -608,6 +608,38 @@ def test_proof_fails_an_opted_in_ruff_quality_check(tmp_path, monkeypatch):
     assert any(gap.startswith("RUFF FAILED") for gap in result.error_gaps())
 
 
+def test_ruff_check_ignores_the_proof_vendored_pytest_tree(tmp_path):
+    """Proof vendors pytest into ``.skyn3t-pytest`` when the sandbox image lacks
+    it. That tree is proof tooling, not the delivered app: linting it turned a
+    lint-clean project into a ruff no_go on third-party code."""
+    import skyn3t.studio.proof_run as proof_mod
+
+    pytest.importorskip("ruff")
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n"
+        "[tool.ruff.lint]\nselect = [\"E\", \"F\"]\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "main.py").write_text("def main():\n    return 42\n", encoding="utf-8")
+    vendored = tmp_path / ".skyn3t-pytest" / "_pytest"
+    vendored.mkdir(parents=True)
+    (vendored / "pytester.py").write_text(
+        "import os\n\nx = type(1) == int\n", encoding="utf-8"
+    )
+
+    ran, ok, summary = proof_mod._run_ruff_check(tmp_path, timeout=30)
+    assert ran is True
+    assert ok is True, summary
+
+    # The gate still bites on the app's own code (do-no-harm: no blind spot).
+    (tmp_path / "main.py").write_text("import os\n\nx = type(1) == int\n", encoding="utf-8")
+    ran, ok, summary = proof_mod._run_ruff_check(tmp_path, timeout=30)
+    assert ran is True
+    assert ok is False
+    assert "main.py" in summary
+    assert ".skyn3t-pytest" not in summary
+
+
 def test_python_proof_uses_the_running_interpreter(monkeypatch):
     import skyn3t.studio.proof_run as proof_mod
 

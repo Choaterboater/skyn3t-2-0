@@ -96,6 +96,88 @@ def test_visual_design_contract_lints_root_tokens_heading_and_mobile_controls():
     }.issubset(_codes(issues))
 
 
+def test_design_contract_of_a_seeded_best_of_n_winner_accepts_its_heading_font():
+    """When best-of-N trajectory 1 wins, the delivered contract carries ITS
+    seed, so a page using the winner's heading font passes the contract check
+    (trajectory 0's font is what would now be off-contract)."""
+    from skyn3t.studio.design_seeds import design_seed_for
+
+    brief = "a habit tracker for busy parents"
+    winner = design_seed_for(brief, 1)
+    control = design_seed_for(brief, 0)
+    assert winner["font_heading"] != control["font_heading"]
+    contract = derive_visual_design_contract(brief, design_seed_index=1)
+
+    def _page(heading_font: str):
+        return _snapshot(
+            root_tokens=dict(contract["tokens"]),
+            typography={"has_heading": True, "heading_font_family": f'"{heading_font}", serif'},
+            interactive_controls=[{"tag": "button", "label": "Go", "width": 120, "height": 44}],
+        )
+
+    _, issues = analyze_viewport_snapshot(
+        _page(winner["font_heading"]), stack="react", design_contract=contract
+    )
+    assert issues == []
+    _, issues = analyze_viewport_snapshot(
+        _page(control["font_heading"]), stack="react", design_contract=contract
+    )
+    assert "design_contract_heading_font_missing" in _codes(issues)
+
+
+def test_design_contract_mobile_minimum_exempts_native_checkbox_radio_and_slider_height():
+    """A native checkbox/radio's label is its tap target (WCAG 2.5.8 inline
+    exemption) and a range slider is short by nature: neither may fail the
+    40px mobile rule. Buttons, text inputs, selects and narrow sliders still do."""
+    contract = derive_visual_design_contract("A calm bakery site")
+    exempt = [
+        {"tag": "input", "type": "checkbox", "label": "", "width": 16, "height": 16},
+        {"tag": "input", "type": "radio", "label": "", "width": 16, "height": 16},
+        {"tag": "input", "type": "range", "label": "", "width": 280, "height": 18},
+        {"tag": "input", "type": "hidden", "label": "", "width": 0, "height": 0},
+        {"tag": "button", "label": "", "width": 0, "height": 0},
+    ]
+
+    def _controls(controls):
+        return _snapshot(
+            root_tokens=dict(contract["tokens"]),
+            typography={
+                "has_heading": True,
+                "heading_font_family": f"{contract['typography']['heading']}, serif",
+            },
+            interactive_controls=controls,
+        )
+
+    metrics, issues = analyze_viewport_snapshot(
+        _controls(exempt), stack="react", design_contract=contract
+    )
+    assert issues == []
+    assert metrics["visual_design_contract"]["undersized_controls"] == 0
+
+    undersized = [
+        {"tag": "button", "label": "Order", "width": 30, "height": 30},
+        {"tag": "input", "type": "text", "label": "Name", "width": 240, "height": 30},
+        {"tag": "select", "label": "Size", "width": 120, "height": 28},
+        {"tag": "input", "type": "range", "label": "", "width": 24, "height": 18},
+    ]
+    metrics, issues = analyze_viewport_snapshot(
+        _controls(exempt + undersized), stack="react", design_contract=contract
+    )
+    small = [issue for issue in issues if issue.code == "design_contract_small_controls"]
+    assert len(small) == 1
+    assert small[0].evidence["controls"] == undersized
+    assert metrics["visual_design_contract"]["undersized_controls"] == len(undersized)
+
+
+def test_dom_snapshot_records_input_type_for_the_control_size_rule():
+    """The page-side collector must report each input's type, or the Python
+    rule cannot tell a checkbox from a text field."""
+    script = vp._DOM_SNAPSHOT_SCRIPT
+    start = script.index("const interactiveControls")
+    collector = script[start:script.index("return {\n    ready_state", start)]
+    assert "type: el.tagName === 'INPUT'" in collector
+
+
 def test_blank_broken_and_overflow_findings_are_independent():
     metrics, issues = analyze_viewport_snapshot(_snapshot(
         main_text_chars=3,

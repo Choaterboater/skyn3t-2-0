@@ -3727,8 +3727,17 @@ class StudioRunner:
                 prior.get("design") if isinstance(prior, dict) else None
             )
             design_summary = CodeAgent._design_summary(design)
-            written = write_design_md(project_dir, brief, design_summary)
-            contract = write_visual_design_contract(project_dir, brief, design_summary)
+            # A seeded best-of-N winner shipped ITS design seed, not the
+            # brief-derived design: describe that one (0 / absent = brief).
+            seed_index = manifest.extra.get("design_seed_index")
+            if isinstance(seed_index, bool) or not isinstance(seed_index, int):
+                seed_index = 0
+            written = write_design_md(
+                project_dir, brief, design_summary, design_seed_index=seed_index
+            )
+            contract = write_visual_design_contract(
+                project_dir, brief, design_summary, design_seed_index=seed_index
+            )
             if written:
                 manifest.extra["design_md"] = "DESIGN.md"
                 log.info("runner.design_md_written", path="DESIGN.md")
@@ -6765,6 +6774,11 @@ class StudioRunner:
                 best_of_n_evidence = result.output.get("best_of_n")
                 if isinstance(best_of_n_evidence, dict):
                     manifest.extra["best_of_n"] = best_of_n_evidence
+                # The winner's design seed travels with its merged files:
+                # delivery writes DESIGN.md + the visual design contract from it.
+                design_seed_index = result.output.get("design_seed_index")
+                if isinstance(design_seed_index, int):
+                    manifest.extra["design_seed_index"] = design_seed_index
 
                 # Record outcome.
                 if result.success:
@@ -8013,11 +8027,17 @@ class StudioRunner:
             except Exception:  # noqa: BLE001 - no judge -> rank-order ties
                 bon_vision_fn = None
 
+        # Trajectories that actually ran under a design seed, so delivery can
+        # persist the WINNER's seed (not candidate 0's brief-derived design) as
+        # DESIGN.md and the visual design contract.
+        seeded: set[int] = set()
+
         async def trajectory(wt: Worktree, index: int) -> TaskResult:
             traj_extra = extra
             if design_web:
                 try:
                     traj_extra = {**extra, "design_seed": design_seed_for(plan.brief, index)}
+                    seeded.add(index)
                 except Exception as exc:  # noqa: BLE001 - seeding must never break a build
                     log.warning("best_of_n.design_seed_failed", index=index, error=str(exc)[:120])
             payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, traj_extra)
@@ -8073,6 +8093,8 @@ class StudioRunner:
         evidence = selection.to_evidence()
         result.output = dict(result.output)
         result.output["best_of_n"] = evidence
+        if selection.winner.index in seeded:
+            result.output["design_seed_index"] = selection.winner.index
         result.metadata = dict(result.metadata)
         result.metadata["best_of_n"] = evidence
         # Record the multi-way match (winner vs the losing candidates' models).

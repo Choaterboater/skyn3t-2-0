@@ -44,6 +44,53 @@ _EXCLUDED_PATH_PARTS = frozenset(
 )
 _NON_PAGE_DIRS = frozenset({"components", "includes", "layouts", "partials", "templates"})
 
+# Entrypoints the generated test_project_has_entrypoint accepts. Emitted as
+# literals (the file runs inside the generated project and cannot import
+# skyn3t) but computed from vc.ENTRYPOINT_NAMES — the set the runner's own
+# entrypoint gate uses — so the contract cannot drift narrower than it. That
+# drift false-failed working Next.js/Remix/Expo apps in every posture, and the
+# repair loop can't fix it: this file is restored after every fix attempt.
+# Bare config/manifest markers are left out — next.config.js or Package.swift
+# alone is not a runnable entry.
+_JS_ENTRY_SUFFIXES = (".js", ".jsx", ".ts", ".tsx", ".mjs")
+_CONFIG_ONLY_ENTRY_MARKERS = frozenset(
+    {"next.config.js", "next.config.mjs", "svelte.config.js", "Package.swift", "project.pbxproj"}
+)
+_ACCEPTANCE_ENTRY_NAMES = frozenset(
+    (vc.ENTRYPOINT_NAMES - _CONFIG_ONLY_ENTRY_MARKERS)
+    # Names this test always accepted (not all are in the shared set).
+    | {
+        "main.py", "app.py", "index.js", "index.ts", "index.html", "server.py",
+        "server.js", "main.ts", "index.astro", "App.vue", "+page.svelte",
+        "App.svelte", "MainApp.swift", "App.swift", "main.swift",
+    }
+    # Expo / React Native root component.
+    | {f"App{suffix}" for suffix in (".js", ".jsx", ".ts", ".tsx")}
+    # Vite React (src/main.*, index.*); also covers Next.js pages/index.* and
+    # Expo Router app/index.*.
+    | {f"{stem}{suffix}" for stem in ("main", "index") for suffix in _JS_ENTRY_SUFFIXES}
+)
+# Route-convention entries matched by path. The .jsx/.tsx page/layout/root/
+# _index basenames (and every literal below) are already accepted ANYWHERE via
+# the shared vc.ENTRYPOINT_NAMES, exactly as the runner's own entrypoint gate
+# accepts them. Only the extra .js/.ts/.mjs variants and Expo's _layout.* are
+# truly path-restricted: those basenames are too generic to accept anywhere.
+_ACCEPTANCE_ENTRY_PATHS = frozenset(
+    {
+        "src/pages/index.astro", "src/App.vue", "src/routes/+page.svelte",
+        "Sources/App/MainApp.swift", "App/App.swift",
+    }
+    | {
+        f"{stem}{suffix}"
+        for stem in (
+            "app/page", "app/layout", "src/app/page", "src/app/layout",  # Next.js app router
+            "app/root", "app/routes/_index",  # Remix
+            "app/_layout", "src/app/_layout",  # Expo Router
+        )
+        for suffix in _JS_ENTRY_SUFFIXES
+    }
+)
+
 
 def _safe_relative_path(raw: Any, *, allow_web_root: bool = False) -> str | None:
     path = str(raw or "").strip().replace("\\", "/").split("?", 1)[0].split("#", 1)[0]
@@ -168,6 +215,21 @@ def derive_acceptance(brief: str, plan: dict[str, Any] | None = None) -> list[st
     return criteria[:20]
 
 
+def _set_literal_lines(name: str, items: frozenset[str], indent: str = "    ") -> list[str]:
+    """Render ``name = {...}`` as sorted (deterministic), wrapped source lines."""
+    lines = [f"{indent}{name} = {{"]
+    row = indent + "    "
+    for literal in (f"{item!r}," for item in sorted(items)):
+        if row.strip() and len(row) + len(literal) > 88:
+            lines.append(row.rstrip())
+            row = indent + "    "
+        row += literal + " "
+    if row.strip():
+        lines.append(row.rstrip())
+    lines.append(f"{indent}}}")
+    return lines
+
+
 def render_test_file(
     acceptance: list[str],
     brief: str,
@@ -222,11 +284,8 @@ def render_test_file(
         "    sources = _sources()",
         "    names = {p.name for p in sources}",
         "    rels = {p.relative_to(PROJECT_DIR).as_posix() for p in sources}",
-        "    entry_names = {'main.py', 'app.py', 'index.js', 'index.ts', 'index.html', ",
-        "                   'server.py', 'server.js', 'main.ts', 'index.astro', 'App.vue', ",
-        "                   '+page.svelte', 'App.svelte', 'MainApp.swift', 'App.swift', 'main.swift'}",
-        "    entry_paths = {'src/pages/index.astro', 'src/App.vue', ",
-        "                   'src/routes/+page.svelte', 'Sources/App/MainApp.swift', 'App/App.swift'}",
+        *_set_literal_lines("entry_names", _ACCEPTANCE_ENTRY_NAMES),
+        *_set_literal_lines("entry_paths", _ACCEPTANCE_ENTRY_PATHS),
         "    native_ios_entrypoint = any(name.endswith('App.swift') for name in names)",
         "    assert names & entry_names or rels & entry_paths or native_ios_entrypoint, (",
         "        f'no recognizable entrypoint among {sorted(rels)[:10]}'",

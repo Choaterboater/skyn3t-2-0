@@ -1169,9 +1169,12 @@ class CodeAgent(BaseAgent):
                         f"missing {len(missing_planned)} planned file(s): "
                         + ", ".join(missing_planned[:12])
                     )
-                elif contract_gap:
+                # Every defect gets its own clause (like the slice path): the
+                # runner clears a reason only when ALL clauses are missing files
+                # now on disk, so a missing-file clause must never hide these.
+                if contract_gap:
                     reasons.append(f"missed required {stack} contract: {contract_gap}")
-                elif prose_files:
+                if prose_files:
                     reasons.append(
                         f"prose (not code) in {prose_files} left only "
                         f"{code_bytes} code bytes (threshold {threshold})"

@@ -31,6 +31,7 @@ from skyn3t.studio.design_tokens import (
     derive_font_pair,
     derive_style,
     derive_theme,
+    derive_tokens,
     design_md_block,
 )
 
@@ -71,6 +72,7 @@ def _control_seed(brief: str) -> dict:
         "font_body": body,
         "style": derive_style(brief),
         "archetype": derive_archetype(brief),
+        "tokens": derive_tokens(brief),
         "tokens_md": design_md_block(brief),
     }
 
@@ -172,14 +174,17 @@ def _variant_seed(brief: str, index: int) -> dict:
         "font_body": body,
         "style": style_name,
         "archetype": archetype,
+        "tokens": tokens,
         "tokens_md": _render_block(theme, tokens, heading, body, style_name, archetype),
     }
 
 
 def design_seed_for(brief: str, index: int) -> dict:
     """The design seed for best-of-N trajectory ``index``: a payload with the
-    variant's theme/accent/font pair/style/archetype plus ``tokens_md``, a
-    ready-to-inject design_md_block-equivalent string for THAT variant.
+    variant's theme/accent/font pair/style/archetype, its ``:root`` token map
+    (``tokens``, what the delivered visual design contract records when this
+    variant wins) plus ``tokens_md``, a ready-to-inject
+    design_md_block-equivalent string for THAT variant.
 
     Index 0 is the control (byte-identical to today's behavior); indices 1+
     rotate each aesthetic axis deterministically off the brief's derived

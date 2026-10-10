@@ -1582,7 +1582,7 @@ def extract_error_gaps(
     # Real npm/tsc/vite build output (700-char tail from _run_node_build).
     if d.get("build") == "failed" and d.get("build_summary"):
         gaps.append(f"BUILD FAILED — fix the cause of this compiler output:\n{d['build_summary']}")
-    # Real pytest failures (500-char tail from _run_generated_tests).
+    # Real pytest failures (FAILED/E lines + tail from _run_generated_tests).
     if d.get("tests") == "failed" and d.get("test_summary"):
         gaps.append(f"TESTS FAILED — make the code satisfy these failing tests:\n{d['test_summary']}")
     for channel in ("node_tests", "swift_tests", "swift_ios_tests"):
@@ -5286,10 +5286,9 @@ def _run_generated_tests(
         return (False, False, "")
 
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
-    tail = out[-500:]
     rc = proc.returncode
     if rc == 0:
-        return (True, True, tail)
+        return (True, True, out[-500:])
     if rc == 5:
         return (False, False, "no tests collected")  # soft skip
     # Collection/import errors from missing third-party deps aren't a code defect.
@@ -5298,7 +5297,45 @@ def _run_generated_tests(
     if rc in (2, 3, 4) and ("ModuleNotFoundError" in out or "ImportError" in out):
         if not _is_project_python_import_error(out, pdir):
             return (False, False, "tests need uninstalled deps — skipped")
-    return (True, False, tail)
+    return (True, False, _distill_pytest_failures(out))
+
+
+# pytest prints the actionable lines — each failure's `E   ` assertion detail and
+# the "short test summary info" FAILED/ERROR list — BEFORE its trailing noise
+# (warnings summary, timing), so a blind out[-500:] tail routinely dropped the
+# assertion the repair loop needed and fed it only "1 failed in 0.4s". The
+# single space keeps captured-log records ("ERROR    app:x.py:3 ...") out.
+_PYTEST_SUMMARY_LINE_RE = re.compile(r"^(?:FAILED|ERROR):? \S")
+_PYTEST_ASSERTION_LINE_RE = re.compile(r"^E {2,}\S")
+
+
+def _distill_pytest_failures(output: str, *, limit: int = 1800) -> str:
+    """Pair pytest's FAILED/ERROR summary lines and ``E`` assertion lines, pulled
+    from the FULL log, with the log tail — at most ``limit`` chars. Summary lines
+    lead (they name the test). Falls back to the plain tail when it already holds
+    every such line (or there are none)."""
+    summary: list[str] = []
+    assertions: list[str] = []
+    for ln in output.splitlines():
+        s = ln.rstrip()
+        if _PYTEST_SUMMARY_LINE_RE.match(s):
+            summary.append(s)
+        elif _PYTEST_ASSERTION_LINE_RE.match(s):
+            assertions.append(s)
+    key = list(dict.fromkeys(summary + assertions))
+    tail_text = output[-limit:]
+    if all(line in tail_text for line in key):
+        return tail_text
+    kept: list[str] = []
+    used = 0
+    for line in key:
+        line = line[:300]  # one huge repr must not crowd out every other failure
+        if used + len(line) + 1 > limit - 500:  # leave room for the tail
+            break
+        kept.append(line)
+        used += len(line) + 1
+    body = "Key failures:\n" + "\n".join(kept) + "\n\n...pytest output tail:\n"
+    return body + output[-(limit - len(body)):]
 
 
 # react_native is a node stack for proof purposes: its package.json ships a

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import time
 import tomllib
 from typing import Any
 
@@ -29,6 +31,21 @@ log = structlog.get_logger(__name__)
 
 # Pass threshold — projects scoring at/above this get a "go".
 GO_THRESHOLD = 60.0
+
+# Reasoning models (OpenRouter) can spend a small output ceiling on hidden
+# reasoning and return an empty/truncated reply before any JSON is emitted.
+_REVIEW_MAX_TOKENS = 4_000
+# A failed provider reply or a reply without a valid score gets one
+# retry; a review still unavailable after that stays explicitly unavailable (score 0).
+_REVIEW_ATTEMPTS = 2
+# Only a quick failure is retried: retrying a slow one (a CLI timeout, a long
+# reasoning pass) would double the review's share of the stage time budget.
+_REVIEW_RETRY_WITHIN_S = 60.0
+_REVIEW_MAX_GAPS = 12
+_REVIEW_MAX_GAP_CHARS = 1000
+# A reply that is exactly one fenced block (```json ... ```). Its body must be
+# strict JSON; a ``` inside a JSON string stays part of the body.
+_WHOLE_FENCE = re.compile(r"```[\w-]*[ \t]*\r?\n(.*)```", re.DOTALL)
 
 
 def _content_file_count(root) -> int:
@@ -140,6 +157,82 @@ def _build_config_valid(root, *, is_content: bool = False) -> tuple[bool, str]:
     return False, "no parseable build/dependency configuration"
 
 
+def _gap_text(item: Any) -> str:
+    """One review gap as readable text. Models often send objects such as
+    ``{"file": ..., "function": ..., "issue": ...}`` instead of strings."""
+    if item is None or (isinstance(item, (dict, list)) and not item):
+        return ""
+    if isinstance(item, str):
+        return item.strip()
+    if isinstance(item, dict):
+        parts = [
+            str(v).strip() for v in item.values()
+            if isinstance(v, (str, int, float)) and not isinstance(v, bool) and str(v).strip()
+        ]
+        if parts:
+            return ": ".join(parts)
+    return json.dumps(item, default=str, separators=(",", ":"))
+
+
+def _coerce_gaps(raw: Any) -> list[str]:
+    """Normalize the reply's gaps to bounded strings; reject uncoercible types."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    elif isinstance(raw, dict):
+        # A file -> issue mapping: {"api.py": "no validation"} -> "api.py: no validation".
+        raw = [": ".join(p for p in (str(k).strip(), _gap_text(v)) if p) for k, v in raw.items()]
+    if not isinstance(raw, list):
+        raise ValueError("invalid review gaps")
+    gaps: list[str] = []
+    for item in raw:
+        text = _gap_text(item)
+        if text:
+            gaps.append(text[:_REVIEW_MAX_GAP_CHARS])
+            if len(gaps) >= _REVIEW_MAX_GAPS:
+                break
+    return gaps
+
+
+def _review_score(raw: Any) -> float:
+    """A finite, non-bool 0-100 review score; raises otherwise."""
+    if isinstance(raw, bool):
+        raise ValueError("invalid review score")
+    val = float(raw)
+    if not math.isfinite(val) or not 0 <= val <= 100:
+        raise ValueError("invalid review score")
+    return val
+
+
+def _review_object(text: str) -> dict[str, Any]:
+    """The reply's review object: the whole reply as strict JSON, or a reply that
+    is exactly one fenced block around strict JSON. Nothing is picked out of
+    prose or a partly broken reply: any such extraction can be steered by JSON
+    quoted from the untrusted brief, source or evidence, or by a per-file object
+    nested in a cut-off verdict. Anything else raises (retry, then unavailable)."""
+    text = (text or "").strip()
+    fenced = _WHOLE_FENCE.fullmatch(text)
+    data = json.loads(fenced.group(1) if fenced else text)
+    if not isinstance(data, dict):
+        raise ValueError("invalid review object")
+    return data
+
+
+def _parse_review(text: str) -> dict[str, Any]:
+    """Validate one live review reply (strict JSON, optionally fenced). Raises
+    only when no valid score can be determined; unreadable gaps keep the score,
+    since re-sampling could flip a clear verdict."""
+    data = _review_object(text)
+    score = _review_score(data["score"])
+    try:
+        gaps = _coerce_gaps(data.get("gaps", []))
+    except ValueError:
+        log.warning("review.unreadable_gaps", gaps_type=type(data.get("gaps")).__name__)
+        gaps = ["reviewer gaps were unreadable"]
+    return {"score": score, "gaps": gaps}
+
+
 class ReviewerAgent(BaseAgent):
     def __init__(self, name: str = "reviewer", event_bus: EventBus | None = None,
                  config: dict | None = None, llm_client: Any | None = None) -> None:
@@ -168,7 +261,8 @@ class ReviewerAgent(BaseAgent):
         live = self.llm is not None and getattr(self.llm, "backend", "stub") != "stub"
         blend_meta["assessment_status"] = "structural_only"
         if live:
-            review, error = await self._maybe_llm_review(payload, root)
+            review, error, attempts = await self._maybe_llm_review(payload, root)
+            blend_meta["review_attempts"] = attempts
             if review is None:
                 blend_meta.update(assessment_status="unavailable", review_error=error)
                 gaps.append(f"Semantic review unavailable: {error}")
@@ -203,9 +297,10 @@ class ReviewerAgent(BaseAgent):
 
     async def _maybe_llm_review(
         self, payload: dict[str, Any], root,
-    ) -> tuple[dict[str, Any] | None, str]:
+    ) -> tuple[dict[str, Any] | None, str, int]:
+        """Return (review or None, error, attempts made)."""
         if self.llm is None:
-            return None, "no_live_client"
+            return None, "no_live_client", 0
         brief = payload.get("brief", "")
         digest = _content_digest(
             root, max_bytes=192000, max_file_bytes=64000, raw_source=True,
@@ -228,24 +323,28 @@ class ReviewerAgent(BaseAgent):
         )
         if detect_stack(brief=brief, explicit=payload.get("stack") or "") == "mcp":
             prompt += "\nReview against these factory-owned rules; report missing evidence:\n" + MCP_RELIABILITY_CONTRACT
-        try:
-            res = await self.llm.complete(
-                prompt, tier=Tier.STRONG, json_mode=True, max_tokens=1500, task_type=self.agent_type
-            )
+        error = ""
+        for attempt in range(1, _REVIEW_ATTEMPTS + 1):
+            started = time.monotonic()
+            try:
+                res = await self.llm.complete(
+                    prompt, tier=Tier.STRONG, json_mode=True, max_tokens=_REVIEW_MAX_TOKENS,
+                    task_type=self.agent_type,
+                )
+            except Exception as exc:  # noqa: BLE001 - explicit unavailable, never a passing fallback
+                # A raised call (budget cap, client fault) is not a reply hiccup: no retry.
+                error = type(exc).__name__
+                log.warning("review.semantic_unavailable", error=error, attempt=attempt)
+                return None, error, attempt
             if getattr(res, "status", "succeeded") not in {"succeeded", "cli_response"} or getattr(res, "backend", "") == "stub":
-                log.warning("review.failed_provider_reply", status=getattr(res, "status", "unknown"))
-                return None, "provider did not return a successful live review"
-            data = json.loads(res.text)
-            if not isinstance(data, dict) or isinstance(data.get("score"), bool):
-                raise ValueError("invalid review object")
-            val = float(data["score"])
-            gaps = data.get("gaps", [])
-            if not math.isfinite(val) or not 0 <= val <= 100:
-                raise ValueError("invalid review score")
-            if not isinstance(gaps, list) or any(not isinstance(g, str) for g in gaps):
-                raise ValueError("invalid review gaps")
-            return {"score": val, "gaps": [g[:1000] for g in gaps[:12]]}, ""
-        except Exception as exc:  # noqa: BLE001 - explicit unavailable, never a passing fallback
-            error = type(exc).__name__
-            log.warning("review.semantic_unavailable", error=error)
-            return None, error
+                log.warning("review.failed_provider_reply", status=getattr(res, "status", "unknown"), attempt=attempt)
+                error = "provider did not return a successful live review"
+            else:
+                try:
+                    return _parse_review(res.text), "", attempt
+                except Exception as exc:  # noqa: BLE001 - explicit unavailable, never a passing fallback
+                    error = type(exc).__name__
+                    log.warning("review.semantic_unavailable", error=error, attempt=attempt)
+            if time.monotonic() - started >= _REVIEW_RETRY_WITHIN_S:
+                break
+        return None, error, attempt

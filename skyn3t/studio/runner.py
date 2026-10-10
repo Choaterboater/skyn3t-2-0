@@ -23,6 +23,7 @@ Import has zero side effects.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import json
 import math
@@ -100,6 +101,7 @@ from skyn3t.studio.mcp_check import McpVerdict
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.product_spec import ProductSpecV1, product_contract_prompt_block
 from skyn3t.studio.proof_run import (
+    _STYLESHEET_STUB_CONTENT,
     _esm_named_export_mismatches,
     _unresolved_local_imports,
     _unresolved_python_imports,
@@ -141,38 +143,152 @@ _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-_MISSING_OWNED_RE = re.compile(r"(?:missing|missed) (\d+) owned file\(s\): (.*)$")
+# Slice codegen reports "owned" files; monolithic and completion codegen report
+# "planned" files (code_agent.py). Both name paths we can verify on disk.
+_MISSING_OWNED_RE = re.compile(r"(?:missing|missed) (\d+) (owned|planned) file\(s\): (.*)$")
+_UNCONFIRMED_COMPLETION_RE = re.compile(
+    r"(?:provider|agentic build failed or) did not confirm completion(?:: [^;]*)?$"
+)
+# Stand-ins written into a missing path: proof_run's import stubs, its stub
+# stylesheet, and the fix-loop's smoke test (_stub_for). None is delivery.
+_AUTO_SCAFFOLD_MARKER = "Auto-scaffolded by SkyN3t"
+_SMOKE_TEST_STUB = "def test_smoke():\n    assert True\n"
+# Pure tool config: a deterministic copy (scaffold, fix-loop fill) is already a
+# working delivery, so these are exempt from the unchanged-since-baseline rule
+# (never from the stand-in markers). Manifests that decide what is built or
+# tested (package.json, pyproject.toml, Package.swift, ...), README,
+# stylesheets, index.html and source modules are not. Lowercased basename.
+_PURE_CONFIG_GLOBS = (
+    "*.config.js", "*.config.mjs", "*.config.cjs", "*.config.ts",
+    "tsconfig*.json", "jsconfig.json", ".gitignore", ".eslintrc*", ".prettierrc*",
+    ".env.example", "contents.json", "tauri.conf.json",
+)
 
 
-def degraded_reason_resolved(reason: str, project_dir: str | Path) -> bool:
-    """True when a codegen ``degraded_reason`` named ONLY missing owned files (plus
-    an unconfirmed-completion note) and every one of them now exists with content
+def _is_placeholder(rel: str, data: bytes) -> bool:
+    """True when the bytes at ``rel`` are a stand-in rather than delivered work:
+    an auto-scaffold stub, the stub stylesheet or the smoke-test stub."""
+    text = data.decode("utf-8", errors="replace")
+    if _AUTO_SCAFFOLD_MARKER in text or text.strip() == _STYLESHEET_STUB_CONTENT.strip():
+        return True
+    name = rel.rsplit("/", 1)[-1].lower()
+    return name.endswith(".py") and "".join(text.split()) == "".join(_SMOKE_TEST_STUB.split())
+
+
+def _is_pure_config(rel: str) -> bool:
+    name = rel.rsplit("/", 1)[-1].lower()
+    return any(fnmatch.fnmatchcase(name, glob) for glob in _PURE_CONFIG_GLOBS)
+
+
+def _reason_parts(reason: object) -> list[str]:
+    return [p for p in (s.strip() for s in str(reason or "").split("; ")) if p]
+
+
+def _missing_file_clause(part: str) -> tuple[str, int, list[str]] | None:
+    """``(kind, count, paths)`` when ``part`` is a "missing N owned/planned
+    file(s): ..." clause of a codegen ``degraded_reason``, else None."""
+    m = _MISSING_OWNED_RE.search(part)
+    if not m:
+        return None
+    return m.group(2), int(m.group(1)), [x.strip() for x in m.group(3).split(",") if x.strip()]
+
+
+def _named_missing_paths(reason: object, kind: str | None = None) -> list[str]:
+    """Paths the missing-files clauses of ``reason`` name (only ``kind``'s when
+    given), in order and without duplicates."""
+    paths: dict[str, None] = {}
+    for part in _reason_parts(reason):
+        clause = _missing_file_clause(part)
+        if clause is not None and kind in (None, clause[0]):
+            paths.update(dict.fromkeys(clause[2]))
+    return list(paths)
+
+
+def _content_sha256(path: Path) -> str | None:
+    """sha256 of the file at ``path``; None when absent, unreadable or blank."""
+    try:
+        data = path.read_bytes() if path.is_file() else b""
+    except OSError:
+        return None
+    if not data.decode("utf-8", errors="replace").strip():
+        return None
+    return hashlib.sha256(data).hexdigest()
+
+
+def degraded_baseline_sha256(reason: str, project_dir: str | Path) -> dict[str, str | None]:
+    """``{rel: sha256 | None}`` for every path a missing-files clause of a codegen
+    ``degraded_reason`` names (None while absent or blank). Taken once codegen's
+    scaffold back-fill and the pre-proof deterministic repairs (stubs, ruff
+    format) are on disk, so degraded_reason_resolved can tell repair work done
+    since from deterministic fill."""
+    root = Path(project_dir)
+    return {rel: _content_sha256(root / rel) for rel in _named_missing_paths(reason)}
+
+
+def degraded_planned_sha256(code_out: object, root: str | Path) -> dict[str, str | None]:
+    """``{rel: sha256 | None}`` of the planned paths a degraded code stage's
+    reason names; ``{}`` when the stage is not degraded."""
+    if not isinstance(code_out, dict) or not code_out.get("degraded"):
+        return {}
+    base = Path(root)
+    return {
+        rel: _content_sha256(base / rel)
+        for rel in _named_missing_paths(code_out.get("degraded_reason", ""), "planned")
+    }
+
+
+def degraded_reason_resolved(
+    reason: str,
+    project_dir: str | Path,
+    *,
+    baseline_sha256: Mapping[str, str | None] | None = None,
+) -> bool:
+    """True when a codegen ``degraded_reason`` named ONLY missing owned/planned files
+    (plus an unconfirmed-completion note) and every one of them now exists with content
     in the delivered tree — i.e. the fix-loop finished what codegen was cut off
     from. Anything else (stub/under-delivery, prose, a truncated list) stays
-    degraded: we only clear what we can verify on disk."""
+    degraded: we only clear what we can verify on disk.
+
+    A planned path holding a runner stand-in (_is_placeholder) was never repaired.
+    ``baseline_sha256`` (degraded_baseline_sha256, moved by the fix loop along
+    its deterministic edits of planned paths) holds what deterministic work left
+    at each path: bytes still matching it were never repaired either, unless the
+    path is pure config/manifest (_PURE_CONFIG_GLOBS). Monolithic/completion
+    codegen back-fills "planned" paths from the scaffold AFTER writing the
+    reason, so a planned path without a baseline entry fails closed. Slice
+    codegen leaves "owned" paths missing, so they keep the original rule: now
+    exists non-empty => resolved."""
     root = Path(project_dir)
+    baseline: Mapping[str, str | None] = baseline_sha256 or {}
     saw_missing = False
-    for part in (p.strip() for p in str(reason or "").split("; ")):
-        if not part:
-            continue
-        m = _MISSING_OWNED_RE.search(part)
-        if m:
-            paths = [x.strip() for x in m.group(2).split(",") if x.strip()]
-            if not paths or int(m.group(1)) != len(paths):
+    for part in _reason_parts(reason):
+        clause = _missing_file_clause(part)
+        if clause is None:
+            if _UNCONFIRMED_COMPLETION_RE.search(part):
+                continue
+            return False
+        kind, count, paths = clause
+        if not paths or count != len(paths):
+            return False
+        for rel in paths:
+            if kind == "planned" and rel not in baseline:
                 return False
-            for rel in paths:
-                f = (root / rel)
-                try:
-                    if not f.is_file() or not f.read_text(encoding="utf-8", errors="replace").strip():
-                        return False
-                except OSError:
-                    return False
-            saw_missing = True
-            continue
-        if part.endswith("provider did not confirm completion") or re.search(
-                r"provider did not confirm completion: [^;]*$", part):
-            continue
-        return False
+            f = (root / rel)
+            try:
+                data = f.read_bytes() if f.is_file() else b""
+            except OSError:
+                return False
+            if not data.decode("utf-8", errors="replace").strip():
+                return False
+            if kind != "planned":
+                continue
+            if _is_placeholder(rel, data):
+                return False
+            base = baseline.get(rel)
+            if (base is not None and hashlib.sha256(data).hexdigest() == base
+                    and not _is_pure_config(rel)):
+                return False
+        saw_missing = True
     return saw_missing
 
 
@@ -2564,9 +2680,37 @@ class StudioRunner:
         manifest.extra["responsive_visual_proof"] = responsive_visual_proof
         # Dampen by route health, but only when proof PASSED — a proof-failed build
         # is already halved by _honest_score, so this would otherwise double-count.
+        # Dead HTTP routes dampen in every posture. Visual health joins the
+        # multiplier wherever liveness BLOCKS (release / blocking_gates), exactly
+        # as before. Wherever it does not block (lab), a visual failure is a
+        # heuristic — on EVERY stack, since visual liveness probes the page
+        # routes of fastapi/express/rag/... too: it takes the
+        # _score_after_finding cap like every other non-blocking finding, but
+        # never scores below the old multiplier (a partial failure on a
+        # multi-route app stays at e.g. 87.4, not 74), so lab is never harsher
+        # than release. Only the visual gate finding below stays UI-only.
+        # _shape_final_score still caps a 'go' at 70 + 25*visual_health later.
+        resolved_posture = (
+            posture if posture is not None else GatePosture.from_settings(self.settings)
+        )
+        visual_finding_cap = not resolved_posture.blocks("liveness")
+        visual_failed_any = bool(visual_total) and (visual_failed > 0 or visual_health < 1.0)
+        # Record "finding_cap" only when the cap actually decided the score.
+        score_policy = "health_multiplier"
         if proof.passed and report.total:
-            final_score = round(final_score * (0.5 + 0.5 * effective_health), 2)
+            multiplied = round(final_score * (0.5 + 0.5 * effective_health), 2)
+            if visual_finding_cap and visual_failed_any:
+                capped = self._score_after_finding(
+                    round(final_score * (0.5 + 0.5 * report.health), 2), verdict,
+                )
+                if capped >= multiplied:
+                    score_policy = "finding_cap"
+                final_score = max(capped, multiplied)
+            else:
+                final_score = multiplied
             manifest.score = final_score
+        if visual_total:
+            manifest.extra["liveness_visual_score_policy"] = score_policy
         # Runtime gate: serve+probe decides the verdict. Always-on for a dead
         # UI root '/'; the broad any-dead-route gate stays opt-in.
         verdict, gate_reason = self._liveness_gate(
@@ -2575,9 +2719,10 @@ class StudioRunner:
         )
         # Visual liveness is a viewport heuristic OR a vision-model judgement —
         # not proof the delivery is broken — so it is posture-routed: recorded
-        # (with the score already dampened by health above) under lab, blocking
-        # under release or an explicit blocking_gates="liveness". The always-on
-        # dead-root and opt-in broad gates above rightly stay direct.
+        # (with the score already finding-capped above, never below the old
+        # health multiplier) under lab, blocking under release or an explicit
+        # blocking_gates="liveness". The always-on dead-root and opt-in broad
+        # gates above rightly stay direct.
         if gate_reason is None:
             visual_routes = list(getattr(report, "visual_failed_routes", []) or [])
             if plan.stack in _UI_WEB_STACKS and visual_routes:
@@ -3506,7 +3651,7 @@ class StudioRunner:
         if name == "__init__.py":
             return ""
         if name.startswith("test") and name.endswith(".py"):
-            return "def test_smoke():\n    assert True\n"
+            return _SMOKE_TEST_STUB
         if name == "requirements.txt":
             return ""
         if name == "README.md":
@@ -3533,6 +3678,39 @@ class StudioRunner:
             pass
         return out
 
+    @staticmethod
+    def _runner_scaffold(plan: BuildPlan, brief: str) -> dict[str, str]:
+        """The offline scaffold ``_fill_missing`` back-fills missing files from.
+
+        Best-effort: any failure yields ``{}`` (nothing to fill from)."""
+        try:
+            from skyn3t.agents._common import detect_stack, slugify
+            from skyn3t.agents._scaffold import scaffold_for
+
+            # planner stack vocabulary ('cli'/'python'/'react') -> scaffold key
+            # ('python_cli'/'react_vite'/…) so scaffold_for stops defaulting to
+            # the React builder for everything it doesn't recognize.
+            scaffold_stack = detect_stack(explicit=plan.stack) or plan.stack
+            return scaffold_for(scaffold_stack, slugify(plan.slug or brief, "app"), brief) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    @staticmethod
+    def _degraded_deterministic(manifest, project_dir: str, reason: str) -> list[str]:
+        """Planned paths of the code stage's degraded_reason that are still absent
+        or at their code_degraded baseline: whatever a deterministic step about to
+        run puts there is no repair, so their baseline must follow it."""
+        baseline = manifest.extra.get("degraded_baseline_sha256")
+        if not isinstance(baseline, dict):
+            return []
+        root = Path(project_dir)
+        held = []
+        for rel in _named_missing_paths(reason, "planned"):
+            current = _content_sha256(root / rel)
+            if current is None or (baseline.get(rel) is not None and current == baseline[rel]):
+                held.append(rel)
+        return held
+
     def _fill_missing(self, project_dir: str, plan: BuildPlan, brief: str, missing: list[str]) -> int:
         """Deterministically create missing checklist files.
 
@@ -3544,18 +3722,7 @@ class StudioRunner:
             return 0
         from pathlib import Path
 
-        scaffold: dict[str, str] = {}
-        try:
-            from skyn3t.agents._common import detect_stack, slugify
-            from skyn3t.agents._scaffold import scaffold_for
-
-            # planner stack vocabulary ('cli'/'python'/'react') -> scaffold key
-            # ('python_cli'/'react_vite'/…) so scaffold_for stops defaulting to
-            # the React builder for everything it doesn't recognize.
-            scaffold_stack = detect_stack(explicit=plan.stack) or plan.stack
-            scaffold = scaffold_for(scaffold_stack, slugify(plan.slug or brief, "app"), brief) or {}
-        except Exception:  # noqa: BLE001
-            scaffold = {}
+        scaffold = self._runner_scaffold(plan, brief)
         root = Path(project_dir)
 
         # If a runnable root is among the gaps, synthesize one wired to the
@@ -3705,8 +3872,17 @@ class StudioRunner:
                 prior.get("design") if isinstance(prior, dict) else None
             )
             design_summary = CodeAgent._design_summary(design)
-            written = write_design_md(project_dir, brief, design_summary)
-            contract = write_visual_design_contract(project_dir, brief, design_summary)
+            # A seeded best-of-N winner shipped ITS design seed, not the
+            # brief-derived design: describe that one (0 / absent = brief).
+            seed_index = manifest.extra.get("design_seed_index")
+            if isinstance(seed_index, bool) or not isinstance(seed_index, int):
+                seed_index = 0
+            written = write_design_md(
+                project_dir, brief, design_summary, design_seed_index=seed_index
+            )
+            contract = write_visual_design_contract(
+                project_dir, brief, design_summary, design_seed_index=seed_index
+            )
             if written:
                 manifest.extra["design_md"] = "DESIGN.md"
                 log.info("runner.design_md_written", path="DESIGN.md")
@@ -5150,7 +5326,8 @@ class StudioRunner:
         except Exception as exc:  # noqa: BLE001 - advisory; never break a build
             log.warning("cli_playtest.failed", error=str(exc))
 
-    async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra):
+    async def _fix_loop(self, manifest, plan, project_dir, proof, correlation_id, extra,
+                        *, degraded_reason: str = ""):
         """Convergence loop: re-run the real build, feed the EXACT error back to the
         improver, and retry until the proof passes or the budget is spent.
 
@@ -5159,6 +5336,10 @@ class StudioRunner:
         different defect each build, so a single pass rarely converges; this loops to
         green (or the attempt/wall-clock bound) instead of stopping after 2 tries —
         the fix for the ~14% go-rate that no amount of per-class repair addressed.
+
+        ``degraded_reason`` is the code stage's: each round re-baselines its
+        planned paths still holding deterministic bytes (degraded_reason_resolved)
+        in ``manifest.extra["degraded_baseline_sha256"]``.
         """
         import time as _t
         root = Path(project_dir).resolve()
@@ -5254,6 +5435,9 @@ class StudioRunner:
         unchanged_rounds = 0
         stalled = False
         repair_guidance: str | None = None  # council advises at most once per build
+        # Deterministic edits of a planned path (a _fill_missing back-fill, a
+        # repair creating or reformatting one) are no repair: its baseline
+        # follows them (_degraded_deterministic). Owned paths need none.
         runtime_self_heal = str(getattr(plan, "stack", "") or "") not in _GAME_STACKS
         if runtime_self_heal:
             manifest.extra["runtime_self_heal"] = {
@@ -5275,6 +5459,9 @@ class StudioRunner:
                 {"build_id": manifest.build_id, "stage": f"fix#{attempt}", "agent_type": "fix"},
                 correlation_id=correlation_id,
             )
+            # Planned paths still absent or at their baseline: whatever this
+            # round's fill and deterministic repairs put there is no repair.
+            held = self._degraded_deterministic(manifest, project_dir, degraded_reason)
             filled = self._fill_missing(project_dir, plan, manifest.brief, list(proof.missing or []))
             # Re-run the deterministic repairs every iteration: an improver pass can
             # introduce a new missing import / undeclared dep, and when no
@@ -5287,6 +5474,10 @@ class StudioRunner:
             # `_stub_dangling_stylesheets` this used to also call is retired;
             # its job is fully subsumed here.
             repairs = self._deterministic_repairs(project_dir, plan)
+            # Re-baseline them as the fill and repairs left them (ruff format
+            # included), before the improver can touch them.
+            for rel in held:
+                manifest.extra["degraded_baseline_sha256"][rel] = _content_sha256(root / rel)
 
             # LLM content repair on the flagged gaps, when an improver is present.
             if self._has_capability("code_improve"):
@@ -6492,6 +6683,9 @@ class StudioRunner:
         )
 
         prior: dict[str, Any] = {}
+        # Planned paths the code stage's debug improver rewrote: repair work,
+        # never part of the code_degraded baseline (degraded_reason_resolved).
+        degraded_debug_repaired: set[str] = set()
         # The main build worktree for non-code stages and final delivery.
         main_wt = create_worktree(str(projects_dir), slug)
         worktrees: list[Worktree] = [main_wt]
@@ -6743,6 +6937,11 @@ class StudioRunner:
                 best_of_n_evidence = result.output.get("best_of_n")
                 if isinstance(best_of_n_evidence, dict):
                     manifest.extra["best_of_n"] = best_of_n_evidence
+                # The winner's design seed travels with its merged files:
+                # delivery writes DESIGN.md + the visual design contract from it.
+                design_seed_index = result.output.get("design_seed_index")
+                if isinstance(design_seed_index, int):
+                    manifest.extra["design_seed_index"] = design_seed_index
 
                 # Record outcome.
                 if result.success:
@@ -6878,6 +7077,10 @@ class StudioRunner:
                 await self._save_build(manifest)
 
                 # Per-stage autonomous debug + live preview snapshot (Phase A).
+                debug_watch = (
+                    degraded_planned_sha256(prior.get(spec.name), main_wt.dir)
+                    if spec.agent_type == "code" else {}
+                )
                 await self._debug_and_snapshot(
                     build_id,
                     spec,
@@ -6891,6 +7094,10 @@ class StudioRunner:
                     brief=brief,
                     slug=slug,
                 )
+                for rel, before in debug_watch.items():
+                    after = _content_sha256(Path(main_wt.dir) / rel)
+                    if after is not None and after != before:
+                        degraded_debug_repaired.add(rel)
 
                 # Approval gate (after stage completes).
                 if spec.gated:
@@ -7059,6 +7266,18 @@ class StudioRunner:
                     files=contract_clones_removed,
                 )
 
+            # degraded_reason_resolved baseline: the bytes at each path the code
+            # stage reported missing once every deterministic delivery edit is on
+            # disk (codegen's scaffold back-fill, the repairs above incl. ruff
+            # format, asset wiring, prerender). Popped at the verdict gate.
+            code_out = prior.get("code") or {}
+            if code_out.get("degraded"):
+                degraded_baseline = degraded_baseline_sha256(
+                    str(code_out.get("degraded_reason", "")), project_dir)
+                for rel in degraded_debug_repaired & degraded_baseline.keys():
+                    degraded_baseline[rel] = None
+                manifest.extra["degraded_baseline_sha256"] = degraded_baseline
+
             # Objective proof against the delivered project (boots it AND runs
             # its own test suite when enabled). Offloaded so the synchronous
             # subprocess work never blocks the event loop.
@@ -7085,7 +7304,8 @@ class StudioRunner:
             # happening. Advisory means "does not block", never "not repaired".
             if not proof.passed or getattr(proof, "advisory_failures", None):
                 proof = await self._fix_loop(
-                    manifest, plan, project_dir, proof, correlation_id, extra
+                    manifest, plan, project_dir, proof, correlation_id, extra,
+                    degraded_reason=str(code_out.get("degraded_reason", "")),
                 )
 
             # Delivery recovery attempt: a dangling LOCAL import (stylesheet or
@@ -7103,7 +7323,12 @@ class StudioRunner:
             # _final_consistency_check (near the very end of the build) is
             # what actually runs last and can only ever DOWNGRADE the verdict.
             if not proof.passed and (getattr(proof, "detail", None) or {}).get("unresolved_imports"):
+                held = self._degraded_deterministic(
+                    manifest, project_dir, str(code_out.get("degraded_reason", "")))
                 recovery_repairs = self._deterministic_repairs(project_dir, plan)
+                for rel in held:
+                    manifest.extra["degraded_baseline_sha256"][rel] = _content_sha256(
+                        Path(project_dir) / rel)
                 if any(recovery_repairs.get(k) for k in
                        ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
                         "imports_scaffolded", "use_client_added",
@@ -7290,8 +7515,13 @@ class StudioRunner:
             # Re-check against the DELIVERED tree: when the only defect was owned
             # files codegen never wrote and the fix-loop has since written them
             # (proof passed), the flag is stale — keep it as evidence, don't block.
+            # A named path whose bytes still match the pre-proof baseline (or the
+            # fix-loop's _fill_missing re-baseline) was never repaired. Popped so
+            # the delivered manifest does not carry it.
+            _baseline = manifest.extra.pop("degraded_baseline_sha256", None)
             if code_degraded and proof.passed and degraded_reason_resolved(
-                    str((prior.get("code") or {}).get("degraded_reason", "")), project_dir):
+                    str((prior.get("code") or {}).get("degraded_reason", "")), project_dir,
+                    baseline_sha256=_baseline if isinstance(_baseline, Mapping) else None):
                 code_degraded = False
                 manifest.extra["degraded_resolved"] = str(
                     (prior.get("code") or {}).get("degraded_reason", ""))[:500]
@@ -7991,11 +8221,17 @@ class StudioRunner:
             except Exception:  # noqa: BLE001 - no judge -> rank-order ties
                 bon_vision_fn = None
 
+        # Trajectories that actually ran under a design seed, so delivery can
+        # persist the WINNER's seed (not candidate 0's brief-derived design) as
+        # DESIGN.md and the visual design contract.
+        seeded: set[int] = set()
+
         async def trajectory(wt: Worktree, index: int) -> TaskResult:
             traj_extra = extra
             if design_web:
                 try:
                     traj_extra = {**extra, "design_seed": design_seed_for(plan.brief, index)}
+                    seeded.add(index)
                 except Exception as exc:  # noqa: BLE001 - seeding must never break a build
                     log.warning("best_of_n.design_seed_failed", index=index, error=str(exc)[:120])
             payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, traj_extra)
@@ -8051,6 +8287,8 @@ class StudioRunner:
         evidence = selection.to_evidence()
         result.output = dict(result.output)
         result.output["best_of_n"] = evidence
+        if selection.winner.index in seeded:
+            result.output["design_seed_index"] = selection.winner.index
         result.metadata = dict(result.metadata)
         result.metadata["best_of_n"] = evidence
         # Record the multi-way match (winner vs the losing candidates' models).

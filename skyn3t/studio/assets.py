@@ -158,6 +158,13 @@ def _wants_images(brief: str) -> bool:
     return any(sig in low for sig in _IMAGE_SIGNALS) or any(w in low for w in _BUSINESS_SIGNALS)
 
 
+def _has_keyword(low: str, key: str) -> bool:
+    """Whole-word keyword match (plural ok). Substring matching made "spa" hit
+    "whitespace" and gave a school-ops site salon/spa photos."""
+    k = re.escape(key.strip())
+    return re.search(rf"(?<![a-z0-9]){k}(?:e?s)?(?![a-z0-9])", low) is not None
+
+
 def _extract_subjects(brief: str, limit: int) -> list[str]:
     """Pull image subjects from the brief; fall back to a sensible set.
 
@@ -181,10 +188,10 @@ def _extract_subjects(brief: str, limit: int) -> list[str]:
     if any(w in low for w in _BUSINESS_SIGNALS):
         subs: list[str] = []
         for keys, subjects in _DOMAIN_SUBJECTS:
-            if any(k in low for k in keys):
+            if any(_has_keyword(low, k) for k in keys):
                 subs.extend(subject for subject in subjects if subject not in subs)
         for keys, subject in _SERVICE_SUBJECTS:
-            if any(k in low for k in keys) and subject not in subs:
+            if any(_has_keyword(low, k) for k in keys) and subject not in subs:
                 subs.append(subject)
         return subs[:limit]
     # Nothing nameable. Do NOT invent coloring-book defaults — a brief that

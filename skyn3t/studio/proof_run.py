@@ -2516,6 +2516,64 @@ _USE_CLIENT_SIGNAL = re.compile(
 )
 
 
+_USE_CLIENT_LINE = re.compile(r"""^[ \t]*(["'])use client\1[ \t]*;?[ \t]*$""", re.M)
+
+
+def _hoist_use_client(text: str) -> str | None:
+    """When a ``"use client"`` directive exists but is buried below other code or
+    duplicated, return the text with exactly one directive on top; else None."""
+    found = _USE_CLIENT_LINE.findall(text)
+    if not found or (len(found) == 1 and _has_use_client_directive(text)):
+        return None
+    body = _USE_CLIENT_LINE.sub("", text).lstrip("﻿").lstrip("\n")
+    return '"use client";\n\n' + body
+
+
+# A redaction/placeholder token a model sometimes emits as a bare line (seen:
+# `ARIA_PLACEHOLDER_REMOVED` above "use client" in a Next.js page). As a statement
+# it's an undefined-global ReferenceError and it breaks the directive prologue.
+_PLACEHOLDER_MARKER_LINE = re.compile(
+    r"^[ \t]*[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_(?:PLACEHOLDER|REMOVED|REDACTED|OMITTED)"
+    r"(?:_[A-Z0-9]+)*[ \t]*;?[ \t]*$"
+)
+_PLACEHOLDER_SUFFIXES = frozenset({".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"})
+
+
+def strip_placeholder_marker_lines(root: str | Path) -> list[str]:
+    """Remove bare placeholder-marker lines from the LEADING prologue of JS/TS
+    sources (before the first real statement). Narrow on purpose: only the
+    file head is scanned, so a marker-looking word inside a template literal or
+    array further down is never touched. Returns rel paths changed. Never raises."""
+    root = Path(root)
+    changed: list[str] = []
+    for f in _iter_files(root):
+        if f.suffix not in _PLACEHOLDER_SUFFIXES:
+            continue
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        lines = text.split("\n")
+        drop: list[int] = []
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if not s or s.startswith(("//", "/*", "*")) or _USE_CLIENT_LINE.match(line):
+                continue
+            if _PLACEHOLDER_MARKER_LINE.match(line):
+                drop.append(i)
+                continue
+            break
+        if not drop:
+            continue
+        kept = [ln for i, ln in enumerate(lines) if i not in set(drop)]
+        try:
+            f.write_text("\n".join(kept).lstrip("\n"), encoding="utf-8")
+        except OSError:
+            continue
+        changed.append(f.relative_to(root).as_posix())
+    return changed
+
+
 def _has_use_client_directive(text: str) -> bool:
     """True when the first real statement is a ``use client`` directive."""
     for line in text.splitlines():
@@ -2585,6 +2643,17 @@ def add_use_client_directives(root: str | Path) -> list[str]:
         try:
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
+            continue
+        # A directive that exists but sits below junk (or twice) must be MOVED,
+        # not duplicated — prepending a second one left the original buried and
+        # `next build` failed "must be placed before other expressions".
+        hoisted = _hoist_use_client(text)
+        if hoisted is not None:
+            try:
+                f.write_text(hoisted, encoding="utf-8")
+            except OSError:
+                continue
+            changed.append(rel.as_posix())
             continue
         if not _USE_CLIENT_SIGNAL.search(text) or _has_use_client_directive(text):
             continue
@@ -3903,6 +3972,9 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
     # rendered markdown BULLET rather than code. Runs first so every later
     # repair reads real source instead of an indented wrapper.
     bullet_wrappers = strip_markdown_bullet_wrapper_in_source_files(project_dir)
+    # Bare model placeholder tokens (`ARIA_PLACEHOLDER_REMOVED`) at a file head —
+    # before the "use client" repair, which must see the real prologue.
+    placeholder_markers = strip_placeholder_marker_lines(project_dir)
     sanitized = sanitize_package_json_deps(project_dir)
     relinked = relink_unresolved_relative_imports(project_dir)
     stubbed = scaffold_missing_imports(project_dir, stack=stack)
@@ -3983,6 +4055,7 @@ def apply_deterministic_repairs(project_dir: str | Path, stack: str = "") -> dic
         "use_client_added": use_client,
         "source_fences_stripped": source_fences,
         "bullet_wrappers_stripped": bullet_wrappers,
+        "placeholder_markers_stripped": placeholder_markers,
         "path_alias_config": alias_cfg,
         "vitest_alias_config": vitest_alias_cfg,
         "ts_in_js_stripped": ts_stripped,

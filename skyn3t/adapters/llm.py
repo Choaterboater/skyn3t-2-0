@@ -1049,6 +1049,10 @@ _STALL_HEAL_MIN_REMAINING_S = 30.0
 # content (claude's system/init, codex's thread.started/turn.started). The
 # first event outside this set is the "first token" the acceptance stall kinds
 # wait for.
+# A live session with at least this many content (non-lifecycle) events has
+# proven it is doing real work; see ``agentic_productive_idle_floor``.
+_AGENTIC_PRODUCTIVE_MIN_CONTENT_EVENTS = 5
+
 _AGENTIC_LIFECYCLE_EVENT_TYPES = frozenset({
     "system", "init", "thread.started", "turn.started", "session",
     "session.started", "ready",
@@ -5380,6 +5384,24 @@ class LLMClient:
         last_beat = stream_started
         last_output_at = stream_started
 
+        # Productive-session grace: a live process that already streamed real
+        # content and then goes quiet is usually mid-way through one large
+        # tool call (stream-json is silent until it completes), not hung. It
+        # gets max(idle_timeout, floor) of quiet before the guard fires, capped
+        # by the build wall-clock; everything else keeps ``idle_timeout``.
+        try:
+            grace_floor = float(
+                getattr(self.settings, "agentic_productive_idle_floor", 0) or 0
+            )
+        except (TypeError, ValueError):
+            grace_floor = 0.0
+        try:
+            wall_clock_s = float(getattr(self.settings, "agentic_build_timeout", 0) or 0)
+        except (TypeError, ValueError):
+            wall_clock_s = 0.0
+        next_wait = float(idle_timeout or 0)
+        grace_logged_for: float | None = None
+
         err_task = asyncio.create_task(_drain_err())
         try:
             try:
@@ -5387,11 +5409,39 @@ class LLMClient:
                     try:
                         if idle_timeout > 0:
                             line = await asyncio.wait_for(
-                                proc.stdout.readline(), timeout=idle_timeout
+                                proc.stdout.readline(), timeout=next_wait
                             )
                         else:
                             line = await proc.stdout.readline()
                     except TimeoutError:
+                        _now = time.monotonic()
+                        quiet_now = _now - last_output_at
+                        process_alive = getattr(proc, "returncode", None) is None
+                        if (
+                            process_alive
+                            and content_events >= _AGENTIC_PRODUCTIVE_MIN_CONTENT_EVENTS
+                            and grace_floor > float(idle_timeout)
+                        ):
+                            deadline = last_output_at + grace_floor
+                            if wall_clock_s > 0:
+                                deadline = min(deadline, stream_started + wall_clock_s)
+                            remaining = deadline - _now
+                            if remaining > 0.001:
+                                if grace_logged_for != last_output_at:
+                                    grace_logged_for = last_output_at
+                                    evidence["idle_grace_extensions"] = (
+                                        int(evidence.get("idle_grace_extensions", 0)) + 1
+                                    )
+                                    log.info(
+                                        "llm.agentic_idle_extended", provider=provider,
+                                        idle_s=idle_timeout, grace_floor_s=grace_floor,
+                                        quiet_s=int(quiet_now),
+                                        extra_s=round(remaining, 3),
+                                        content_events=content_events,
+                                        bytes_received=bytes_received,
+                                    )
+                                next_wait = remaining
+                                continue
                         # Stall detected. Classify BEFORE killing the tree: the
                         # process is still alive here (a wait_for timeout means
                         # no EOF arrived), which is what separates the live
@@ -5447,6 +5497,7 @@ class LLMClient:
                     bytes_received += len(line)
                     _now = time.monotonic()
                     last_output_at = _now
+                    next_wait = float(idle_timeout or 0)
                     if heartbeat_every > 0:
                         if _now - last_beat >= heartbeat_every:
                             last_beat = _now

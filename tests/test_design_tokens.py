@@ -353,3 +353,78 @@ def test_design_md_block_stays_compact():
     block = design_md_block("an operations dashboard")
     assert "--accent-100:" in block and "--accent-900:" in block
     assert "100/300 fills/tints, 700/900 emphasis/text-on-light" in block
+
+
+# bellwork-clone (2026-10-09): a light SaaS brief that named "dark text #272f37"
+# and "dark footer #171c24" got the DARK 'ink' theme, and "success green" won
+# the accent over the explicit "Primary indigo #5f5af7" — DESIGN.md then told
+# codegen the opposite of the brief.
+_BELLWORK_STYLE = (
+    'VISUAL STYLE: font "Encode Sans". Primary indigo #5f5af7 (hover #4a45e0), '
+    "success green #0acf97, danger coral #fa5c7c, dark text #272f37, light "
+    "surfaces #eef2f7 / #f6f7fb, dark footer #171c24."
+)
+
+
+def test_explicit_primary_hex_wins_accent():
+    from skyn3t.studio.design_tokens import derive_accent
+    assert derive_accent(_BELLWORK_STYLE) == "#5f5af7"
+
+
+def test_dark_describing_one_element_is_not_a_dark_theme():
+    from skyn3t.studio.design_tokens import derive_theme
+    assert derive_theme(_BELLWORK_STYLE) != "ink"
+
+
+def test_dark_theme_request_still_dark():
+    from skyn3t.studio.design_tokens import derive_theme
+    assert derive_theme("a dark mode dashboard for traders") == "ink"
+    assert derive_theme("build a dark, moody portfolio") == "ink"
+
+
+def test_parenthetical_dark_footer_is_not_dark_theme():
+    from skyn3t.studio.design_tokens import derive_theme
+    assert derive_theme("A landing site. 10. Footer (dark): contact email.") != "ink"
+
+
+def test_archetype_follows_what_the_brief_leads_with():
+    from skyn3t.studio.design_tokens import derive_archetype
+    brief = ("A single-page responsive landing site for a SaaS. Sections include a "
+             "staff dashboard mockup and a schedule table.")
+    assert derive_archetype(brief) == "asymmetric hero"
+
+
+# bellwork-v3: 12 contrast "failures", all false — white `--brand-text` (meant for
+# indigo buttons) and `--bw-footer-text` (meant for the dark footer) were paired
+# with every LIGHT page surface, and Next's .next/ build CSS doubled every hit.
+_V3_CSS = """:root{
+  --brand:#5f5af7; --brand-text:#ffffff;
+  --bw-surface-1:#eef2f7; --bw-surface-2:#f6f7fb; --bw-surface-3:#fafbfe;
+  --bw-footer-bg:#171c24; --bw-footer-text:#b9c0c7;
+  --text:#272f37;
+}"""
+
+
+def test_lint_contrast_scopes_element_text_to_its_own_background(tmp_path):
+    from skyn3t.studio.design_tokens import lint_contrast
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "globals.css").write_text(_V3_CSS)
+    assert lint_contrast(tmp_path) == []
+
+
+def test_lint_contrast_still_flags_scoped_text_on_its_own_bad_background(tmp_path):
+    from skyn3t.studio.design_tokens import lint_contrast
+    (tmp_path / "a.css").write_text(":root{--footer-bg:#eeeeee;--footer-text:#dddddd;"
+                                    "--bg:#ffffff;--text:#cccccc}")
+    hits = {(i["text"].split("=")[0], i["bg"].split("=")[0]) for i in lint_contrast(tmp_path)}
+    assert ("--footer-text", "--footer-bg") in hits
+    assert ("--text", "--bg") in hits
+
+
+def test_lint_contrast_ignores_build_output(tmp_path):
+    from skyn3t.studio.design_tokens import lint_contrast
+    bad = ":root{--bg:#ffffff;--text:#fefefe}"
+    for d in (".next/static/css", "out", "build", ".svelte-kit"):
+        (tmp_path / d).mkdir(parents=True)
+        (tmp_path / d / "x.css").write_text(bad)
+    assert lint_contrast(tmp_path) == []

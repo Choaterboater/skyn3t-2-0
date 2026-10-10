@@ -158,6 +158,14 @@ def _bounded_agentic_repo_map(value: Any) -> str:
 # "<importer> -> <spec>" — the exact format extract_error_gaps() in proof_run.py
 # emits for an unresolved local import (proof_run.py:739).
 _UNRESOLVED_IMPORT_RE = re.compile(r"UNRESOLVED IMPORT.*?:\s*(\S+)\s*->\s*(\S+)")
+# Product names that LOOK like a root-level .js file in error text — Node's crash
+# banner ends "Node.js v25.9.0", and stack/test output names Next.js etc. Taken
+# as a missing file, the fix-loop CREATED a file literally named `Node.js`.
+_TECH_NAME_PSEUDO_FILES = frozenset({
+    "node.js", "next.js", "nuxt.js", "vue.js", "react.js", "three.js", "express.js",
+    "d3.js", "chart.js", "socket.io.js", "alpine.js", "p5.js", "pixi.js", "ember.js",
+    "backbone.js", "angular.js", "deno.js", "bun.js", "babylon.js", "phaser.js",
+})
 
 # Structured sentence emitted by proof_run.extract_error_gaps().  The resolved
 # module path is authoritative; do not guess it from the importer's relative
@@ -175,6 +183,71 @@ _HTML_SCRIPT_SRC_RE = re.compile(r"<script\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"']
 def _html_script_srcs(content: str) -> set[str]:
     """The set of `src` values of every `<script src="...">` in ``content``."""
     return {m.group(1).strip() for m in _HTML_SCRIPT_SRC_RE.finditer(content)}
+
+
+def _is_test_path(rel: str) -> bool:
+    """A project test file: under tests/test/__tests__, or test_*/*.test.*/*.spec.*."""
+    parts = Path(rel).parts
+    name = parts[-1] if parts else rel
+    return (bool(parts) and parts[0] in ("tests", "test", "__tests__")) or bool(
+        re.search(r"(?:^test_|[._-](?:test|spec)\.[a-z]+$)", name))
+
+
+# A repair gap that is a FAILING TEST (stage_debug "NODE TESTS FAILED", node:test
+# ✖ lines, pytest "FAILED path::test", any AssertionError).
+_TEST_FAILURE_GAP_RE = re.compile(
+    r"(?i:\btests?\s+fail|\bfailing\s+tests?\b)|AssertionError|\bFAILED\s+\S+::|✖")
+# Assertion calls: assert(...)/assert.x(...), Python `assert expr`, expect(...),
+# unittest self.assertX(...), pytest.raises(...), ava/tap t.is(...)-style.
+_ASSERTION_RE = re.compile(
+    r"\bassert(?:\.\w+)?\s*\(|^\s*assert\s+(?!from\b)|\bexpect\s*\(|\bself\.assert\w+\s*\("
+    r"|\bpytest\.raises\s*\(|\bt\.(?:is|not|deepEqual|true|false|truthy|falsy|throws)\s*\(",
+    re.M)
+_TEST_CASE_RE = re.compile(
+    r"\b(?:it|test)(?:\.\w+)?\s*\(|^\s*(?:async\s+)?def\s+test\w*\s*\(", re.M)
+_TEST_SKIP_RE = re.compile(
+    r"\b(?:it|test|describe)\.(?:skip|todo|only)\b|\bx(?:it|test|describe)\s*\("
+    r"|\bf(?:it|describe)\s*\(|\bpytest\.mark\.(?:skip|skipif|xfail)\b|\bpytest\.skip\s*\("
+    r"|\bunittest\.skip|\{\s*(?:skip|todo|only)\s*:")
+# Assertions that can never fail: assert(true), assert.ok(1), `assert True`,
+# expect(true).toBe(true), assert.equal(x, x), self.assertTrue(True).
+_TAUTOLOGY_RE = re.compile(
+    r"\bassert(?:\.ok)?\s*\(\s*(?:true|1|!0)\s*[,)]|^\s*assert\s+(?:True|1)\s*(?:#.*)?$"
+    r"|\bexpect\s*\(\s*(?:true|false|1|0)\s*\)\s*\.\s*(?:not\s*\.\s*)?to\w*\s*\("
+    r"|\bassert\.\w*[Ee]qual\s*\(\s*([^,()]+?)\s*,\s*\1\s*[,)]"
+    r"|\bself\.assertTrue\s*\(\s*True\s*\)",
+    re.M)
+
+
+def _strip_comments(rel: str, content: str) -> str:
+    if rel.endswith(".py"):
+        return "\n".join(ln for ln in content.splitlines() if not ln.lstrip().startswith("#"))
+    content = re.sub(r"/\*.*?\*/", "", content, flags=re.S)
+    return "\n".join(ln for ln in content.splitlines() if not ln.lstrip().startswith("//"))
+
+
+def _weakens_test(rel: str, original: str, new_content: str) -> bool:
+    """True when a rewrite of an existing TEST file reduces its assertion strength:
+    fewer assertion calls, fewer test cases, more skip/todo/only markers, or more
+    tautological assertions (commented-out code doesn't count). A repair of a failing
+    test must fix the code under test, not make the test stop checking it. Fixing an
+    import path or adding assertions is not weakening. Non-test files and brand-new
+    files are never flagged."""
+    if not _is_test_path(rel) or not original.strip():
+        return False
+    before, after = _strip_comments(rel, original), _strip_comments(rel, new_content)
+
+    def n(rx: re.Pattern[str], text: str) -> int:
+        return len(rx.findall(text))
+
+    return (n(_ASSERTION_RE, after) < n(_ASSERTION_RE, before)
+            or n(_TEST_CASE_RE, after) < n(_TEST_CASE_RE, before)
+            or n(_TEST_SKIP_RE, after) > n(_TEST_SKIP_RE, before)
+            or n(_TAUTOLOGY_RE, after) > n(_TAUTOLOGY_RE, before))
+
+
+def _is_test_failure_repair(gaps: list[Any]) -> bool:
+    return any(_TEST_FAILURE_GAP_RE.search(str(g)) for g in gaps or [])
 
 
 def _sanitize_package_json(content: str) -> str | None:
@@ -468,6 +541,7 @@ class CodeImproverAgent(BaseAgent):
         # TaskResult so ImproveEngine/the UI can tell the user the truth
         # instead of a zero-change run reading as a green success.
         skipped: dict[str, str] = {}
+        test_repair = _is_test_failure_repair(gaps)
         for rel in target_files:
             target = (worktree / rel).resolve()
             if not self._confined(worktree, target):
@@ -496,7 +570,12 @@ class CodeImproverAgent(BaseAgent):
                 ok, _ = validate_source(
                     rel, new_content, existing_project=existing_project, original=original,
                 )
-                if ok and self._preserves_html_entrypoints(rel, original, new_content):
+                if ok and test_repair and _weakens_test(rel, original, new_content):
+                    # Do-no-harm: a failing-test repair must fix the code under
+                    # test, not delete/skip/tautologize the assertion (bellwork-v3).
+                    skipped[rel] = "weakened_test"
+                    _log.warning("code_improver.weakened_test_rejected", file=rel)
+                elif ok and self._preserves_html_entrypoints(rel, original, new_content):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(new_content, encoding="utf-8")
                     improved.append(rel)
@@ -796,6 +875,7 @@ class CodeImproverAgent(BaseAgent):
             rel: "untrusted_new_path" for rel in untrusted_paths
         }
         from skyn3t.agents.validate import _CODE_EXTS, _looks_like_prose, looks_elided
+        test_repair = _is_test_failure_repair(gaps)
 
         for rel, content in after.items():
             original = before.get(rel)
@@ -820,7 +900,9 @@ class CodeImproverAgent(BaseAgent):
                     content,
                     original=original if payload.get("existing_project") is True else None,
                 )
-            if ok and not prose and self._preserves_html_entrypoints(
+            weakened = ok and not prose and test_repair and _weakens_test(
+                rel, original or "", content)
+            if ok and not prose and not weakened and self._preserves_html_entrypoints(
                 rel, original or "", content
             ):
                 improved.append(rel)
@@ -838,6 +920,9 @@ class CodeImproverAgent(BaseAgent):
             if prose:
                 skipped[rel] = "prose_not_code"
                 _log.warning("code_improver.prose_rejected", file=rel)
+            elif weakened:
+                skipped[rel] = "weakened_test"
+                _log.warning("code_improver.weakened_test_rejected", file=rel)
             else:
                 skipped[rel] = "invalid_rewrite" if not ok else "entrypoint_regression"
         return improved, skipped, True, ""
@@ -1061,6 +1146,28 @@ class CodeImproverAgent(BaseAgent):
             return content.rstrip() + "\nmodule.exports = app;\n"
         return content
 
+    @staticmethod
+    def _rank_gap_candidates(candidates: list[str], worktree: Path) -> list[str]:
+        """Normalize, de-ghost and order regex-scraped repair targets.
+
+        - ``file:///root/x`` stack URLs leave ``//x`` after the root is stripped.
+        - A bare name that doesn't exist but is the basename of another candidate
+          ("globals.css" next to "app/globals.css") is a fragment of an assertion
+          message — creating it would litter the project root.
+        - Failing TEST files go after the source files their output names, so the
+          repair fixes the code under test instead of rewriting the assertion."""
+        seen: list[str] = []
+        for c in candidates:
+            c = c.lstrip("/")
+            if c and c not in seen:
+                seen.append(c)
+        real_basenames = {Path(c).name for c in seen if "/" in c and (worktree / c).exists()}
+        kept = [c for c in seen
+                if "/" in c or (worktree / c).exists() or c not in real_basenames]
+
+        return ([c for c in kept if not _is_test_path(c)]
+                + [c for c in kept if _is_test_path(c)])
+
     def _targets_from_gaps(self, gaps: list[Any], worktree: Path) -> list[str]:
         """Infer which files to touch from gap text; fall back to entrypoints."""
         candidates: list[str] = []
@@ -1090,6 +1197,9 @@ class CodeImproverAgent(BaseAgent):
                 r"[\w./-]+\.(?:jsx|tsx|mjs|cjs|js|ts|json|py|css|html|toml|yaml|yml|ini|cfg|txt)\b",
                 text,
             ):
+                if (m.casefold() in _TECH_NAME_PSEUDO_FILES
+                        and not (worktree / m).exists()):
+                    continue
                 candidates.append(m)
             # A dependency/install/resolution failure must route to package.json
             # even when the gap text never names the file — otherwise the loop
@@ -1117,7 +1227,7 @@ class CodeImproverAgent(BaseAgent):
                         candidates.append(hits[0].relative_to(worktree).as_posix())
                         break
         if candidates:
-            return list(dict.fromkeys(candidates))
+            return self._rank_gap_candidates(candidates, worktree)
         # Default to known entrypoints that exist. Covers plain React-Vite /
         # Python / Node / static shapes AND the framework-router conventions a
         # free-text goal (no error text to parse) commonly lands on — without

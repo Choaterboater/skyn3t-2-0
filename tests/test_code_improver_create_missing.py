@@ -304,3 +304,43 @@ async def test_llm_target_discovery_skipped_when_no_repo_map(tmp_path):
     assert not result.success
     assert "repair targets" in result.error
     assert result.output["files"] == []
+
+
+def test_targets_from_gaps_ignores_runtime_banner_names(tmp_path):
+    # bellwork-clone: a node --test failure ends with the banner "Node.js v25.9.0";
+    # the generic path regex took "Node.js" as a missing file and the fix-loop
+    # CREATED a file literally named `Node.js` at the project root.
+    (tmp_path / "package.json").write_text("{}")
+    gap = ("NODE TESTS FAILED — fix these failing tests:\n"
+           "  code: 'MODULE_NOT_FOUND',\n}\n\nNode.js v25.9.0\n✖ tests (91ms)\n"
+           "Built with Next.js and Vue.js, see three.js docs")
+    targets = _make_agent()._targets_from_gaps([gap], tmp_path)
+    for bogus in ("Node.js", "Next.js", "Vue.js", "three.js"):
+        assert bogus not in targets
+
+
+def test_targets_from_gaps_keeps_real_root_js_files(tmp_path):
+    (tmp_path / "server.js").write_text("// x\n")
+    targets = _make_agent()._targets_from_gaps(
+        ["TypeError at server.js:12 and missing utils.js"], tmp_path)
+    assert "server.js" in targets and "utils.js" in targets
+
+
+def test_targets_from_gaps_prefers_source_over_failing_test_and_drops_ghosts(tmp_path):
+    # bellwork-v3: a css-contract test failed naming components/Logo.jsx and
+    # app/globals.css. Targets came back test-file FIRST (the fix-loop then kept
+    # editing the test), plus a bare 'globals.css' (would CREATE a stray root
+    # file) and a '//tests/...' fragment from a file:/// stack URL.
+    for rel in ("tests/css-contract.test.mjs", "app/globals.css", "components/Logo.jsx"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x\n")
+    gap = ("NODE TESTS FAILED — fix these failing tests:\n"
+           "✖ every class used has a rule in globals.css\n"
+           "  AssertionError: classes without a rule in app/globals.css:\n"
+           "    components/Logo.jsx: .light\n"
+           f"      at TestContext (file://{tmp_path}/tests/css-contract.test.mjs:232:12)\n")
+    targets = _make_agent()._targets_from_gaps([gap], tmp_path)
+    assert "globals.css" not in targets
+    assert not any(t.startswith("/") for t in targets)
+    assert targets.index("app/globals.css") < targets.index("tests/css-contract.test.mjs")
+    assert targets.index("components/Logo.jsx") < targets.index("tests/css-contract.test.mjs")

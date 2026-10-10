@@ -2568,8 +2568,26 @@ class StudioRunner:
         manifest.extra["responsive_visual_proof"] = responsive_visual_proof
         # Dampen by route health, but only when proof PASSED — a proof-failed build
         # is already halved by _honest_score, so this would otherwise double-count.
+        # Dead HTTP routes dampen in every posture. Visual health joins the
+        # multiplier only where liveness BLOCKS (release / blocking_gates); under
+        # lab a visual failure is a recorded heuristic finding, so it takes the
+        # same _score_after_finding cap as every other non-blocking finding
+        # instead of halving a served app's score.
+        resolved_posture = (
+            posture if posture is not None else GatePosture.from_settings(self.settings)
+        )
+        visual_blocks = resolved_posture.blocks("liveness")
+        visual_failed_any = bool(visual_total) and (visual_failed > 0 or visual_health < 1.0)
+        if visual_total:
+            manifest.extra["liveness_visual_score_policy"] = (
+                "health_multiplier" if visual_blocks else "finding_cap"
+            )
         if proof.passed and report.total:
-            final_score = round(final_score * (0.5 + 0.5 * effective_health), 2)
+            score_health = effective_health if visual_blocks else report.health
+            final_score = round(final_score * (0.5 + 0.5 * score_health), 2)
+            manifest.score = final_score
+        if proof.passed and visual_failed_any and not visual_blocks:
+            final_score = self._score_after_finding(final_score, verdict)
             manifest.score = final_score
         # Runtime gate: serve+probe decides the verdict. Always-on for a dead
         # UI root '/'; the broad any-dead-route gate stays opt-in.
@@ -2579,7 +2597,7 @@ class StudioRunner:
         )
         # Visual liveness is a viewport heuristic OR a vision-model judgement —
         # not proof the delivery is broken — so it is posture-routed: recorded
-        # (with the score already dampened by health above) under lab, blocking
+        # (with the score already capped as a finding above) under lab, blocking
         # under release or an explicit blocking_gates="liveness". The always-on
         # dead-root and opt-in broad gates above rightly stay direct.
         if gate_reason is None:

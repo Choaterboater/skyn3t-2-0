@@ -277,6 +277,25 @@ def test_invalid_review_objects_are_still_rejected(tmp_path, text):
     _assert_fails_closed(_review(tmp_path, judge), judge)
 
 
+def test_slow_failure_is_not_retried(tmp_path, monkeypatch):
+    """A slow failure (a CLI timeout, a long reasoning pass) is not retried: two
+    of them could outlast the stage budget, and a timed-out reviewer stage falls
+    back to the structural verdict. It fails closed after one attempt instead."""
+    from skyn3t.agents import reviewer as reviewer_mod
+
+    monkeypatch.setattr(reviewer_mod, "_REVIEW_RETRY_WITHIN_S", 0.0)
+    judge = _Judge(
+        LLMResult(text="", model="m", backend="openrouter", status="failed_cli_timeout"),
+        '{"score": 95, "gaps": []}',
+    )
+    result = _review(tmp_path, judge)
+    assert len(judge.calls) == 1
+    assert result.metadata["assessment_status"] == "unavailable"
+    assert result.metadata["review_attempts"] == 1
+    assert result.output["score"] == 0.0
+    assert result.output["verdict"] == "no_go"
+
+
 def test_raised_call_is_not_retried(tmp_path):
     judge = _Judge(RuntimeError("budget exhausted"))
     result = _review(tmp_path, judge)

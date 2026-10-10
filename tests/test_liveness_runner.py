@@ -286,6 +286,31 @@ def test_liveness_non_ui_stack_visual_failure_follows_posture_without_finding(
         assert "liveness_gate" not in man.extra
 
 
+def _visually_healthy():
+    return LivenessOutcome(passed=True, report=LivenessReport(
+        results=[RouteResult("/", "GET", 200, True, "page",
+                             {"matches": True, "issues": []})],
+        total=1, ok=1, dead=0, dead_routes=[], health=1.0,
+        visual_total=1, visual_failed=0, visual_failed_routes=[],
+        visual_health=1.0))
+
+
+@pytest.mark.parametrize("stack", ["nextjs", *_NON_UI_WEB_STACKS])
+def test_liveness_lab_policy_reads_multiplier_when_visual_passes(tmp_path, monkeypatch, stack):
+    """The policy key names what decided the score: with no visual failure the
+    lab cap never ran, so it must not read 'finding_cap'."""
+    async def fake(*a, **k):
+        return _visually_healthy()
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    r = _runner(tmp_path, build_posture="lab")
+    man = BuildManifest(slug="x", brief="b", stack=stack)
+    result = asyncio.run(
+        r._run_liveness(man, str(tmp_path), SimpleNamespace(stack=stack),
+                        SimpleNamespace(passed=True), 92.0, "go"))
+    assert result == (92.0, "go")
+    assert man.extra["liveness_visual_score_policy"] == "health_multiplier"
+
+
 @pytest.mark.parametrize("stack", ["nextjs", "react", "static", *_NON_UI_WEB_STACKS])
 @pytest.mark.parametrize("outcome", [
     _visually_broken, _ten_pages_one_visually_broken, _half_dead_and_visually_broken,

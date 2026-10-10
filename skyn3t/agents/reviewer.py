@@ -39,10 +39,10 @@ _REVIEW_MAX_TOKENS = 4_000
 _REVIEW_ATTEMPTS = 2
 _REVIEW_MAX_GAPS = 12
 _REVIEW_MAX_GAP_CHARS = 1000
-# Fenced blocks in a reply; the language tag (json/js/...) is skipped.
-_FENCE = re.compile(r"```[\w-]*\s*(.*?)```", re.DOTALL)
-# The characters that matter when matching a top-level {...} span.
-_SPAN_TOKEN = re.compile(r'[{}"\\]')
+# Fenced blocks in a reply; the language tag (json/js/...) is skipped. Possessive
+# quantifiers keep an unclosed fence from backtracking quadratically.
+_FENCE = re.compile(r"```[\w-]*+\s*+(.*?)```", re.DOTALL)
+_DECODER = json.JSONDecoder()
 
 
 def _content_file_count(root) -> int:
@@ -202,70 +202,14 @@ def _review_score(raw: Any) -> float:
     return val
 
 
-def _top_level_spans(text: str) -> list[tuple[int, int]]:
-    """``(start, end)`` of every depth-0 ``{...}`` span in the reply: from a
-    top-level ``{`` to its matching ``}`` (string- and escape-aware), or to the
-    end of the text when it never closes. Spans never overlap and the scan
-    resumes after each one, so it is linear and an object nested in a span is
-    never a span of its own."""
-    spans: list[tuple[int, int]] = []
-    start = text.find("{")
-    while start != -1:
-        depth, in_string, pos, end = 0, False, start, len(text)
-        while (token := _SPAN_TOKEN.search(text, pos)) is not None:
-            char, pos = token.group(), token.end()
-            if in_string:
-                if char == "\\":
-                    pos += 1
-                elif char == '"':
-                    in_string = False
-            elif char == '"':
-                in_string = True
-            elif char == "{":
-                depth += 1
-            elif char == "}":
-                depth -= 1
-                if depth == 0:
-                    end = pos
-                    break
-        spans.append((start, end))
-        start = text.find("{", end)
-    return spans
-
-
-def _reply_objects(text: str) -> list[dict[str, Any]]:
-    """Every strict-JSON fenced block's object and every top-level ``{...}``
-    object in the reply, in reply order. A top-level span that does not decode
-    (cut off at the token cap, a raw newline or unescaped quote in a string)
-    yields nothing: the objects nested in it are never tried, so a per-file
-    score inside a broken verdict cannot stand in for the verdict."""
-    found: list[tuple[int, dict[str, Any]]] = []
-    # A fence counts only as a whole: its top-level objects are already spans
-    # of the reply, and a ``` quoted in a gap can mispair fences.
-    for block in _FENCE.finditer(text):
-        try:
-            data = json.loads(block.group(1))
-        except (ValueError, RecursionError):
-            continue
-        if isinstance(data, dict):
-            found.append((block.start(1), data))
-    for start, end in _top_level_spans(text):
-        try:
-            # Decode the span alone so a decode error never scans the rest of
-            # the reply (that made failed spans quadratic).
-            data = json.loads(text[start:end])
-        except (ValueError, RecursionError):
-            continue
-        found.append((start, data))
-    found.sort(key=lambda item: item[0])
-    return [data for _, data in found]
-
-
 def _review_object(text: str) -> dict[str, Any]:
-    """The reply's review object. A strict-JSON reply is used as is; otherwise
-    exactly one ``score`` + ``gaps`` object (or repeats agreeing on the score)
-    must appear, so JSON quoted from the untrusted brief, source or evidence
-    can never pick the score."""
+    """The reply's review object. A strict-JSON reply is used as is. Otherwise
+    the only candidates are whole fenced blocks and, outside the fences, the
+    object at the first ``{`` when no ``{`` follows it; each needs ``score`` and
+    ``gaps``, and all must agree on one valid score. Nothing else is scanned:
+    a broken verdict (cut off, an unescaped quote) can desynchronize any scan,
+    letting a nested per-file object or JSON quoted from the untrusted brief,
+    source or evidence pick the score."""
     text = text or ""
     try:
         data = json.loads(text.strip())
@@ -273,7 +217,23 @@ def _review_object(text: str) -> dict[str, Any]:
         data = None
     if isinstance(data, dict):
         return data
-    candidates = [c for c in _reply_objects(text) if "score" in c and "gaps" in c]
+    found: list[Any] = []
+    for block in _FENCE.finditer(text):
+        try:
+            found.append(json.loads(block.group(1).strip()))
+        except (ValueError, RecursionError):
+            continue
+    rest = _FENCE.sub("", text)
+    start = rest.find("{")
+    if start != -1:
+        try:
+            obj, end = _DECODER.raw_decode(rest, start)
+            # Any later "{" (a repeat, or the verdict after quoted JSON) is ambiguous.
+            if rest.find("{", end) == -1:
+                found.append(obj)
+        except (ValueError, RecursionError):
+            pass
+    candidates = [c for c in found if isinstance(c, dict) and "score" in c and "gaps" in c]
     if not candidates or len({_review_score(c["score"]) for c in candidates}) != 1:
         raise ValueError("no unambiguous review object")
     return candidates[-1]

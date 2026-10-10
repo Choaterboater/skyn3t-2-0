@@ -2635,15 +2635,16 @@ class StudioRunner:
         )
         visual_finding_cap = not resolved_posture.blocks("liveness")
         visual_failed_any = bool(visual_total) and (visual_failed > 0 or visual_health < 1.0)
-        score_policy = "finding_cap" if visual_finding_cap else "health_multiplier"
+        # Record "finding_cap" only when the cap actually decided the score.
+        score_policy = "health_multiplier"
         if proof.passed and report.total:
             multiplied = round(final_score * (0.5 + 0.5 * effective_health), 2)
             if visual_finding_cap and visual_failed_any:
                 capped = self._score_after_finding(
                     round(final_score * (0.5 + 0.5 * report.health), 2), verdict,
                 )
-                if multiplied > capped:
-                    score_policy = "health_multiplier"
+                if capped >= multiplied:
+                    score_policy = "finding_cap"
                 final_score = max(capped, multiplied)
             else:
                 final_score = multiplied

@@ -27,6 +27,7 @@ import hashlib
 import json
 import math
 import re
+import shutil
 import time
 import uuid
 from collections.abc import Mapping
@@ -138,6 +139,41 @@ log = structlog.get_logger(__name__)
 
 _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+_MISSING_OWNED_RE = re.compile(r"(?:missing|missed) (\d+) owned file\(s\): (.*)$")
+
+
+def degraded_reason_resolved(reason: str, project_dir: str | Path) -> bool:
+    """True when a codegen ``degraded_reason`` named ONLY missing owned files (plus
+    an unconfirmed-completion note) and every one of them now exists with content
+    in the delivered tree — i.e. the fix-loop finished what codegen was cut off
+    from. Anything else (stub/under-delivery, prose, a truncated list) stays
+    degraded: we only clear what we can verify on disk."""
+    root = Path(project_dir)
+    saw_missing = False
+    for part in (p.strip() for p in str(reason or "").split("; ")):
+        if not part:
+            continue
+        m = _MISSING_OWNED_RE.search(part)
+        if m:
+            paths = [x.strip() for x in m.group(2).split(",") if x.strip()]
+            if not paths or int(m.group(1)) != len(paths):
+                return False
+            for rel in paths:
+                f = (root / rel)
+                try:
+                    if not f.is_file() or not f.read_text(encoding="utf-8", errors="replace").strip():
+                        return False
+                except OSError:
+                    return False
+            saw_missing = True
+            continue
+        if part.endswith("provider did not confirm completion") or re.search(
+                r"provider did not confirm completion: [^;]*$", part):
+            continue
+        return False
+    return saw_missing
 
 
 def _safe_sha256_digest(value: object) -> str:
@@ -3746,7 +3782,8 @@ class StudioRunner:
             final_repairs = {}
         changed_keys = ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
                         "imports_relinked", "imports_scaffolded", "use_client_added",
-                        "source_fences_stripped", "ts_in_js_stripped",
+                        "source_fences_stripped", "placeholder_markers_stripped",
+                        "ts_in_js_stripped",
                         "react_entrypoint_repaired", "phaser_entrypoint_repaired",
                         "fastapi_entrypoint_unified", "vitest_alias_config",
                         "python_imports_sorted", "python_formatted")
@@ -7070,7 +7107,8 @@ class StudioRunner:
                 if any(recovery_repairs.get(k) for k in
                        ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
                         "imports_scaffolded", "use_client_added",
-                        "source_fences_stripped", "ts_in_js_stripped",
+                        "source_fences_stripped", "placeholder_markers_stripped",
+                        "ts_in_js_stripped",
                         "react_entrypoint_repaired",
                         "phaser_entrypoint_repaired")):
                     manifest.files = list_files(project_dir)
@@ -7249,6 +7287,14 @@ class StudioRunner:
                 code_backend != "stub"
                 and bool((prior.get("code") or {}).get("degraded"))
             )
+            # Re-check against the DELIVERED tree: when the only defect was owned
+            # files codegen never wrote and the fix-loop has since written them
+            # (proof passed), the flag is stale — keep it as evidence, don't block.
+            if code_degraded and proof.passed and degraded_reason_resolved(
+                    str((prior.get("code") or {}).get("degraded_reason", "")), project_dir):
+                code_degraded = False
+                manifest.extra["degraded_resolved"] = str(
+                    (prior.get("code") or {}).get("degraded_reason", ""))[:500]
             if code_degraded:
                 manifest.extra["degraded_gate"] = str(
                     (prior.get("code") or {}).get("degraded_reason", "agentic under-delivery")
@@ -8224,7 +8270,11 @@ class StudioRunner:
         slice_llm = getattr(base_agent, "llm", None)
         agentic_backend = bool(getattr(slice_llm, "supports_agentic", False))
 
-        async def _run_slice(name: str, files: list[dict[str, Any]]):
+        async def _run_slice(
+            name: str,
+            files: list[dict[str, Any]],
+            scope_extra: dict[str, Any] | None = None,
+        ):
             wt = slice_wts[name]
             payload = self._base_payload(plan, project_dir, wt.dir, prior, lessons, extra)
             payload.update(spec.extra)
@@ -8236,6 +8286,8 @@ class StudioRunner:
                 "files": [f["path"] for f in files if isinstance(f, dict) and f.get("path")],
                 "manifest": manifest,
             }
+            if scope_extra:
+                payload["slice_scope"].update(scope_extra)
             if contract_digest:
                 payload["slice_scope"]["contract_digest"] = contract_digest
             if agentic_backend and not payload.get("model_override"):
@@ -8253,13 +8305,25 @@ class StudioRunner:
         # deterministic precedence (config-last); this early merge never
         # overwrites another completed slice. Explicitly cancel every child when
         # the parent is cancelled so no codegen process is orphaned.
+        # Tests depend on the code they test. A ``tests`` slice generated
+        # concurrently is BLIND to its siblings' real exports and guesses the API
+        # (wrong function names / flags / accepted values), and the fix loop
+        # cannot converge on that cross-slice drift. So every other slice runs in
+        # parallel first; the tests slice runs last against their real source.
+        deferred_tests = "tests" in slices and len(slices) > 1
+        first_wave = [name for name in slices if not (deferred_tests and name == "tests")]
         tasks = [
-            asyncio.create_task(_run_slice(name, files))
-            for name, files in slices.items()
+            asyncio.create_task(_run_slice(name, slices[name]))
+            for name in first_wave
         ]
         results: dict[str, TaskResult] = {}
         try:
-            for completed in asyncio.as_completed(tasks):
+            for completed in self._slice_completions(
+                tasks,
+                (lambda: self._run_deferred_tests_slice(
+                    _run_slice, slices, slice_wts, manifest, tasks,
+                )) if deferred_tests else None,
+            ):
                 name, result = await completed
                 results[name] = result
                 merge_back(
@@ -8360,6 +8424,110 @@ class StudioRunner:
         log.info("runner.parallel_slices", count=len(slices),
                  files=total_written, slices=list(slices))
         return result
+
+    @staticmethod
+    def _slice_completions(tasks: list[asyncio.Task], deferred):
+        """Yield awaitables in completion order: the first wave of slice tasks,
+        then (when ``deferred`` is given) one more task started only after the
+        whole first wave finished. The started task is appended to ``tasks`` so
+        the caller's cancellation sweep covers it too."""
+        first = list(tasks)
+        yield from asyncio.as_completed(first)
+        if deferred is not None:
+            task = asyncio.create_task(deferred())
+            tasks.append(task)
+            yield task
+
+    async def _run_deferred_tests_slice(
+        self,
+        run_slice,
+        slices: dict[str, list[dict[str, Any]]],
+        slice_wts: dict[str, Worktree],
+        manifest: str,
+        tasks: list[asyncio.Task],
+    ):
+        """Run the ``tests`` slice against the sibling slices' REAL output.
+
+        Copies each sibling slice's owned files into the tests worktree (so an
+        agentic session can read/run them) and appends their actual source to
+        the tests slice's read-only manifest (so tests target real exports,
+        signatures and accepted values instead of guessing). Deterministic; no
+        extra model call."""
+        upstream = self._upstream_slice_sources(slices, slice_wts, "tests")
+        tests_wt = Path(slice_wts["tests"].dir)
+        for _owner, rel, _text in upstream:
+            src = Path(slice_wts[_owner].dir) / rel
+            dst = tests_wt / rel
+            if dst.is_symlink():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(src, dst)
+            except OSError:
+                continue
+        scope_extra: dict[str, Any] = {}
+        if upstream:
+            scope_extra = {
+                "manifest": manifest + "\n\n" + self._upstream_sources_block(upstream),
+                "upstream_files": [rel for _owner, rel, _text in upstream],
+            }
+        return await run_slice("tests", slices["tests"], scope_extra)
+
+    # Bounded so a large app cannot blow up the tests slice's prompt.
+    _UPSTREAM_FILE_CHARS = 8000
+    _UPSTREAM_TOTAL_CHARS = 80000
+
+    @classmethod
+    def _upstream_slice_sources(
+        cls,
+        slices: dict[str, list[dict[str, Any]]],
+        slice_wts: dict[str, Worktree],
+        consumer: str,
+    ) -> list[tuple[str, str, str]]:
+        """``(owner, path, text)`` for every file the OTHER slices actually wrote,
+        in deterministic slice/manifest order."""
+        out: list[tuple[str, str, str]] = []
+        for owner, entries in slices.items():
+            if owner == consumer:
+                continue
+            root = Path(slice_wts[owner].dir)
+            for entry in entries:
+                rel = str(entry.get("path") or "") if isinstance(entry, dict) else ""
+                if not rel:
+                    continue
+                path = root / rel
+                if path.is_symlink() or not path.is_file():
+                    continue
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                out.append((owner, rel, text))
+        return out
+
+    @classmethod
+    def _upstream_sources_block(cls, upstream: list[tuple[str, str, str]]) -> str:
+        parts = [
+            "These files are ALREADY WRITTEN by the other workers (and are on disk). "
+            "Write your tests against THIS real code: use its exact exported names, "
+            "function signatures, argument shapes, return values/flags and accepted "
+            "input values. Do not guess alternative names or add adapters for "
+            "hypothetical APIs. Only import modules whose dependencies resolve under "
+            "the project's own test command (see the package/config files below); "
+            "prefer testing plain modules directly over framework-only entrypoints."
+        ]
+        budget = cls._UPSTREAM_TOTAL_CHARS
+        for _owner, rel, text in upstream:
+            body = text
+            if len(body) > cls._UPSTREAM_FILE_CHARS:
+                body = body[: cls._UPSTREAM_FILE_CHARS] + "\n... [truncated]"
+            chunk = f"\n--- {rel} ---\n{body}"
+            if len(chunk) > budget:
+                parts.append(f"\n--- {rel} --- (omitted: context budget reached; read it on disk)")
+                continue
+            budget -= len(chunk)
+            parts.append(chunk)
+        return "".join(parts)
 
     def _registered_codegen_agent(self):
         """Return the registered codegen agent for backend/model inspection."""

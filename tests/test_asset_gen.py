@@ -584,3 +584,17 @@ def test_codegen_payload_filters_wrong_domain_current_asset_manifest(tmp_path):
             "file": "/assets/sunlit-golf-course.svg",
         }
     ]
+
+
+def test_domain_subjects_match_whole_words_only():
+    # bellwork-clone: a school-ops brief said "generous whitespace" — the
+    # substring "spa" matched and Replicate generated a salon + spa room.
+    brief = ("Build a marketing website for a school operations company: "
+             "clean SaaS look with generous whitespace, responsive, transparent pricing.")
+    subs = assets_mod._extract_subjects(brief, 4)
+    assert not any("salon" in s or "spa " in s for s in subs), subs
+
+
+def test_domain_subjects_still_match_real_keyword():
+    subs = assets_mod._extract_subjects("Website for our day spa business with booking", 4)
+    assert any("spa" in s for s in subs), subs

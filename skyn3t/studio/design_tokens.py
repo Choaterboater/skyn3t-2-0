@@ -232,10 +232,23 @@ def _word_match(text: str, keyword: str) -> bool:
     return re.search(rf"\b{re.escape(keyword)}\b", text) is not None
 
 
+# "dark" describing ONE element ("dark footer #171c24", "dark text") is a color
+# spec for that element, not a request for a dark UI.
+_DARK_ELEMENT_RE = re.compile(
+    r"\bdark\s+(?:text|footer|header|nav|navbar|border|borders|button|buttons|"
+    r"section|band|hero|sidebar|card|cards|overlay|shadow|shadows|heading|headings|"
+    r"ink|gray|grey|slate|navy|blue|green)\b"
+    r"|\b(?:footer|header|nav|navbar|sidebar|hero|band|section|overlay)\s*\(?\s*dark\b"
+)
+_EXPLICIT_ACCENT_RE = re.compile(
+    r"\b(?:primary|brand|accent)\b[^#\n.;]{0,30}(#[0-9a-f]{6})\b"
+)
+
+
 def derive_theme(brief: str) -> str:
     """Pick the surface theme name from the brief. Light by default; dark only
     when the brief genuinely implies it (so every app is not the same dark UI)."""
-    text = (brief or "").lower()
+    text = _DARK_ELEMENT_RE.sub(" ", (brief or "").lower())
     if any(_word_match(text, k) for k in _DARK_KEYWORDS):
         return "ink"
     if any(_word_match(text, k) for k in _WARM_KEYWORDS):
@@ -355,6 +368,10 @@ def derive_accent(brief: str) -> str:
     implied -> a stable rotation over curated hues, so unrelated apps do not
     share one default."""
     text = (brief or "").lower()
+    # A brief that SPECIFIES its brand color ("Primary indigo #5f5af7") gets it.
+    explicit = _EXPLICIT_ACCENT_RE.search(text)
+    if explicit:
+        return explicit.group(1)
     for keywords, hexv in _ACCENT_KEYWORDS:
         if any(_word_match(text, k) for k in keywords):
             return hexv
@@ -387,9 +404,17 @@ def derive_archetype(brief: str) -> str:
     """Pick the page archetype name from the brief: whole-word keyword match,
     else a stable rotation salted ':archetype'."""
     text = (brief or "").lower()
-    for name, archetype in _ARCHETYPES.items():
-        if any(_word_match(text, k) for k in archetype["keywords"]):
-            return name
+    # Earliest mention wins: a brief leads with WHAT the product is ("a landing
+    # site"), so a later detail ("a dashboard mockup" inside it) must not
+    # override it just by sitting earlier in this dict. Ties keep dict order.
+    best: tuple[int, int, str] | None = None
+    for order, (name, archetype) in enumerate(_ARCHETYPES.items()):
+        for k in archetype["keywords"]:
+            m = re.search(rf"\b{re.escape(k)}\b", text)
+            if m and (best is None or (m.start(), order) < best[:2]):
+                best = (m.start(), order, name)
+    if best is not None:
+        return best[2]
     names = list(_ARCHETYPES)
     return names[_stable_index(text + ":archetype", len(names))]
 
@@ -621,6 +646,26 @@ def contrast_ratio(hex1: str, hex2: str) -> float:
 _VAR_RE = re.compile(r"(--[\w-]+)\s*:\s*(#[0-9a-fA-F]{3,8})\b")
 _TEXTISH = ("text", "fg", "foreground", "ink", "copy", "body", "heading", "title")
 _BGISH = ("bg", "background", "surface", "panel", "card", "base", "paper")
+# A text var naming an element sits on THAT element's background ("--footer-text"
+# on the footer fill, "--danger-text" on the danger tint) — never on the page
+# surfaces. Surface scopes also pair with the bare element var ("--footer");
+# status scopes don't (a bare "--danger" is a dot/border color, not a bg).
+# "accent" is deliberately absent: "--accent-text" is accent-colored text on --bg.
+_SURFACE_SCOPES = frozenset({
+    "footer", "header", "nav", "navbar", "sidebar", "hero", "banner", "button", "btn",
+    "cta", "brand", "inverse", "inverted", "invert", "overlay", "toast", "tooltip", "dark",
+})
+_STATUS_SCOPES = frozenset({
+    "success", "danger", "warning", "error", "info", "badge", "chip", "pill", "tag",
+})
+_SCOPE_WORDS = _SURFACE_SCOPES | _STATUS_SCOPES
+_FILL_SUFFIXES = ("tint", "soft", "subtle", "wash", "fill", "bg", "light", "background")
+# Compiled/build output re-states the source CSS (doubling every hit) and isn't
+# what anyone edits.
+_LINT_SKIP_DIRS = frozenset({
+    "node_modules", "dist", ".next", "out", "build", ".svelte-kit", ".output",
+    ".astro", ".nuxt", ".vercel", ".turbo", "coverage", ".cache",
+})
 
 
 def lint_contrast(root: str | Path, *, threshold: float = 4.5) -> list[dict]:
@@ -630,8 +675,9 @@ def lint_contrast(root: str | Path, *, threshold: float = 4.5) -> list[dict]:
     rather than crying wolf. Never raises."""
     issues: list[dict] = []
     try:
-        files = [p for p in Path(root).rglob("*.css")
-                 if "node_modules" not in p.parts and "dist" not in p.parts]
+        base = Path(root)
+        files = [p for p in base.rglob("*.css")
+                 if not _LINT_SKIP_DIRS.intersection(p.relative_to(base).parts)]
     except OSError:
         return issues
     for css in files[:40]:
@@ -654,7 +700,23 @@ def lint_contrast(root: str | Path, *, threshold: float = 4.5) -> list[dict]:
                 target = f"--{on.group(1)}"
                 pairs = [(target, vars_[target])] if target in vars_ else []
             else:
-                pairs = list(bgs.items())
+                scopes = set(tk.strip("-").split("-")) & _SCOPE_WORDS
+                if scopes:
+                    # Element-scoped text: check only against that element's own
+                    # fill/bg vars; none declared -> under-report, don't guess.
+                    pairs = []
+                    for k, v in vars_.items():
+                        segs = k.strip("-").split("-")
+                        if k == tk or k in texts or not scopes & set(segs):
+                            continue
+                        if (k in bgs or segs[-1] in _FILL_SUFFIXES
+                                or (segs[-1] in scopes and segs[-1] in _SURFACE_SCOPES)):
+                            pairs.append((k, v))
+                else:
+                    # Page-level text sits on page-level surfaces, not on an
+                    # element's own fill ("--text" never sits on "--footer-bg").
+                    pairs = [(k, v) for k, v in bgs.items()
+                             if not _SCOPE_WORDS & set(k.strip("-").split("-"))]
             for bk, bv in pairs:
                 try:
                     ratio = contrast_ratio(tv, bv)

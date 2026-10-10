@@ -132,7 +132,11 @@ jobs:
 
       - name: Audit frontend dependencies
         working-directory: skyn3t/web/ui
-        run: npm audit --audit-level=high
+        # Shipped (runtime) deps must be free of high+; build-only dev tooling
+        # (e.g. tailwind v3 -> braces, no patched version) is held to critical.
+        run: |
+          npm audit --omit=dev --audit-level=high
+          npm audit --audit-level=critical
 
       - name: Test frontend
         working-directory: skyn3t/web/ui

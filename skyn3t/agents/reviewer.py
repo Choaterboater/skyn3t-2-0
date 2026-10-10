@@ -41,8 +41,8 @@ _REVIEW_MAX_GAPS = 12
 _REVIEW_MAX_GAP_CHARS = 1000
 # Fenced blocks in a reply; the language tag (json/js/...) is skipped.
 _FENCE = re.compile(r"```[\w-]*\s*(.*?)```", re.DOTALL)
-_DECODER = json.JSONDecoder()
-_SCAN_BUDGET_PER_CHAR = 32
+# The characters that matter when matching a top-level {...} span.
+_SPAN_TOKEN = re.compile(r'[{}"\\]')
 
 
 def _content_file_count(root) -> int:
@@ -202,10 +202,46 @@ def _review_score(raw: Any) -> float:
     return val
 
 
+def _top_level_spans(text: str) -> list[tuple[int, int]]:
+    """``(start, end)`` of every depth-0 ``{...}`` span in the reply: from a
+    top-level ``{`` to its matching ``}`` (string- and escape-aware), or to the
+    end of the text when it never closes. Spans never overlap and the scan
+    resumes after each one, so it is linear and an object nested in a span is
+    never a span of its own."""
+    spans: list[tuple[int, int]] = []
+    start = text.find("{")
+    while start != -1:
+        depth, in_string, pos, end = 0, False, start, len(text)
+        while (token := _SPAN_TOKEN.search(text, pos)) is not None:
+            char, pos = token.group(), token.end()
+            if in_string:
+                if char == "\\":
+                    pos += 1
+                elif char == '"':
+                    in_string = False
+            elif char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    end = pos
+                    break
+        spans.append((start, end))
+        start = text.find("{", end)
+    return spans
+
+
 def _reply_objects(text: str) -> list[dict[str, Any]]:
-    """Every fenced block's JSON object and every top-level ``{...}`` object
-    in the reply, in reply order."""
+    """Every strict-JSON fenced block's object and every top-level ``{...}``
+    object in the reply, in reply order. A top-level span that does not decode
+    (cut off at the token cap, a raw newline or unescaped quote in a string)
+    yields nothing: the objects nested in it are never tried, so a per-file
+    score inside a broken verdict cannot stand in for the verdict."""
     found: list[tuple[int, dict[str, Any]]] = []
+    # A fence counts only as a whole: its top-level objects are already spans
+    # of the reply, and a ``` quoted in a gap can mispair fences.
     for block in _FENCE.finditer(text):
         try:
             data = json.loads(block.group(1))
@@ -213,21 +249,14 @@ def _reply_objects(text: str) -> list[dict[str, Any]]:
             continue
         if isinstance(data, dict):
             found.append((block.start(1), data))
-    # Failed decodes may rescan the tail; bound that so a pathologically nested
-    # reply costs linear time and is treated as unparseable.
-    budget = _SCAN_BUDGET_PER_CHAR * len(text)
-    pos = text.find("{")
-    while pos != -1:
+    for start, end in _top_level_spans(text):
         try:
-            data, end = _DECODER.raw_decode(text, pos)
-        except (ValueError, RecursionError) as exc:
-            budget -= getattr(exc, "pos", len(text)) - pos
-            if budget < 0:
-                raise ValueError("review reply too complex to scan") from None
-            pos = text.find("{", pos + 1)
+            # Decode the span alone so a decode error never scans the rest of
+            # the reply (that made failed spans quadratic).
+            data = json.loads(text[start:end])
+        except (ValueError, RecursionError):
             continue
-        found.append((pos, data))  # nested objects are skipped with their parent
-        pos = text.find("{", end)
+        found.append((start, data))
     found.sort(key=lambda item: item[0])
     return [data for _, data in found]
 

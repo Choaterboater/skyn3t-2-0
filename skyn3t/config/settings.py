@@ -321,6 +321,15 @@ class Settings(BaseSettings):
     # inactivity/no-progress window — the same rule on both agentic paths
     # (see llm._resolved_agentic_idle_timeout).
     agentic_idle_timeout: int = 600
+    # Grace floor (seconds) for a LIVE streaming session that has already
+    # produced substantial content. stream-json emits nothing while the model
+    # writes one large file in a single tool call, so a short
+    # ``agentic_idle_timeout`` (e.g. 120) killed healthy claude -p sessions as
+    # ``heartbeat_stall`` mid-write. Such a session gets an effective idle
+    # window of max(agentic_idle_timeout, this floor), still capped by the
+    # ``agentic_build_timeout`` wall-clock. Sessions with no content output,
+    # or whose process has exited, keep the configured window. 0 disables.
+    agentic_productive_idle_floor: float = 600
     # Liveness heartbeat (seconds) while a streaming agentic session runs. The
     # stream is where the only evidence of progress lives, and nothing surfaced
     # it: a measured build went 24 minutes between log lines while genuinely

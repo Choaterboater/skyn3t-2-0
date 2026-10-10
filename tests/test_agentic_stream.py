@@ -147,3 +147,134 @@ async def test_stream_evidence_marks_idle_timeout(monkeypatch):
     assert evidence["timeout_kind"] == "idle"
     assert evidence["termination_reason"] == "idle_timeout"
     assert evidence["exit_status"] == "terminated_after_idle_timeout"
+
+
+# ── Productive-session grace (live-build regression) ─────────────────────────
+# A real build logged: ``llm.agentic_stalled idle_s=120 provider=claude
+# stall_evidence='had output (502749B/202 events, 100 content) then quiet 120s
+# ...; process_alive=True' stall_kind=heartbeat_stall`` — a HEALTHY claude -p
+# writing one large file in a single tool call (stream-json is silent until the
+# tool call completes) was killed by a short user-configured idle window. A
+# live session that already produced substantial content gets a grace floor;
+# a session that never produced content keeps the configured window.
+
+
+class _BurstThenQuiet:
+    """Yields ``burst`` lines immediately, then the next ``tail`` lines only
+    after ``quiet_s`` of wall-clock silence (cancellation-safe: the ready time
+    is absolute, so a wait_for timeout + re-read keeps the same deadline)."""
+
+    def __init__(self, burst: list[bytes], tail: list[bytes], quiet_s: float):
+        self._burst = list(burst)
+        self._tail = list(tail)
+        self._quiet_s = quiet_s
+        self._ready_at: float | None = None
+
+    async def readline(self) -> bytes:
+        loop = asyncio.get_running_loop()
+        if self._burst:
+            return self._burst.pop(0)
+        if self._ready_at is None:
+            self._ready_at = loop.time() + self._quiet_s
+        delay = self._ready_at - loop.time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        if self._tail:
+            return self._tail.pop(0)
+        return b""
+
+
+_CONTENT = [b'{"type":"assistant","message":{"content":[]}}\n'] * 10
+_RESULT = [b'{"type":"result","subtype":"success","is_error":false}\n']
+
+
+def _grace_client(floor: float, build_timeout: int = 1800) -> LLMClient:
+    s = Settings(llm_backend="claude_cli")
+    s.agentic_productive_idle_floor = floor
+    s.agentic_build_timeout = build_timeout
+    return LLMClient(s)
+
+
+async def test_productive_alive_session_survives_short_idle_window(monkeypatch):
+    killed = {"n": 0}
+
+    async def _fake_terminate(proc):  # noqa: ANN001
+        killed["n"] += 1
+
+    monkeypatch.setattr(LLMClient, "_terminate", staticmethod(_fake_terminate))
+    # Alive (returncode None), 10 content events, then quiet 0.25s (> the 0.05s
+    # configured idle, < the 1.0s grace floor), then the tool call completes.
+    stream = _BurstThenQuiet(_CONTENT, _RESULT, quiet_s=0.25)
+    proc = _FakeProc(stream, returncode=None)
+    ok = await _grace_client(floor=1.0)._consume_agentic_stream(proc, "claude", 0.05)
+    assert ok is True
+    assert killed["n"] == 0
+    evidence = llm_mod._AGENTIC_STREAM_EVIDENCE.get()
+    assert not evidence.get("timed_out")
+    assert evidence.get("idle_grace_extensions", 0) >= 1
+
+
+async def test_productive_alive_session_still_killed_past_grace_floor(monkeypatch):
+    killed = {"n": 0}
+
+    async def _fake_terminate(proc):  # noqa: ANN001
+        killed["n"] += 1
+
+    monkeypatch.setattr(LLMClient, "_terminate", staticmethod(_fake_terminate))
+    stream = _BurstThenQuiet(_CONTENT, _RESULT, quiet_s=3600)
+    proc = _FakeProc(stream, returncode=None)
+    ok = await _grace_client(floor=0.2)._consume_agentic_stream(proc, "claude", 0.05)
+    assert ok is False
+    assert killed["n"] == 1
+    evidence = llm_mod._AGENTIC_STREAM_EVIDENCE.get()
+    assert evidence["timed_out"] is True
+    assert evidence["stall_kind"] == "heartbeat_stall"
+
+
+async def test_no_content_session_keeps_configured_window(monkeypatch):
+    async def _fake_terminate(proc):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(LLMClient, "_terminate", staticmethod(_fake_terminate))
+    # Alive but only lifecycle events: no grace — killed at the configured window
+    # even though the quiet gap (0.25s) is inside the grace floor.
+    stream = _BurstThenQuiet(
+        [b'{"type":"system","subtype":"init"}\n'], _RESULT, quiet_s=0.25
+    )
+    proc = _FakeProc(stream, returncode=None)
+    ok = await _grace_client(floor=1.0)._consume_agentic_stream(proc, "claude", 0.05)
+    assert ok is False
+    assert llm_mod._AGENTIC_STREAM_EVIDENCE.get()["timed_out"] is True
+
+
+async def test_dead_process_gets_no_grace(monkeypatch):
+    async def _fake_terminate(proc):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(LLMClient, "_terminate", staticmethod(_fake_terminate))
+    stream = _BurstThenQuiet(_CONTENT, _RESULT, quiet_s=0.25)
+    proc = _FakeProc(stream, returncode=1)  # process already exited
+    ok = await _grace_client(floor=1.0)._consume_agentic_stream(proc, "claude", 0.05)
+    assert ok is False
+    assert llm_mod._AGENTIC_STREAM_EVIDENCE.get()["timed_out"] is True
+
+
+async def test_grace_never_exceeds_build_wall_clock(monkeypatch):
+    async def _fake_terminate(proc):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(LLMClient, "_terminate", staticmethod(_fake_terminate))
+    # Grace floor 600s but the build budget is 1s: the extension is capped by
+    # the build wall-clock, so the hung-but-alive session dies near 1s.
+    stream = _BurstThenQuiet(_CONTENT, _RESULT, quiet_s=3600)
+    proc = _FakeProc(stream, returncode=None)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    ok = await asyncio.wait_for(
+        _grace_client(floor=600, build_timeout=1)._consume_agentic_stream(
+            proc, "claude", 0.05
+        ),
+        timeout=10,
+    )
+    assert ok is False
+    assert loop.time() - t0 < 5

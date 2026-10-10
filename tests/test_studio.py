@@ -1039,3 +1039,55 @@ def test_degraded_code_stage_forces_no_go(tmp_path):
         assert "degraded_gate" in outcome.manifest["extra"]
 
     asyncio.run(run())
+
+
+class _ScaffoldFilledCodeAgent(_DegradedCodeAgent):
+    """The same substantial delivery, degraded ONLY over one "missing" planned file
+    that monolithic codegen back-filled from the offline scaffold. Its
+    ``scaffold_filled`` record holds the delivered bytes' sha256 unless
+    ``repaired`` (the bytes no longer match, as after a fix-loop rewrite)."""
+
+    repaired = False
+
+    async def execute(self, task: TaskRequest) -> TaskResult:
+        import hashlib
+
+        result = await super().execute(task)
+        wt = Path(task.payload["worktree_dir"])
+        sha = hashlib.sha256((wt / "src" / "main.py").read_bytes()).hexdigest()
+        result.output["degraded_reason"] = (
+            "agentic build incomplete after 1 retry: missing 1 planned file(s): src/main.py")
+        result.output["scaffold_filled"] = {} if self.repaired else {"src/main.py": sha}
+        return result
+
+
+def test_scaffold_filled_record_reaches_the_degraded_gate(tmp_path):
+    """The runner threads the code stage's ``scaffold_filled`` into
+    degraded_reason_resolved: an untouched scaffold back-fill keeps the gate, the
+    same reason over different bytes clears it."""
+    async def run(repaired: bool):
+        settings = Settings(
+            projects_dir=tmp_path / f"Projects{int(repaired)}",
+            data_dir=tmp_path / f"data{int(repaired)}",
+            logs_dir=tmp_path / f"logs{int(repaired)}", critic_enabled=False,
+            approval_gates=False, best_of_n=1)
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _ScaffoldFilledCodeAgent("coder", "code", "stub", bus)
+        code.repaired = repaired
+        code.add_capability(AgentCapability("codegen"))
+        rev = _StubReviewer("rev", "reviewer", "stub", bus)
+        rev.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(rev)
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+        return await runner.start("Build a python tool", slug="scaffold-filled")
+
+    placeholder = asyncio.run(run(False))
+    assert "degraded_gate" in placeholder.manifest["extra"]
+    assert "degraded_resolved" not in placeholder.manifest["extra"]
+    assert placeholder.verdict == "no_go"
+
+    repaired = asyncio.run(run(True))
+    assert "degraded_resolved" in repaired.manifest["extra"]
+    assert "degraded_gate" not in repaired.manifest["extra"]

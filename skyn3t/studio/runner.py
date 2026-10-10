@@ -141,12 +141,17 @@ _WEB_DESIGN_TAGS = ["frontend", "design", "ui", "web"]
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-_MISSING_OWNED_RE = re.compile(r"(?:missing|missed) (\d+) owned file\(s\): (.*)$")
+# Slice codegen reports "owned" files; monolithic and completion codegen report
+# "planned" files (code_agent.py). Both name paths we can verify on disk.
+_MISSING_OWNED_RE = re.compile(r"(?:missing|missed) (\d+) (?:owned|planned) file\(s\): (.*)$")
+_UNCONFIRMED_COMPLETION_RE = re.compile(
+    r"(?:provider|agentic build failed or) did not confirm completion(?:: [^;]*)?$"
+)
 
 
 def degraded_reason_resolved(reason: str, project_dir: str | Path) -> bool:
-    """True when a codegen ``degraded_reason`` named ONLY missing owned files (plus
-    an unconfirmed-completion note) and every one of them now exists with content
+    """True when a codegen ``degraded_reason`` named ONLY missing owned/planned files
+    (plus an unconfirmed-completion note) and every one of them now exists with content
     in the delivered tree — i.e. the fix-loop finished what codegen was cut off
     from. Anything else (stub/under-delivery, prose, a truncated list) stays
     degraded: we only clear what we can verify on disk."""
@@ -169,8 +174,7 @@ def degraded_reason_resolved(reason: str, project_dir: str | Path) -> bool:
                     return False
             saw_missing = True
             continue
-        if part.endswith("provider did not confirm completion") or re.search(
-                r"provider did not confirm completion: [^;]*$", part):
+        if _UNCONFIRMED_COMPLETION_RE.search(part):
             continue
         return False
     return saw_missing

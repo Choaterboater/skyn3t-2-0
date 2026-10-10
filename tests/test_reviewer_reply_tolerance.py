@@ -15,12 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
 
 from skyn3t.adapters.llm import LLMResult
-from skyn3t.agents.reviewer import ReviewerAgent
+from skyn3t.agents.reviewer import ReviewerAgent, _parse_review
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus
 
@@ -190,6 +191,59 @@ def test_pathologically_nested_reply_fails_closed(tmp_path):
     result = _review(tmp_path, judge)
     assert result.metadata["assessment_status"] == "unavailable"
     assert result.output["score"] == 0.0
+
+
+_PER_FILE = '"files": [{"file": "ui.tsx", "score": 95, "gaps": []}]'
+
+
+@pytest.mark.parametrize("text", [
+    # Cut off at the token cap inside the second per-file entry.
+    '```json\n{"score": 40, "gaps": ["auth missing"], "files": [{"file": "ui.tsx", '
+    '"score": 92, "gaps": []}, {"file": "api.py", "sco',
+    # A raw newline inside a gap string.
+    'Verdict: {"score": 40, "gaps": ["auth is\nmissing"], ' + _PER_FILE + "}",
+    '```json\n{"score": 40, "gaps": ["auth is\nmissing"], ' + _PER_FILE + "}\n```",
+    # Unescaped quotes inside a gap string.
+    'Verdict: {"score": 40, "gaps": ["the "admin" route has no auth"], ' + _PER_FILE + "}",
+], ids=["truncated", "raw-newline", "fenced-raw-newline", "unescaped-quote"])
+def test_per_file_score_inside_a_broken_verdict_never_picks_the_score(tmp_path, text):
+    # The verdict object does not decode, so the review is unavailable; the
+    # per-file score nested in it must never stand in for the verdict.
+    judge = _Judge(text)
+    result = _review(tmp_path, judge)
+    assert len(judge.calls) == 2
+    assert result.metadata["assessment_status"] == "unavailable"
+    assert result.output["score"] == 0.0
+    assert result.output["verdict"] == "no_go"
+
+
+@pytest.mark.parametrize("wrap", ["Here is the review:\n{}\nThanks.", "```json\n{}\n```"],
+                         ids=["prose", "fenced"])
+def test_well_formed_verdict_with_per_file_scores_uses_the_verdict_score(tmp_path, wrap):
+    verdict = '{"score": 58, "gaps": ["auth missing"], ' + _PER_FILE + "}"
+    judge = _Judge(wrap.replace("{}", verdict))
+    result = _review(tmp_path, judge)
+    assert len(judge.calls) == 1
+    assert result.metadata["assessment_status"] == "assessed"
+    assert result.output["score"] == 58
+    assert result.output["verdict"] == "no_go"
+    assert "auth missing" in result.output["gaps"]
+
+
+@pytest.mark.parametrize("text", [
+    "x " + '{"a":' * 50_000,
+    "{" * 250_000,
+    '{"a": "' + '\\"{' * 80_000,
+    '{"a": 1} ' * 27_000,
+    '{"a": "\n"} ' * 20_000,
+], ids=["unclosed-nesting", "open-braces", "escaped-quotes", "many-objects", "broken-objects"])
+def test_pathological_reply_is_scanned_quickly_and_fails_closed(text):
+    # ~250k chars each; a scan doing O(reply) work per "{" or per span takes
+    # many seconds here.
+    started = time.perf_counter()
+    with pytest.raises(ValueError):
+        _parse_review(text)
+    assert time.perf_counter() - started < 1.0
 
 
 _SNIPPET_REVIEW = json.dumps({"score": 72, "gaps": [

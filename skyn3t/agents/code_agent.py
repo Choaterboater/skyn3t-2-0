@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import hashlib
 import json
 import os
 import re
@@ -803,7 +802,7 @@ class CodeAgent(BaseAgent):
         "degraded", "degraded_reason", "codegen_override_unavailable",
         "prompts", "agentic", "prose_rejected", "index_html_repaired",
         "scene_registry_repaired", "agentic_untrusted_paths", "vents",
-        "model_used", "scaffold_filled",
+        "model_used",
     )
 
     def __init__(self, name: str = "code", *, event_bus: EventBus,
@@ -989,11 +988,6 @@ class CodeAgent(BaseAgent):
         files: dict[str, str] = dict(scaffold)
         reported_expected: set[str] = set()
         preserved_asset_paths: set[str] = set()
-        # Paths whose delivered content is the offline scaffold (or a repair
-        # stand-in), not agent or generator output: filled under an incomplete
-        # delivery, a prose revert, a failed per-file generation. See
-        # ``scaffold_filled`` below.
-        scaffold_fill: set[str] = set()
 
         knowledge = knowledge_block(p)
         # Codegen-only CLI routing: a configured `codegen_cli_provider` (e.g.
@@ -1207,7 +1201,6 @@ class CodeAgent(BaseAgent):
                 # scaffold floor under it so common entrypoints/manifests are never
                 # absent. ``degraded`` prevents an incomplete subset from shipping.
                 files = ({**scaffold, **disk} if incomplete else disk)
-                scaffold_fill = self._scaffold_content_paths(files, scaffold)
                 # Insurance against the entrypoint-clobber bug: a weak model can
                 # ship an index.html that never imports the app (a standalone inline
                 # page), so the real game never loads and entities stay primitive.
@@ -1226,7 +1219,6 @@ class CodeAgent(BaseAgent):
                 # mistaken for a complete delivery; the scaffold is only a
                 # runnable floor beneath the partial output, not a replacement.
                 files = {**scaffold, **disk}
-                scaffold_fill = self._scaffold_content_paths(files, scaffold)
                 files = self._repair_html_entrypoint(worktree, files, stack, scaffold)
                 files = self._repair_scene_registry(worktree, files, stack)
         else:
@@ -1252,8 +1244,6 @@ class CodeAgent(BaseAgent):
                 if content and content.strip():
                     files[rel_path] = content
                     generated.add(rel_path)
-            # A planned scaffold path whose generation failed keeps the scaffold.
-            scaffold_fill = self._scaffold_content_paths(files, scaffold)
             missing = sorted(expected_planned - generated)
             if missing:
                 run_metadata["degraded"] = True
@@ -1262,11 +1252,7 @@ class CodeAgent(BaseAgent):
                     + ", ".join(missing[:12])
                 )
 
-        before_repair = set(files)
         files = self._repair_entrypoints(stack, files, app_name)
-        # A repair stand-in (stub stylesheet, synthesized main.py / pyproject)
-        # written into a missing path is no more agent work than the scaffold.
-        scaffold_fill |= set(files) - before_repair
 
         just_written = set(self._write_files(worktree, files))
         written = sorted(
@@ -1275,13 +1261,6 @@ class CodeAgent(BaseAgent):
             | self._present_planned_files(worktree, reported_expected)
             | preserved_asset_paths
         )
-        if run_metadata.get("degraded"):
-            # degraded_reason was computed BEFORE the scaffold floor went in, so a
-            # "missing" planned path may already hold placeholder content. Record
-            # the delivered bytes so the runner (degraded_reason_resolved) can
-            # tell a fix-loop repair from the untouched scaffold.
-            run_metadata["scaffold_filled"] = self._scaffold_filled_digests(
-                worktree, scaffold_fill, just_written)
 
         out: dict[str, Any] = {
             "files_written": len(written),
@@ -1348,9 +1327,6 @@ class CodeAgent(BaseAgent):
         if run_metadata.get("degraded"):
             out["degraded"] = True
             out["degraded_reason"] = run_metadata.get("degraded_reason", "unknown")
-            # Always present (possibly empty) beside a monolithic/completion
-            # reason: its absence makes the runner fail closed on "planned" files.
-            out["scaffold_filled"] = dict(run_metadata.get("scaffold_filled") or {})
         codegen_unavailable = run_metadata.get("codegen_override_unavailable")
         if codegen_unavailable:
             out["codegen_override_unavailable"] = codegen_unavailable
@@ -1372,28 +1348,6 @@ class CodeAgent(BaseAgent):
             path = Path(tempfile.mkdtemp(prefix="skyn3t_code_"))
         path.mkdir(parents=True, exist_ok=True)
         return path
-
-    @staticmethod
-    def _scaffold_content_paths(files: dict[str, str], scaffold: dict[str, str]) -> set[str]:
-        """Paths in ``files`` whose content is still the offline scaffold's."""
-        return {path for path, content in files.items() if scaffold.get(path) == content}
-
-    @staticmethod
-    def _scaffold_filled_digests(
-        worktree: Path, paths: set[str], written: set[str]
-    ) -> dict[str, str]:
-        """``{rel_path: sha256}`` of the bytes delivered at each scaffold-filled
-        path (after entrypoint repair), keyed like the degraded_reason names it."""
-        digests: dict[str, str] = {}
-        for raw in sorted(paths):
-            rel = canonical_project_relpath(raw)
-            if rel is None or rel not in written:
-                continue
-            try:
-                digests[rel] = hashlib.sha256((worktree / rel).read_bytes()).hexdigest()
-            except OSError:
-                continue
-        return digests
 
     def _planned_paths(self, plan: dict[str, Any], scaffold: dict[str, str]) -> list[str]:
         paths: list[str] = []

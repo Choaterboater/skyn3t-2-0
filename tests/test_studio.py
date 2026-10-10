@@ -1041,31 +1041,89 @@ def test_degraded_code_stage_forces_no_go(tmp_path):
     asyncio.run(run())
 
 
-class _ScaffoldFilledCodeAgent(_DegradedCodeAgent):
-    """The same substantial delivery, degraded ONLY over one "missing" planned file
-    that monolithic codegen back-filled from the offline scaffold. Its
-    ``scaffold_filled`` record holds the delivered bytes' sha256 unless
-    ``repaired`` (the bytes no longer match, as after a fix-loop rewrite)."""
+_UNFORMATTED_BACKFILL = "def helper( x ):\n  return x\n"
 
-    repaired = False
+
+class _ScaffoldBackfillCodeAgent(_DegradedCodeAgent):
+    """The same substantial delivery, degraded ONLY over one "missing" planned
+    module that monolithic codegen back-filled from the offline scaffold. The
+    project configures Ruff, so the runner's pre-proof repairs reformat that
+    back-fill: its bytes no longer match what codegen wrote."""
 
     async def execute(self, task: TaskRequest) -> TaskResult:
-        import hashlib
-
         result = await super().execute(task)
         wt = Path(task.payload["worktree_dir"])
-        sha = hashlib.sha256((wt / "src" / "main.py").read_bytes()).hexdigest()
+        (wt / "pyproject.toml").write_text(
+            "[project]\nname='demo'\nversion='0.1.0'\n\n[tool.ruff]\n")
+        (wt / "src" / "helpers.py").write_text(_UNFORMATTED_BACKFILL)
         result.output["degraded_reason"] = (
-            "agentic build incomplete after 1 retry: missing 1 planned file(s): src/main.py")
-        result.output["scaffold_filled"] = {} if self.repaired else {"src/main.py": sha}
+            "agentic build incomplete after 1 retry: missing 1 planned file(s): src/helpers.py")
         return result
 
 
-def test_scaffold_filled_record_reaches_the_degraded_gate(tmp_path):
-    """The runner threads the code stage's ``scaffold_filled`` into
-    degraded_reason_resolved: an untouched scaffold back-fill keeps the gate, the
-    same reason over different bytes clears it."""
+class _HelperRepairImprover(BaseAgent):
+    """A fix-loop improver that really rewrites the back-filled module."""
+
+    async def initialize(self) -> None:
+        return None
+
+    async def health_check(self) -> bool:
+        return True
+
+    async def execute(self, task: TaskRequest) -> TaskResult:
+        if not str((task.metadata or {}).get("stage", "")).startswith("fix#"):
+            return TaskResult(task_id=task.task_id, success=True, output={"files_improved": 0})
+        target = Path(task.payload["project_dir"]) / "src" / "helpers.py"
+        target.write_text("def helper(x):\n    return x * 2\n")
+        return TaskResult(task_id=task.task_id, success=True,
+                          output={"files_improved": 1, "files": [str(target)]})
+
+
+def test_degraded_baseline_is_taken_before_the_first_proof(tmp_path, monkeypatch):
+    """The runner baselines each path the degraded reason names after the
+    pre-proof deterministic repairs (here: ruff format rewriting codegen's
+    scaffold back-fill) and right before the first proof, then pops it at the
+    verdict gate. The untouched back-fill keeps the gate; the same build whose
+    fix loop really rewrote the module clears it."""
+    import hashlib
+
+    from skyn3t.studio import runner as runner_mod
+    from skyn3t.studio.proof_run import ProofResult
+
+    events: list[str] = []
+    snapshots: list[tuple[dict, bytes]] = []
+    state = {"repaired": False, "fail_next_proof": False}
+    real_repairs = StudioRunner._deterministic_repairs
+    real_baseline = runner_mod.degraded_baseline_sha256
+    real_proof = runner_mod.proof_run
+
+    def spy_repairs(self, project_dir, plan):
+        events.append("repairs")
+        return real_repairs(self, project_dir, plan)
+
+    def spy_baseline(reason, project_dir):
+        events.append("baseline")
+        state["fail_next_proof"] = state["repaired"]  # the first proof, in the repaired run
+        baseline = real_baseline(reason, project_dir)
+        snapshots.append((baseline, (Path(project_dir) / "src" / "helpers.py").read_bytes()))
+        return baseline
+
+    def spy_proof(*args, **kwargs):
+        events.append("proof")
+        if state["fail_next_proof"]:
+            state["fail_next_proof"] = False
+            return ProofResult(passed=False, mode="local",
+                               detail={"tests": "failed", "test_summary": "1 failed"})
+        return real_proof(*args, **kwargs)
+
+    monkeypatch.setattr(StudioRunner, "_deterministic_repairs", spy_repairs)
+    monkeypatch.setattr(runner_mod, "degraded_baseline_sha256", spy_baseline)
+    monkeypatch.setattr(runner_mod, "proof_run", spy_proof)
+
     async def run(repaired: bool):
+        events.clear()
+        snapshots.clear()
+        state["repaired"] = repaired
         settings = Settings(
             projects_dir=tmp_path / f"Projects{int(repaired)}",
             data_dir=tmp_path / f"data{int(repaired)}",
@@ -1073,33 +1131,47 @@ def test_scaffold_filled_record_reaches_the_degraded_gate(tmp_path):
             approval_gates=False, best_of_n=1)
         bus = EventBus()
         orch = Orchestrator(bus)
-        code = _ScaffoldFilledCodeAgent("coder", "code", "stub", bus)
-        code.repaired = repaired
+        code = _ScaffoldBackfillCodeAgent("coder", "code", "stub", bus)
         code.add_capability(AgentCapability("codegen"))
         rev = _StubReviewer("rev", "reviewer", "stub", bus)
         rev.add_capability(AgentCapability("review"))
         await orch.register(code)
         await orch.register(rev)
+        if repaired:
+            improver = _HelperRepairImprover("improver", "code_improve", "stub", bus)
+            improver.add_capability(AgentCapability("code_improve"))
+            await orch.register(improver)
         runner = StudioRunner(bus, orch, settings=settings, memory=None)
-        return await runner.start("Build a python tool", slug="scaffold-filled")
+        return await runner.start("Build a python tool", slug="scaffold-backfill")
 
-    placeholder = asyncio.run(run(False))
-    assert "degraded_gate" in placeholder.manifest["extra"]
-    assert "degraded_resolved" not in placeholder.manifest["extra"]
-    assert placeholder.verdict == "no_go"
-
-    repaired = asyncio.run(run(True))
-    assert "degraded_resolved" in repaired.manifest["extra"]
-    assert "degraded_gate" not in repaired.manifest["extra"]
+    for repaired in (False, True):
+        outcome = asyncio.run(run(repaired))
+        i = events.index("baseline")
+        assert events[i - 1:i + 2] == ["repairs", "baseline", "proof"]
+        [(baseline, at_baseline)] = snapshots
+        assert at_baseline != _UNFORMATTED_BACKFILL.encode()  # ruff format ran first
+        assert baseline == {"src/helpers.py": hashlib.sha256(at_baseline).hexdigest()}
+        extra = outcome.manifest["extra"]
+        assert "src/helpers.py" in extra["python_formatted"]
+        saved = BuildManifest.load(outcome.project_dir)
+        assert saved is not None
+        assert "degraded_baseline_sha256" not in extra
+        assert "degraded_baseline_sha256" not in saved.extra
+        if repaired:
+            assert "fix_attempt_1" in extra
+            assert "degraded_resolved" in extra
+            assert "degraded_gate" not in extra
+        else:
+            assert extra["proof"]["passed"] is True
+            assert "degraded_gate" in extra
+            assert "degraded_resolved" not in extra
+            assert outcome.verdict == "no_go"
 
 
 class _ImportStubCodeAgent(_DegradedCodeAgent):
     """The same substantial delivery, degraded ONLY over one "missing" planned
-    module that another delivered file imports. Codegen never back-filled it
-    (empty ``scaffold_filled``); unless ``delivered``, the runner's pre-proof
-    deterministic repair stubs it, which is no delivery either."""
-
-    delivered = False
+    module that another delivered file imports. The runner's pre-proof
+    deterministic repair stubs it, which is no delivery."""
 
     async def execute(self, task: TaskRequest) -> TaskResult:
         result = await super().execute(task)
@@ -1107,30 +1179,23 @@ class _ImportStubCodeAgent(_DegradedCodeAgent):
         (wt / "web").mkdir(parents=True, exist_ok=True)
         (wt / "web" / "app.js").write_text(
             "import { renderBoard } from './board.js';\nrenderBoard(document.body);\n")
-        if self.delivered:
-            (wt / "web" / "board.js").write_text(
-                "export function renderBoard(el) {\n  el.textContent = 'board';\n}\n")
         result.output["degraded_reason"] = (
             "agentic build incomplete after 1 retry: missing 1 planned file(s): web/board.js")
-        result.output["scaffold_filled"] = {}
         return result
 
 
 def test_deterministic_import_stub_never_clears_the_degraded_gate(tmp_path):
     """scaffold_missing_imports (the runner's pre-proof repair) writes an
     'Auto-scaffolded by SkyN3t' stub at the missing planned path, so the proof
-    passes; that stand-in must keep the gate. The same build with the module
-    really delivered clears it."""
-    async def run(delivered: bool):
+    passes; that stand-in must keep the gate."""
+    async def run():
         settings = Settings(
-            projects_dir=tmp_path / f"Projects{int(delivered)}",
-            data_dir=tmp_path / f"data{int(delivered)}",
-            logs_dir=tmp_path / f"logs{int(delivered)}", critic_enabled=False,
+            projects_dir=tmp_path / "Projects", data_dir=tmp_path / "data",
+            logs_dir=tmp_path / "logs", critic_enabled=False,
             approval_gates=False, best_of_n=1)
         bus = EventBus()
         orch = Orchestrator(bus)
         code = _ImportStubCodeAgent("coder", "code", "stub", bus)
-        code.delivered = delivered
         code.add_capability(AgentCapability("codegen"))
         rev = _StubReviewer("rev", "reviewer", "stub", bus)
         rev.add_capability(AgentCapability("review"))
@@ -1139,14 +1204,9 @@ def test_deterministic_import_stub_never_clears_the_degraded_gate(tmp_path):
         runner = StudioRunner(bus, orch, settings=settings, memory=None)
         return await runner.start("Build a python tool", slug="import-stub")
 
-    stubbed = asyncio.run(run(False))
+    stubbed = asyncio.run(run())
     assert stubbed.manifest["extra"]["imports_scaffolded"] == ["web/board.js"]
     assert stubbed.manifest["extra"]["proof"]["passed"] is True
     assert "degraded_resolved" not in stubbed.manifest["extra"]
     assert "degraded_gate" in stubbed.manifest["extra"]
     assert stubbed.verdict == "no_go"
-
-    delivered = asyncio.run(run(True))
-    assert "imports_scaffolded" not in delivered.manifest["extra"]
-    assert "degraded_resolved" in delivered.manifest["extra"]
-    assert "degraded_gate" not in delivered.manifest["extra"]

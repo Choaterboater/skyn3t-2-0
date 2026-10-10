@@ -392,3 +392,39 @@ def test_archetype_follows_what_the_brief_leads_with():
     brief = ("A single-page responsive landing site for a SaaS. Sections include a "
              "staff dashboard mockup and a schedule table.")
     assert derive_archetype(brief) == "asymmetric hero"
+
+
+# bellwork-v3: 12 contrast "failures", all false — white `--brand-text` (meant for
+# indigo buttons) and `--bw-footer-text` (meant for the dark footer) were paired
+# with every LIGHT page surface, and Next's .next/ build CSS doubled every hit.
+_V3_CSS = """:root{
+  --brand:#5f5af7; --brand-text:#ffffff;
+  --bw-surface-1:#eef2f7; --bw-surface-2:#f6f7fb; --bw-surface-3:#fafbfe;
+  --bw-footer-bg:#171c24; --bw-footer-text:#b9c0c7;
+  --text:#272f37;
+}"""
+
+
+def test_lint_contrast_scopes_element_text_to_its_own_background(tmp_path):
+    from skyn3t.studio.design_tokens import lint_contrast
+    (tmp_path / "app").mkdir()
+    (tmp_path / "app" / "globals.css").write_text(_V3_CSS)
+    assert lint_contrast(tmp_path) == []
+
+
+def test_lint_contrast_still_flags_scoped_text_on_its_own_bad_background(tmp_path):
+    from skyn3t.studio.design_tokens import lint_contrast
+    (tmp_path / "a.css").write_text(":root{--footer-bg:#eeeeee;--footer-text:#dddddd;"
+                                    "--bg:#ffffff;--text:#cccccc}")
+    hits = {(i["text"].split("=")[0], i["bg"].split("=")[0]) for i in lint_contrast(tmp_path)}
+    assert ("--footer-text", "--footer-bg") in hits
+    assert ("--text", "--bg") in hits
+
+
+def test_lint_contrast_ignores_build_output(tmp_path):
+    from skyn3t.studio.design_tokens import lint_contrast
+    bad = ":root{--bg:#ffffff;--text:#fefefe}"
+    for d in (".next/static/css", "out", "build", ".svelte-kit"):
+        (tmp_path / d).mkdir(parents=True)
+        (tmp_path / d / "x.css").write_text(bad)
+    assert lint_contrast(tmp_path) == []

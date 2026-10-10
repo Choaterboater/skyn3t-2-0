@@ -1069,6 +1069,33 @@ class CodeImproverAgent(BaseAgent):
             return content.rstrip() + "\nmodule.exports = app;\n"
         return content
 
+    @staticmethod
+    def _rank_gap_candidates(candidates: list[str], worktree: Path) -> list[str]:
+        """Normalize, de-ghost and order regex-scraped repair targets.
+
+        - ``file:///root/x`` stack URLs leave ``//x`` after the root is stripped.
+        - A bare name that doesn't exist but is the basename of another candidate
+          ("globals.css" next to "app/globals.css") is a fragment of an assertion
+          message — creating it would litter the project root.
+        - Failing TEST files go after the source files their output names, so the
+          repair fixes the code under test instead of rewriting the assertion."""
+        seen: list[str] = []
+        for c in candidates:
+            c = c.lstrip("/")
+            if c and c not in seen:
+                seen.append(c)
+        real_basenames = {Path(c).name for c in seen if "/" in c and (worktree / c).exists()}
+        kept = [c for c in seen
+                if "/" in c or (worktree / c).exists() or c not in real_basenames]
+
+        def _is_test(rel: str) -> bool:
+            parts = Path(rel).parts
+            name = parts[-1] if parts else rel
+            return (bool(parts) and parts[0] in ("tests", "test", "__tests__")) or bool(
+                re.search(r"(?:^test_|[._-](?:test|spec)\.[a-z]+$)", name))
+
+        return [c for c in kept if not _is_test(c)] + [c for c in kept if _is_test(c)]
+
     def _targets_from_gaps(self, gaps: list[Any], worktree: Path) -> list[str]:
         """Infer which files to touch from gap text; fall back to entrypoints."""
         candidates: list[str] = []
@@ -1128,7 +1155,7 @@ class CodeImproverAgent(BaseAgent):
                         candidates.append(hits[0].relative_to(worktree).as_posix())
                         break
         if candidates:
-            return list(dict.fromkeys(candidates))
+            return self._rank_gap_candidates(candidates, worktree)
         # Default to known entrypoints that exist. Covers plain React-Vite /
         # Python / Node / static shapes AND the framework-router conventions a
         # free-text goal (no error text to parse) commonly lands on — without

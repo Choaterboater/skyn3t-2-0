@@ -7,8 +7,9 @@ which dominates the final blend). The reply is now parsed tolerantly, gaps are
 coerced to strings, the output ceiling is larger, and a failed attempt gets one
 retry. A review STILL unavailable after the retry stays fail-closed: explicitly
 unavailable, score 0, never a passing structural fallback. JSON quoted from the
-untrusted brief/source/evidence never picks the score: a non-strict reply needs
-exactly one score+gaps object (or agreeing repeats), else it fails closed.
+untrusted brief/source/evidence never picks the score: a non-strict reply's only
+candidates are whole fenced blocks and a lone unfenced object (nothing else is
+scanned), and they must agree on one valid score, else it fails closed.
 """
 
 from __future__ import annotations
@@ -162,21 +163,34 @@ def test_object_nested_inside_the_verdict_is_not_a_candidate(tmp_path):
     assert result.output["score"] == 40
 
 
-def test_repeated_verdict_with_the_same_score_uses_the_last(tmp_path):
-    judge = _Judge('Draft: {"score": 70, "gaps": ["a"]}\nFinal: {"score": 70, "gaps": ["b"]}')
+def test_repeated_fenced_verdict_with_the_same_score_uses_the_last(tmp_path):
+    judge = _Judge(
+        'Draft:\n```json\n{"score": 70, "gaps": ["a"]}\n```\n'
+        'Final:\n```json\n{"score": 70, "gaps": ["b"]}\n```'
+    )
     result = _review(tmp_path, judge)
     assert result.metadata["assessment_status"] == "assessed"
     assert result.output["score"] == 70
     assert "b" in result.output["gaps"] and "a" not in result.output["gaps"]
 
 
-def test_conflicting_review_shaped_objects_fail_closed(tmp_path):
-    # A quoted review-shaped fixture disagreeing with the verdict is ambiguous:
-    # untrusted content must never pick the score.
-    judge = _Judge(
-        'The app ships this fixture:\n```json\n{"score": 95, "gaps": []}\n```\n'
-        f"Verdict: {_VERDICT}"
-    )
+_FENCED_VERDICT = f"Verdict:\n```json\n{_VERDICT}\n```"
+
+
+@pytest.mark.parametrize("text", [
+    # A quoted review-shaped fixture disagreeing with the verdict.
+    f'The app ships this fixture:\n```json\n{{"score": 95, "gaps": []}}\n```\nVerdict: {_VERDICT}',
+    f'The app ships this fixture:\n```json\n{{"score": 95, "gaps": []}}\n```\n{_FENCED_VERDICT}',
+    # A quoted fixture with an invalid score.
+    f'The app ships this fixture:\n```json\n{{"score": 1000, "gaps": []}}\n```\n{_FENCED_VERDICT}',
+    # Unfenced, only a lone object counts: any later "{" makes the reply ambiguous.
+    f'The fixture {{"score": 95, "gaps": []}} is seeded.\nVerdict: {_VERDICT}',
+    'Draft: {"score": 70, "gaps": ["a"]}\nFinal: {"score": 70, "gaps": ["b"]}',
+], ids=["fenced-fixture", "fenced-fixture-fenced-verdict", "invalid-fixture-score",
+        "unfenced-fixture", "unfenced-repeat"])
+def test_ambiguous_review_shaped_objects_fail_closed(tmp_path, text):
+    # Untrusted content must never pick the score.
+    judge = _Judge(text)
     result = _review(tmp_path, judge)
     assert len(judge.calls) == 2
     assert result.metadata["assessment_status"] == "unavailable"
@@ -200,15 +214,24 @@ _PER_FILE = '"files": [{"file": "ui.tsx", "score": 95, "gaps": []}]'
     # Cut off at the token cap inside the second per-file entry.
     '```json\n{"score": 40, "gaps": ["auth missing"], "files": [{"file": "ui.tsx", '
     '"score": 92, "gaps": []}, {"file": "api.py", "sco',
+    'Verdict: {"score": 40, "gaps": ["auth missing"], "files": [{"file": "ui.tsx", '
+    '"score": 95, "gaps": []}, {"file": "api.py", "sco',
     # A raw newline inside a gap string.
     'Verdict: {"score": 40, "gaps": ["auth is\nmissing"], ' + _PER_FILE + "}",
     '```json\n{"score": 40, "gaps": ["auth is\nmissing"], ' + _PER_FILE + "}\n```",
     # Unescaped quotes inside a gap string.
     'Verdict: {"score": 40, "gaps": ["the "admin" route has no auth"], ' + _PER_FILE + "}",
-], ids=["truncated", "raw-newline", "fenced-raw-newline", "unescaped-quote"])
+    # ...with a "}" that a brace scan reads as the verdict's end (was a 95).
+    'Verdict: {"score": 40, "gaps": ["the "admin}" route has no auth"], ' + _PER_FILE + "}",
+    # Broken prose JSON before a valid verdict flips a scan's string parity, so
+    # a "}" in a gap ends the span and the per-file object follows (was a 95).
+    'Note {"debug: true} first.\nVerdict: {"score": 40, "gaps": ["unbalanced } in parser.ts"], '
+    + _PER_FILE + "}",
+], ids=["truncated", "truncated-unfenced", "raw-newline", "fenced-raw-newline",
+        "unescaped-quote", "unescaped-quote-brace", "broken-prose-json"])
 def test_per_file_score_inside_a_broken_verdict_never_picks_the_score(tmp_path, text):
-    # The verdict object does not decode, so the review is unavailable; the
-    # per-file score nested in it must never stand in for the verdict.
+    # The first unfenced object does not decode, so the review is unavailable;
+    # the per-file score nested in the verdict must never stand in for it.
     judge = _Judge(text)
     result = _review(tmp_path, judge)
     assert len(judge.calls) == 2
@@ -236,14 +259,37 @@ def test_well_formed_verdict_with_per_file_scores_uses_the_verdict_score(tmp_pat
     '{"a": "' + '\\"{' * 80_000,
     '{"a": 1} ' * 27_000,
     '{"a": "\n"} ' * 20_000,
-], ids=["unclosed-nesting", "open-braces", "escaped-quotes", "many-objects", "broken-objects"])
+    "```" + "a" * 250_000,
+    "```json\n" + " " * 250_000,
+    "```json\n{" * 25_000,
+    '{"score": 50, "gaps": []} ' + "{" * 250_000,
+    '```json\n{"score": 50, "gaps": []}\n```\n' * 6_000 + '```json\n{"score": 51, "gaps": []}\n```',
+], ids=["unclosed-nesting", "open-braces", "escaped-quotes", "many-objects", "broken-objects",
+        "unclosed-fence-word", "unclosed-fence-space", "many-broken-fences",
+        "verdict-then-braces", "many-fenced-candidates"])
 def test_pathological_reply_is_scanned_quickly_and_fails_closed(text):
-    # ~250k chars each; a scan doing O(reply) work per "{" or per span takes
-    # many seconds here.
+    # ~250k chars each; O(reply) work per "{", per span or per backtracked
+    # fence character takes many seconds here.
     started = time.perf_counter()
     with pytest.raises(ValueError):
         _parse_review(text)
     assert time.perf_counter() - started < 1.0
+
+
+@pytest.mark.parametrize("text", [
+    'Here is my review.\n```json\n{"score": 72, "gaps": ["x"]}\n```\nThanks.',
+    'Here is my review: {"score": 72, "gaps": ["x"]}',
+    # A non-JSON code fence is removed before the unfenced verdict is read, so
+    # its "{" is not the first one.
+    'Fix the handler:\n```js\nif (x) {\n```\nVerdict: {"score": 72, "gaps": ["x"]}',
+], ids=["prose-fenced-verdict", "prose-inline-verdict", "code-fence-then-verdict"])
+def test_single_review_object_beside_prose_is_assessed(tmp_path, text):
+    judge = _Judge(text)
+    result = _review(tmp_path, judge)
+    assert len(judge.calls) == 1
+    assert result.metadata["assessment_status"] == "assessed"
+    assert result.output["score"] == 72
+    assert "x" in result.output["gaps"]
 
 
 _SNIPPET_REVIEW = json.dumps({"score": 72, "gaps": [
@@ -251,14 +297,24 @@ _SNIPPET_REVIEW = json.dumps({"score": 72, "gaps": [
 ]})
 
 
-@pytest.mark.parametrize("text", [_SNIPPET_REVIEW, f"Review:\n{_SNIPPET_REVIEW}\nDone."])
-def test_fenced_snippet_inside_a_gap_is_assessed(tmp_path, text):
-    judge = _Judge(text)
+def test_fenced_snippet_inside_a_strict_json_gap_is_assessed(tmp_path):
+    judge = _Judge(_SNIPPET_REVIEW)
     result = _review(tmp_path, judge)
     assert len(judge.calls) == 1
     assert result.metadata["assessment_status"] == "assessed"
     assert result.output["score"] == 72
     assert any("```js" in g for g in result.output["gaps"])
+
+
+def test_fenced_snippet_inside_a_prose_wrapped_gap_keeps_the_score(tmp_path):
+    # Fences are removed before the unfenced search, so the snippet leaves the
+    # gap but the verdict still decodes.
+    judge = _Judge(f"Review:\n{_SNIPPET_REVIEW}\nDone.")
+    result = _review(tmp_path, judge)
+    assert len(judge.calls) == 1
+    assert result.metadata["assessment_status"] == "assessed"
+    assert result.output["score"] == 72
+    assert "validate the body:" in result.output["gaps"]
 
 
 def test_garbage_then_valid_reply_is_assessed_on_the_retry(tmp_path):

@@ -34,15 +34,14 @@ GO_THRESHOLD = 60.0
 # Reasoning models (OpenRouter) can spend a small output ceiling on hidden
 # reasoning and return an empty/truncated reply before any JSON is emitted.
 _REVIEW_MAX_TOKENS = 4_000
-# A failed provider reply or a reply without one unambiguous valid score gets one
+# A failed provider reply or a reply without a valid score gets one
 # retry; a review still unavailable after that stays explicitly unavailable (score 0).
 _REVIEW_ATTEMPTS = 2
 _REVIEW_MAX_GAPS = 12
 _REVIEW_MAX_GAP_CHARS = 1000
-# Fenced blocks in a reply; the language tag (json/js/...) is skipped. Possessive
-# quantifiers keep an unclosed fence from backtracking quadratically.
-_FENCE = re.compile(r"```[\w-]*+\s*+(.*?)```", re.DOTALL)
-_DECODER = json.JSONDecoder()
+# A reply that is exactly one fenced block (```json ... ```). Its body must be
+# strict JSON; a ``` inside a JSON string stays part of the body.
+_WHOLE_FENCE = re.compile(r"```[\w-]*[ \t]*\r?\n(.*)```", re.DOTALL)
 
 
 def _content_file_count(root) -> int:
@@ -203,45 +202,22 @@ def _review_score(raw: Any) -> float:
 
 
 def _review_object(text: str) -> dict[str, Any]:
-    """The reply's review object. A strict-JSON reply is used as is. Otherwise
-    the only candidates are whole fenced blocks and, outside the fences, the
-    object at the first ``{`` when no ``{`` follows it; each needs ``score`` and
-    ``gaps``, and all must agree on one valid score. Nothing else is scanned:
-    a broken verdict (cut off, an unescaped quote) can desynchronize any scan,
-    letting a nested per-file object or JSON quoted from the untrusted brief,
-    source or evidence pick the score."""
-    text = text or ""
-    try:
-        data = json.loads(text.strip())
-    except (ValueError, RecursionError):
-        data = None
-    if isinstance(data, dict):
-        return data
-    found: list[Any] = []
-    for block in _FENCE.finditer(text):
-        try:
-            found.append(json.loads(block.group(1).strip()))
-        except (ValueError, RecursionError):
-            continue
-    rest = _FENCE.sub("", text)
-    start = rest.find("{")
-    if start != -1:
-        try:
-            obj, end = _DECODER.raw_decode(rest, start)
-            # Any later "{" (a repeat, or the verdict after quoted JSON) is ambiguous.
-            if rest.find("{", end) == -1:
-                found.append(obj)
-        except (ValueError, RecursionError):
-            pass
-    candidates = [c for c in found if isinstance(c, dict) and "score" in c and "gaps" in c]
-    if not candidates or len({_review_score(c["score"]) for c in candidates}) != 1:
-        raise ValueError("no unambiguous review object")
-    return candidates[-1]
+    """The reply's review object: the whole reply as strict JSON, or a reply that
+    is exactly one fenced block around strict JSON. Nothing is picked out of
+    prose or a partly broken reply: any such extraction can be steered by JSON
+    quoted from the untrusted brief, source or evidence, or by a per-file object
+    nested in a cut-off verdict. Anything else raises (retry, then unavailable)."""
+    text = (text or "").strip()
+    fenced = _WHOLE_FENCE.fullmatch(text)
+    data = json.loads(fenced.group(1) if fenced else text)
+    if not isinstance(data, dict):
+        raise ValueError("invalid review object")
+    return data
 
 
 def _parse_review(text: str) -> dict[str, Any]:
-    """Validate one live review reply (fences/prose tolerated). Raises only
-    when no valid score can be determined; unreadable gaps keep the score,
+    """Validate one live review reply (strict JSON, optionally fenced). Raises
+    only when no valid score can be determined; unreadable gaps keep the score,
     since re-sampling could flip a clear verdict."""
     data = _review_object(text)
     score = _review_score(data["score"])

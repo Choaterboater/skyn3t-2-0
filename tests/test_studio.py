@@ -1091,3 +1091,62 @@ def test_scaffold_filled_record_reaches_the_degraded_gate(tmp_path):
     repaired = asyncio.run(run(True))
     assert "degraded_resolved" in repaired.manifest["extra"]
     assert "degraded_gate" not in repaired.manifest["extra"]
+
+
+class _ImportStubCodeAgent(_DegradedCodeAgent):
+    """The same substantial delivery, degraded ONLY over one "missing" planned
+    module that another delivered file imports. Codegen never back-filled it
+    (empty ``scaffold_filled``); unless ``delivered``, the runner's pre-proof
+    deterministic repair stubs it, which is no delivery either."""
+
+    delivered = False
+
+    async def execute(self, task: TaskRequest) -> TaskResult:
+        result = await super().execute(task)
+        wt = Path(task.payload["worktree_dir"])
+        (wt / "web").mkdir(parents=True, exist_ok=True)
+        (wt / "web" / "app.js").write_text(
+            "import { renderBoard } from './board.js';\nrenderBoard(document.body);\n")
+        if self.delivered:
+            (wt / "web" / "board.js").write_text(
+                "export function renderBoard(el) {\n  el.textContent = 'board';\n}\n")
+        result.output["degraded_reason"] = (
+            "agentic build incomplete after 1 retry: missing 1 planned file(s): web/board.js")
+        result.output["scaffold_filled"] = {}
+        return result
+
+
+def test_deterministic_import_stub_never_clears_the_degraded_gate(tmp_path):
+    """scaffold_missing_imports (the runner's pre-proof repair) writes an
+    'Auto-scaffolded by SkyN3t' stub at the missing planned path, so the proof
+    passes; that stand-in must keep the gate. The same build with the module
+    really delivered clears it."""
+    async def run(delivered: bool):
+        settings = Settings(
+            projects_dir=tmp_path / f"Projects{int(delivered)}",
+            data_dir=tmp_path / f"data{int(delivered)}",
+            logs_dir=tmp_path / f"logs{int(delivered)}", critic_enabled=False,
+            approval_gates=False, best_of_n=1)
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _ImportStubCodeAgent("coder", "code", "stub", bus)
+        code.delivered = delivered
+        code.add_capability(AgentCapability("codegen"))
+        rev = _StubReviewer("rev", "reviewer", "stub", bus)
+        rev.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(rev)
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+        return await runner.start("Build a python tool", slug="import-stub")
+
+    stubbed = asyncio.run(run(False))
+    assert stubbed.manifest["extra"]["imports_scaffolded"] == ["web/board.js"]
+    assert stubbed.manifest["extra"]["proof"]["passed"] is True
+    assert "degraded_resolved" not in stubbed.manifest["extra"]
+    assert "degraded_gate" in stubbed.manifest["extra"]
+    assert stubbed.verdict == "no_go"
+
+    delivered = asyncio.run(run(True))
+    assert "imports_scaffolded" not in delivered.manifest["extra"]
+    assert "degraded_resolved" in delivered.manifest["extra"]
+    assert "degraded_gate" not in delivered.manifest["extra"]

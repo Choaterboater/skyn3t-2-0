@@ -70,7 +70,11 @@ _ACCEPTANCE_ENTRY_NAMES = frozenset(
     # Expo Router app/index.*.
     | {f"{stem}{suffix}" for stem in ("main", "index") for suffix in _JS_ENTRY_SUFFIXES}
 )
-# Route-convention entries whose basenames are too generic to accept anywhere.
+# Route-convention entries matched by path. The .jsx/.tsx page/layout/root/
+# _index basenames (and every literal below) are already accepted ANYWHERE via
+# the shared vc.ENTRYPOINT_NAMES, exactly as the runner's own entrypoint gate
+# accepts them. Only the extra .js/.ts/.mjs variants and Expo's _layout.* are
+# truly path-restricted: those basenames are too generic to accept anywhere.
 _ACCEPTANCE_ENTRY_PATHS = frozenset(
     {
         "src/pages/index.astro", "src/App.vue", "src/routes/+page.svelte",

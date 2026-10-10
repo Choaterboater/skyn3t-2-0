@@ -2586,26 +2586,35 @@ class StudioRunner:
         # Dampen by route health, but only when proof PASSED — a proof-failed build
         # is already halved by _honest_score, so this would otherwise double-count.
         # Dead HTTP routes dampen in every posture. Visual health joins the
-        # multiplier only where liveness BLOCKS (release / blocking_gates); under
-        # lab a visual failure is a recorded heuristic finding, so it takes the
-        # same _score_after_finding cap as every other non-blocking finding
-        # instead of halving a served app's score.
+        # multiplier wherever liveness BLOCKS (release / blocking_gates) and on
+        # stacks with no visual gate below (fastapi/express/rag/...), exactly as
+        # before. Under lab on a UI stack, a visual failure is a recorded
+        # heuristic finding: it takes the _score_after_finding cap like every
+        # other non-blocking finding, but never scores below the old multiplier
+        # (a partial failure on a multi-route app stays at e.g. 87.4, not 74).
+        # _shape_final_score still caps a 'go' at 70 + 25*visual_health later.
         resolved_posture = (
             posture if posture is not None else GatePosture.from_settings(self.settings)
         )
-        visual_blocks = resolved_posture.blocks("liveness")
+        visual_finding_cap = (
+            plan.stack in _UI_WEB_STACKS and not resolved_posture.blocks("liveness")
+        )
         visual_failed_any = bool(visual_total) and (visual_failed > 0 or visual_health < 1.0)
-        if visual_total:
-            manifest.extra["liveness_visual_score_policy"] = (
-                "health_multiplier" if visual_blocks else "finding_cap"
-            )
+        score_policy = "finding_cap" if visual_finding_cap else "health_multiplier"
         if proof.passed and report.total:
-            score_health = effective_health if visual_blocks else report.health
-            final_score = round(final_score * (0.5 + 0.5 * score_health), 2)
+            multiplied = round(final_score * (0.5 + 0.5 * effective_health), 2)
+            if visual_finding_cap and visual_failed_any:
+                capped = self._score_after_finding(
+                    round(final_score * (0.5 + 0.5 * report.health), 2), verdict,
+                )
+                if multiplied > capped:
+                    score_policy = "health_multiplier"
+                final_score = max(capped, multiplied)
+            else:
+                final_score = multiplied
             manifest.score = final_score
-        if proof.passed and visual_failed_any and not visual_blocks:
-            final_score = self._score_after_finding(final_score, verdict)
-            manifest.score = final_score
+        if visual_total:
+            manifest.extra["liveness_visual_score_policy"] = score_policy
         # Runtime gate: serve+probe decides the verdict. Always-on for a dead
         # UI root '/'; the broad any-dead-route gate stays opt-in.
         verdict, gate_reason = self._liveness_gate(
@@ -2614,9 +2623,10 @@ class StudioRunner:
         )
         # Visual liveness is a viewport heuristic OR a vision-model judgement —
         # not proof the delivery is broken — so it is posture-routed: recorded
-        # (with the score already capped as a finding above) under lab, blocking
-        # under release or an explicit blocking_gates="liveness". The always-on
-        # dead-root and opt-in broad gates above rightly stay direct.
+        # (with the score already finding-capped above, never below the old
+        # health multiplier) under lab, blocking under release or an explicit
+        # blocking_gates="liveness". The always-on dead-root and opt-in broad
+        # gates above rightly stay direct.
         if gate_reason is None:
             visual_routes = list(getattr(report, "visual_failed_routes", []) or [])
             if plan.stack in _UI_WEB_STACKS and visual_routes:

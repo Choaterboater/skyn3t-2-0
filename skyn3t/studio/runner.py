@@ -23,6 +23,7 @@ Import has zero side effects.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import json
 import math
@@ -100,6 +101,7 @@ from skyn3t.studio.mcp_check import McpVerdict
 from skyn3t.studio.planner import BuildPlan, Planner
 from skyn3t.studio.product_spec import ProductSpecV1, product_contract_prompt_block
 from skyn3t.studio.proof_run import (
+    _STYLESHEET_STUB_CONTENT,
     _esm_named_export_mismatches,
     _unresolved_local_imports,
     _unresolved_python_imports,
@@ -147,6 +149,35 @@ _MISSING_OWNED_RE = re.compile(r"(?:missing|missed) (\d+) (owned|planned) file\(
 _UNCONFIRMED_COMPLETION_RE = re.compile(
     r"(?:provider|agentic build failed or) did not confirm completion(?:: [^;]*)?$"
 )
+# Stand-ins written into a missing path: proof_run's import stubs, its stub
+# stylesheet, and the fix-loop's smoke test (_stub_for). None is delivery.
+_AUTO_SCAFFOLD_MARKER = "Auto-scaffolded by SkyN3t"
+_SMOKE_TEST_STUB = "def test_smoke():\n    assert True\n"
+# Config, manifests, README and stylesheets: the scaffold copy IS a working
+# delivery, so a scaffold digest alone never marks them placeholders (a stub
+# marker or the stub stylesheet still does). Matched on the lowercased basename.
+_SCAFFOLD_BOILERPLATE_GLOBS = (
+    "*.config.js", "*.config.mjs", "*.config.cjs", "*.config.ts",
+    "tsconfig*.json", "jsconfig.json", "package.json", "pyproject.toml",
+    "requirements.txt", ".gitignore", ".eslintrc*", ".prettierrc*",
+    "readme.md", "*.css", "*.scss",
+)
+
+
+def _is_placeholder(rel: str, data: bytes, *records: Mapping[str, str]) -> bool:
+    """True when the bytes at ``rel`` are a stand-in rather than delivered work:
+    an auto-scaffold stub, the stub stylesheet, the smoke-test stub, or (for a
+    non-boilerplate path) bytes still hashing to a scaffold digest in ``records``."""
+    text = data.decode("utf-8", errors="replace")
+    if _AUTO_SCAFFOLD_MARKER in text or text.strip() == _STYLESHEET_STUB_CONTENT.strip():
+        return True
+    name = rel.rsplit("/", 1)[-1].lower()
+    if name.endswith(".py") and "".join(text.split()) == "".join(_SMOKE_TEST_STUB.split()):
+        return True
+    if any(fnmatch.fnmatchcase(name, glob) for glob in _SCAFFOLD_BOILERPLATE_GLOBS):
+        return False
+    digest = hashlib.sha256(data).hexdigest()
+    return any(record.get(rel) == digest for record in records)
 
 
 def degraded_reason_resolved(
@@ -154,6 +185,7 @@ def degraded_reason_resolved(
     project_dir: str | Path,
     *,
     scaffold_sha256: Mapping[str, str] | None = None,
+    runner_scaffold_sha256: Mapping[str, str] | None = None,
 ) -> bool:
     """True when a codegen ``degraded_reason`` named ONLY missing owned/planned files
     (plus an unconfirmed-completion note) and every one of them now exists with content
@@ -163,11 +195,14 @@ def degraded_reason_resolved(
 
     Monolithic/completion codegen fills missing planned paths with the offline
     scaffold AFTER writing the reason, so those paths exist immediately.
-    ``scaffold_sha256`` is the code stage's ``scaffold_filled`` record: a named
-    path whose bytes still hash to it was never repaired. A "planned" reason
-    with no record available fails closed (slices never fill from the scaffold)."""
+    ``scaffold_sha256`` is the code stage's ``scaffold_filled`` record and
+    ``runner_scaffold_sha256`` the digests of the scaffold the fix-loop fills
+    from (_fill_missing): a named path still holding either, or any other
+    placeholder (_is_placeholder), was never repaired. A "planned" reason with
+    no code-stage record available fails closed (slice codegen never fills from
+    the scaffold)."""
     root = Path(project_dir)
-    placeholders = scaffold_sha256 or {}
+    records = (scaffold_sha256 or {}, runner_scaffold_sha256 or {})
     saw_missing = False
     for part in (p.strip() for p in str(reason or "").split("; ")):
         if not part:
@@ -187,7 +222,7 @@ def degraded_reason_resolved(
                     return False
                 if not data.decode("utf-8", errors="replace").strip():
                     return False
-                if placeholders.get(rel) == hashlib.sha256(data).hexdigest():
+                if _is_placeholder(rel, data, *records):
                     return False
             saw_missing = True
             continue
@@ -3555,7 +3590,7 @@ class StudioRunner:
         if name == "__init__.py":
             return ""
         if name.startswith("test") and name.endswith(".py"):
-            return "def test_smoke():\n    assert True\n"
+            return _SMOKE_TEST_STUB
         if name == "requirements.txt":
             return ""
         if name == "README.md":
@@ -3582,6 +3617,37 @@ class StudioRunner:
             pass
         return out
 
+    @staticmethod
+    def _runner_scaffold(plan: BuildPlan, brief: str) -> dict[str, str]:
+        """The offline scaffold ``_fill_missing`` back-fills missing files from.
+
+        Best-effort: any failure yields ``{}`` (nothing to fill from)."""
+        try:
+            from skyn3t.agents._common import detect_stack, slugify
+            from skyn3t.agents._scaffold import scaffold_for
+
+            # planner stack vocabulary ('cli'/'python'/'react') -> scaffold key
+            # ('python_cli'/'react_vite'/…) so scaffold_for stops defaulting to
+            # the React builder for everything it doesn't recognize.
+            scaffold_stack = detect_stack(explicit=plan.stack) or plan.stack
+            return scaffold_for(scaffold_stack, slugify(plan.slug or brief, "app"), brief) or {}
+        except Exception:  # noqa: BLE001
+            return {}
+
+    @classmethod
+    def _runner_scaffold_sha256(cls, plan: BuildPlan, brief: str) -> dict[str, str]:
+        """``{rel_path: sha256}`` of what ``_fill_missing`` would write from the
+        scaffold, so degraded_reason_resolved can tell its back-fill from a repair.
+        Best-effort: any failure yields ``{}``."""
+        try:
+            return {
+                rel: hashlib.sha256(content.encode("utf-8")).hexdigest()
+                for rel, content in cls._runner_scaffold(plan, brief).items()
+                if isinstance(content, str)
+            }
+        except Exception:  # noqa: BLE001
+            return {}
+
     def _fill_missing(self, project_dir: str, plan: BuildPlan, brief: str, missing: list[str]) -> int:
         """Deterministically create missing checklist files.
 
@@ -3593,18 +3659,7 @@ class StudioRunner:
             return 0
         from pathlib import Path
 
-        scaffold: dict[str, str] = {}
-        try:
-            from skyn3t.agents._common import detect_stack, slugify
-            from skyn3t.agents._scaffold import scaffold_for
-
-            # planner stack vocabulary ('cli'/'python'/'react') -> scaffold key
-            # ('python_cli'/'react_vite'/…) so scaffold_for stops defaulting to
-            # the React builder for everything it doesn't recognize.
-            scaffold_stack = detect_stack(explicit=plan.stack) or plan.stack
-            scaffold = scaffold_for(scaffold_stack, slugify(plan.slug or brief, "app"), brief) or {}
-        except Exception:  # noqa: BLE001
-            scaffold = {}
+        scaffold = self._runner_scaffold(plan, brief)
         root = Path(project_dir)
 
         # If a runnable root is among the gaps, synthesize one wired to the
@@ -7354,12 +7409,14 @@ class StudioRunner:
             # files codegen never wrote and the fix-loop has since written them
             # (proof passed), the flag is stale — keep it as evidence, don't block.
             # ``scaffold_filled`` (best-of-N keeps the winner's output) marks
-            # missing paths codegen back-filled with the offline scaffold.
+            # missing paths codegen back-filled with the offline scaffold; the
+            # fix-loop's own scaffold back-fill (_fill_missing) is no repair either.
             _scaffold_filled = (prior.get("code") or {}).get("scaffold_filled")
             if code_degraded and proof.passed and degraded_reason_resolved(
                     str((prior.get("code") or {}).get("degraded_reason", "")), project_dir,
                     scaffold_sha256=(
-                        _scaffold_filled if isinstance(_scaffold_filled, Mapping) else None)):
+                        _scaffold_filled if isinstance(_scaffold_filled, Mapping) else None),
+                    runner_scaffold_sha256=self._runner_scaffold_sha256(plan, manifest.brief)):
                 code_degraded = False
                 manifest.extra["degraded_resolved"] = str(
                     (prior.get("code") or {}).get("degraded_reason", ""))[:500]

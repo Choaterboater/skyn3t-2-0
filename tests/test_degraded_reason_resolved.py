@@ -11,10 +11,15 @@ from pathlib import Path
 
 import pytest
 
+from skyn3t.agents._scaffold import scaffold_for
 from skyn3t.agents.code_agent import CodeAgent
+from skyn3t.config.settings import Settings
 from skyn3t.core.agent import TaskRequest
 from skyn3t.core.events import EventBus
-from skyn3t.studio.runner import degraded_reason_resolved
+from skyn3t.core.orchestrator import Orchestrator
+from skyn3t.studio.planner import BuildPlan
+from skyn3t.studio.proof_run import scaffold_missing_imports
+from skyn3t.studio.runner import StudioRunner, degraded_reason_resolved
 
 _REASON = ("frontend: agentic slice 'frontend' incomplete after 1 retry: provider did "
            "not confirm completion: agentic CLI ended without a successful result; "
@@ -280,3 +285,131 @@ async def test_under_delivery_is_not_hidden_by_missing_planned(tmp_path):
     (tmp_path / "src" / "extra.js").write_text("export const b = 2\n")
     assert degraded_reason_resolved(
         reason, tmp_path, scaffold_sha256=out["scaffold_filled"]) is False
+
+
+# The RUNNER also writes stand-ins into missing paths before the gate is checked:
+# the pre-proof deterministic repairs stub missing import targets (an
+# "Auto-scaffolded by SkyN3t" module or the stub stylesheet) and the fix-loop's
+# _fill_missing copies its own scaffold or a _stub_for placeholder. Each lets the
+# proof pass, none is delivery — for slice ("owned") and "planned" reasons alike.
+def _planned(*paths: str) -> str:
+    return (f"agentic build incomplete after 1 retry: missing {len(paths)} planned "
+            f"file(s): {', '.join(paths)}")
+
+
+def _owned(*paths: str) -> str:
+    return (f"frontend: agentic slice 'frontend' incomplete after 1 retry: missing "
+            f"{len(paths)} owned file(s): {', '.join(paths)}")
+
+
+def _runner() -> StudioRunner:
+    bus = EventBus()
+    return StudioRunner(bus, Orchestrator(bus), settings=Settings(llm_backend="stub"))
+
+
+def test_import_stub_at_a_missing_path_never_resolves(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "App.jsx").write_text(
+        "import Board from './components/Board';\n"
+        "export default function App(){return <Board/>}\n")
+    assert scaffold_missing_imports(tmp_path, stack="react_vite") == [
+        "src/components/Board.jsx"]
+    board = tmp_path / "src" / "components" / "Board.jsx"
+    assert "Auto-scaffolded by SkyN3t" in board.read_text()
+    for reason, record in ((_planned("src/components/Board.jsx"), {}),
+                           (_owned("src/components/Board.jsx"), None)):
+        assert degraded_reason_resolved(reason, tmp_path, scaffold_sha256=record) is False
+    board.write_text("export default function Board(){return <section>board</section>}\n")
+    assert degraded_reason_resolved(
+        _planned("src/components/Board.jsx"), tmp_path, scaffold_sha256={}) is True
+
+
+def test_stub_stylesheet_never_resolves(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.jsx").write_text(
+        "import './index.css'\nimport App from './App.jsx'\n")
+    assert "src/index.css" in scaffold_missing_imports(tmp_path, stack="react_vite")
+    for reason, record in ((_planned("src/index.css"), {}), (_owned("src/index.css"), None)):
+        assert degraded_reason_resolved(reason, tmp_path, scaffold_sha256=record) is False
+    (tmp_path / "src" / "index.css").write_text("body{margin:0}\n")
+    assert degraded_reason_resolved(
+        _planned("src/index.css"), tmp_path, scaffold_sha256={}) is True
+
+
+def test_smoke_test_stub_never_resolves(tmp_path):
+    plan = BuildPlan(slug="tool", brief="a tool", stack="python_cli", stages=[])
+    assert _runner()._fill_missing(str(tmp_path), plan, "a tool", ["tests/test_tool.py"]) == 1
+    test_file = tmp_path / "tests" / "test_tool.py"
+    assert test_file.read_text() == StudioRunner._stub_for("tests/test_tool.py", plan, "a tool")
+    reason = "backend: completion slice 'backend' missed 1 owned file(s): tests/test_tool.py"
+    assert degraded_reason_resolved(reason, tmp_path) is False
+    test_file.write_text("def test_smoke() :\r\n\tassert   True")  # whitespace only differs
+    assert degraded_reason_resolved(reason, tmp_path) is False
+    test_file.write_text("from tool import add\n\ndef test_add():\n    assert add(1, 2) == 3\n")
+    assert degraded_reason_resolved(reason, tmp_path) is True
+
+
+def test_fill_missing_scaffold_at_a_missing_source_path_never_resolves(tmp_path):
+    brief = "a kanban board"
+    plan = BuildPlan(slug="board", brief=brief, stack="react", stages=[])
+    missing = ["src/App.jsx", "src/main.jsx", "index.html"]
+    assert _runner()._fill_missing(str(tmp_path), plan, brief, missing) == 3
+    digests = StudioRunner._runner_scaffold_sha256(plan, brief)
+    assert set(missing) <= set(digests)
+    for rel in missing:
+        assert digests[rel] == _sha(tmp_path / rel)
+        # The runner's back-fill alone (codegen recorded nothing) keeps the gate.
+        for reason, record in ((_planned(rel), {}), (_owned(rel), None)):
+            assert degraded_reason_resolved(
+                reason, tmp_path, scaffold_sha256=record,
+                runner_scaffold_sha256=digests) is False, (rel, reason)
+    for rel in missing:
+        (tmp_path / rel).write_text(f"// repaired {rel}\nexport const real = true\n")
+    assert degraded_reason_resolved(
+        _planned(*missing), tmp_path, scaffold_sha256={},
+        runner_scaffold_sha256=digests) is True
+
+
+def test_fill_missing_scaffold_stylesheet_still_resolves(tmp_path):
+    """bellwork: the fix-loop wrote app/globals.css from the scaffold and the app
+    built. A stylesheet's scaffold copy is a working file, not a placeholder."""
+    brief = "a classroom bellwork app"
+    plan = BuildPlan(slug="bellwork", brief=brief, stack="nextjs", stages=[])
+    assert _runner()._fill_missing(str(tmp_path), plan, brief, ["app/globals.css"]) == 1
+    digests = StudioRunner._runner_scaffold_sha256(plan, brief)
+    assert digests["app/globals.css"] == _sha(tmp_path / "app" / "globals.css")
+    assert degraded_reason_resolved(
+        _REASON, tmp_path, runner_scaffold_sha256=digests) is True
+
+
+def test_boilerplate_scaffold_copies_are_not_placeholders(tmp_path):
+    """Config, manifests and stylesheets whose scaffold copy is already a correct
+    delivery must not pin the gate shut once proof passed (no false no_go); source
+    modules and index.html holding scaffold bytes still do."""
+    scaffold = scaffold_for("react_vite", "app", "an app")
+    boilerplate = ["vite.config.js", ".gitignore", "package.json", "README.md",
+                   "src/styles.css", "src/design-tokens.css"]
+    placeholders = ["src/App.jsx", "src/main.jsx", "index.html"]
+    for rel in boilerplate + placeholders:
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(scaffold[rel])
+    record = {rel: _sha(tmp_path / rel) for rel in boilerplate + placeholders}
+    for kwargs in ({"scaffold_sha256": record},
+                   {"scaffold_sha256": {}, "runner_scaffold_sha256": record}):
+        assert degraded_reason_resolved(_planned(*boilerplate), tmp_path, **kwargs) is True
+        for rel in placeholders:
+            assert degraded_reason_resolved(
+                _planned(*boilerplate, rel), tmp_path, **kwargs) is False, rel
+
+
+def test_real_content_at_a_scaffold_path_resolves(tmp_path):
+    scaffold = scaffold_for("react_vite", "app", "an app")
+    record = {rel: hashlib.sha256(c.encode()).hexdigest() for rel, c in scaffold.items()}
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "App.jsx").write_text(
+        "export default function App(){return <main>kanban</main>}\n")
+    (tmp_path / "src" / "Board.jsx").write_text(
+        "export default function Board(){return <section/>}\n")
+    assert degraded_reason_resolved(
+        _planned("src/App.jsx", "src/Board.jsx"), tmp_path,
+        scaffold_sha256=record, runner_scaffold_sha256=record) is True

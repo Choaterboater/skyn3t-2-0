@@ -1659,13 +1659,16 @@ def extract_error_gaps(
     return gaps
 
 
+# Where proof vendors pytest inside the project when the sandbox image lacks it.
+_PROOF_VENDORED_PYTEST_DIR = ".skyn3t-pytest"
+
 # Generated/installed trees that are NOT the app's own source — scanning them
 # (e.g. the minified `.next/` build output) scraped pseudo-imports like `${r}`
 # into package.json and polluted the import/substance signals.
 _NON_SOURCE_DIRS = frozenset({
     ".git", "__pycache__", ".venv", "node_modules", ".next", "dist", "build",
     ".vite", ".astro", "out", "coverage", ".turbo", ".cache", "vendor", ".svelte-kit",
-    ".skyn3t-pytest",
+    _PROOF_VENDORED_PYTEST_DIR,
     # Swift Package Manager build output / caches — not the app's own source.
     ".build", ".swiftpm",
 })
@@ -5164,8 +5167,8 @@ def _run_generated_tests(
         return (False, False, "")
     if probe.returncode != 0:
         if use_container_names:
-            target = "/work/.skyn3t-pytest"
-            host_target = pdir / ".skyn3t-pytest"
+            target = f"/work/{_PROOF_VENDORED_PYTEST_DIR}"
+            host_target = pdir / _PROOF_VENDORED_PYTEST_DIR
             if not host_target.exists():
                 install = _run_proof_command(
                     cmd_ctx,
@@ -6030,14 +6033,19 @@ def _run_ruff_check(
     if not _ruff_is_configured(pdir):
         return (False, False, "no Ruff configuration")
     use_container_names = _use_container_command_names(cmd_ctx)
+    # Proof's own vendored tooling (pytest installed into ``.skyn3t-pytest``
+    # when the sandbox image lacks it) is not the delivered app's source; linting
+    # it failed lint-clean projects on third-party code. ``--extend-exclude``
+    # keeps the project's own Ruff exclude list intact.
+    ruff_args = ["check", "--no-cache", "--extend-exclude", _PROOF_VENDORED_PYTEST_DIR, "."]
     if use_container_names:
-        command = ["ruff", "check", "--no-cache", "."]
+        command = ["ruff", *ruff_args]
     else:
         try:
             from ruff import find_ruff_bin
         except ImportError:
             return (False, False, "Ruff is unavailable — quality check skipped")
-        command = [str(find_ruff_bin()), "check", "--no-cache", "."]
+        command = [str(find_ruff_bin()), *ruff_args]
     result = _run_proof_command(
         cmd_ctx,
         command,

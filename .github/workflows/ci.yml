@@ -9,6 +9,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Nightly full platform matrix (Windows/macOS/3.11). PRs and main pushes
+    # run the fast sharded Linux leg so feedback stays under ~10 minutes.
+    - cron: "23 7 * * *"
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -19,25 +24,15 @@ permissions:
 
 jobs:
   test:
-    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python-version }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          # Keep both existing Linux versions, then add one current-version
-          # platform leg for Windows and macOS. This catches OS-specific process,
-          # path, browser, and native-toolchain regressions without multiplying
-          # every supported Python version across every hosted runner.
-          - os: ubuntu-latest
-            python-version: "3.11"
-          - os: ubuntu-latest
-            python-version: "3.12"
-          - os: windows-latest
-            python-version: "3.12"
-          - os: macos-latest
-            python-version: "3.12"
+      # PR / main push: one Linux leg split into 4 parallel shards (~5 min wall).
+      # Nightly / manual: the full platform matrix — OS-specific process, path,
+      # browser and native-toolchain (Swift on macOS) regressions surface there.
+      matrix: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '{"include":[{"os":"ubuntu-latest","python-version":"3.11","shard":""},{"os":"ubuntu-latest","python-version":"3.12","shard":""},{"os":"windows-latest","python-version":"3.12","shard":""},{"os":"macos-latest","python-version":"3.12","shard":""}]}' || '{"include":[{"os":"ubuntu-latest","python-version":"3.12","shard":"1/4"},{"os":"ubuntu-latest","python-version":"3.12","shard":"2/4"},{"os":"ubuntu-latest","python-version":"3.12","shard":"3/4"},{"os":"ubuntu-latest","python-version":"3.12","shard":"4/4"}]}') }}
     steps:
       - uses: actions/checkout@v7.0.0
 
@@ -72,16 +67,17 @@ jobs:
           xcodebuild -version
 
       - name: Lint (ruff)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (matrix.shard == '' || matrix.shard == '1/4')
         run: ruff check skyn3t tests
 
       - name: Type-check Python package
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && (matrix.shard == '' || matrix.shard == '1/4')
         run: mypy skyn3t
 
       - name: Tests (pytest, hermetic offline suite)
         env:
           SKYN3T_LLM_BACKEND: stub
+          SKYN3T_TEST_SHARD: ${{ matrix.shard }}
         run: python -m pytest -q
 
   python-compat:

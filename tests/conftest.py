@@ -121,6 +121,28 @@ def _posix_modes_available() -> bool:
         return False
 
 
+def _apply_ci_shard(config, items) -> None:
+    """Keep only this CI shard's files when SKYN3T_TEST_SHARD=i/N is set."""
+    from _sharding import assign_shards, parse_shard
+
+    shard = parse_shard(os.environ.get("SKYN3T_TEST_SHARD", ""))
+    if shard is None:
+        return
+    index, total = shard
+    paths = sorted({str(item.path) for item in items})
+    costs = {}
+    for path in paths:
+        try:
+            costs[path] = max(1, os.path.getsize(path))
+        except OSError:
+            costs[path] = 1
+    keep = set(assign_shards(costs, total)[index])
+    deselected = [item for item in items if str(item.path) not in keep]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for item in items if str(item.path) in keep]
+
+
 def pytest_collection_modifyitems(config, items):
     """Skip on MISSING CAPABILITY, never on a known-bad list.
 
@@ -129,6 +151,7 @@ def pytest_collection_modifyitems(config, items):
     real product bug (proof-artifact reuse being broken on Windows) sat
     undetected inside a "these always fail here" pile.
     """
+    _apply_ci_shard(config, items)
     loopback_ok = _loopback_bind_available()
     capabilities = (
         ("requires_loopback", loopback_ok,

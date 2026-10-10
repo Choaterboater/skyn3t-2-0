@@ -96,3 +96,56 @@ def test_noop_outside_next_app(tmp_path):
     (tmp_path / "src" / "App.jsx").write_text(
         "export default function A(){return <button onClick={()=>{}}/>}\n", encoding="utf-8")
     assert add_use_client_directives(tmp_path) == []
+
+
+# --- bellwork-clone no_go (2026-10-09): junk above the directive ---------------
+# The model wrote a stray `ARIA_PLACEHOLDER_REMOVED` line ABOVE its own
+# "use client". _has_use_client_directive() saw a non-directive first statement,
+# so the repair PREPENDED a second directive, leaving the original one below the
+# junk — `next build` then failed every remaining fix round with 'The "use
+# client" directive must be placed before other expressions'.
+
+_BELLWORK_PAGE = (
+    'ARIA_PLACEHOLDER_REMOVED\n\n'
+    '"use client";\n\n'
+    'import { useState } from "react";\n\n'
+    'export default function P(){const [n,s]=useState(0);return <b>{n}</b>}\n'
+)
+
+
+def test_hoists_buried_directive_instead_of_duplicating(tmp_path):
+    _next(tmp_path)
+    (tmp_path / "app").mkdir()
+    page = tmp_path / "app" / "page.jsx"
+    page.write_text('"use client";\n\n' + _BELLWORK_PAGE, encoding="utf-8")  # post-bug state
+    assert "app/page.jsx" in add_use_client_directives(tmp_path)
+    text = page.read_text()
+    assert text.startswith('"use client";')
+    assert text.count("use client") == 1
+
+
+def test_strips_placeholder_marker_line(tmp_path):
+    from skyn3t.studio.proof_run import strip_placeholder_marker_lines
+    _next(tmp_path)
+    (tmp_path / "app").mkdir()
+    page = tmp_path / "app" / "page.jsx"
+    page.write_text(_BELLWORK_PAGE, encoding="utf-8")
+    assert strip_placeholder_marker_lines(tmp_path) == ["app/page.jsx"]
+    assert "ARIA_PLACEHOLDER_REMOVED" not in page.read_text()
+    add_use_client_directives(tmp_path)
+    text = page.read_text()
+    assert text.startswith('"use client";') and text.count("use client") == 1
+
+
+def test_placeholder_strip_leaves_real_identifiers_alone(tmp_path):
+    from skyn3t.studio.proof_run import strip_placeholder_marker_lines
+    (tmp_path / "lib").mkdir()
+    src = (
+        "export const MAX_ITEMS = 5;\n"
+        "const FLAGS = [\n  FEATURE_REMOVED,\n];\n"
+        "const s = `\nTEMPLATE_PLACEHOLDER\n`;\n"
+        "API_URL;\n"
+    )
+    (tmp_path / "lib" / "a.js").write_text(src, encoding="utf-8")
+    assert strip_placeholder_marker_lines(tmp_path) == []
+    assert (tmp_path / "lib" / "a.js").read_text() == src

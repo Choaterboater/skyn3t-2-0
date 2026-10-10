@@ -89,6 +89,7 @@ REPAIR_ERROR_CLASSES: dict[str, str] = {
     "use_client_added": "interactive Next.js component missing 'use client' directive",
     "source_fences_stripped": "source files wrapped in markdown code fences",
     "bullet_wrappers_stripped": "source file is a rendered markdown bullet, not code",
+    "placeholder_markers_stripped": "bare model placeholder token at a source file head",
     "path_alias_config": "'@/' import alias unresolved without jsconfig paths",
     "vitest_alias_config": "vitest cannot resolve the '@/' import alias",
     "ts_in_js_stripped": "TypeScript-only syntax inside .js files",

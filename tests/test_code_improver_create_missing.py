@@ -304,3 +304,23 @@ async def test_llm_target_discovery_skipped_when_no_repo_map(tmp_path):
     assert not result.success
     assert "repair targets" in result.error
     assert result.output["files"] == []
+
+
+def test_targets_from_gaps_ignores_runtime_banner_names(tmp_path):
+    # bellwork-clone: a node --test failure ends with the banner "Node.js v25.9.0";
+    # the generic path regex took "Node.js" as a missing file and the fix-loop
+    # CREATED a file literally named `Node.js` at the project root.
+    (tmp_path / "package.json").write_text("{}")
+    gap = ("NODE TESTS FAILED — fix these failing tests:\n"
+           "  code: 'MODULE_NOT_FOUND',\n}\n\nNode.js v25.9.0\n✖ tests (91ms)\n"
+           "Built with Next.js and Vue.js, see three.js docs")
+    targets = _make_agent()._targets_from_gaps([gap], tmp_path)
+    for bogus in ("Node.js", "Next.js", "Vue.js", "three.js"):
+        assert bogus not in targets
+
+
+def test_targets_from_gaps_keeps_real_root_js_files(tmp_path):
+    (tmp_path / "server.js").write_text("// x\n")
+    targets = _make_agent()._targets_from_gaps(
+        ["TypeError at server.js:12 and missing utils.js"], tmp_path)
+    assert "server.js" in targets and "utils.js" in targets

@@ -143,34 +143,51 @@ _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # Slice codegen reports "owned" files; monolithic and completion codegen report
 # "planned" files (code_agent.py). Both name paths we can verify on disk.
-_MISSING_OWNED_RE = re.compile(r"(?:missing|missed) (\d+) (?:owned|planned) file\(s\): (.*)$")
+_MISSING_OWNED_RE = re.compile(r"(?:missing|missed) (\d+) (owned|planned) file\(s\): (.*)$")
 _UNCONFIRMED_COMPLETION_RE = re.compile(
     r"(?:provider|agentic build failed or) did not confirm completion(?:: [^;]*)?$"
 )
 
 
-def degraded_reason_resolved(reason: str, project_dir: str | Path) -> bool:
+def degraded_reason_resolved(
+    reason: str,
+    project_dir: str | Path,
+    *,
+    scaffold_sha256: Mapping[str, str] | None = None,
+) -> bool:
     """True when a codegen ``degraded_reason`` named ONLY missing owned/planned files
     (plus an unconfirmed-completion note) and every one of them now exists with content
     in the delivered tree — i.e. the fix-loop finished what codegen was cut off
     from. Anything else (stub/under-delivery, prose, a truncated list) stays
-    degraded: we only clear what we can verify on disk."""
+    degraded: we only clear what we can verify on disk.
+
+    Monolithic/completion codegen fills missing planned paths with the offline
+    scaffold AFTER writing the reason, so those paths exist immediately.
+    ``scaffold_sha256`` is the code stage's ``scaffold_filled`` record: a named
+    path whose bytes still hash to it was never repaired. A "planned" reason
+    with no record available fails closed (slices never fill from the scaffold)."""
     root = Path(project_dir)
+    placeholders = scaffold_sha256 or {}
     saw_missing = False
     for part in (p.strip() for p in str(reason or "").split("; ")):
         if not part:
             continue
         m = _MISSING_OWNED_RE.search(part)
         if m:
-            paths = [x.strip() for x in m.group(2).split(",") if x.strip()]
+            if m.group(2) == "planned" and scaffold_sha256 is None:
+                return False
+            paths = [x.strip() for x in m.group(3).split(",") if x.strip()]
             if not paths or int(m.group(1)) != len(paths):
                 return False
             for rel in paths:
                 f = (root / rel)
                 try:
-                    if not f.is_file() or not f.read_text(encoding="utf-8", errors="replace").strip():
-                        return False
+                    data = f.read_bytes() if f.is_file() else b""
                 except OSError:
+                    return False
+                if not data.decode("utf-8", errors="replace").strip():
+                    return False
+                if placeholders.get(rel) == hashlib.sha256(data).hexdigest():
                     return False
             saw_missing = True
             continue
@@ -7326,8 +7343,13 @@ class StudioRunner:
             # Re-check against the DELIVERED tree: when the only defect was owned
             # files codegen never wrote and the fix-loop has since written them
             # (proof passed), the flag is stale — keep it as evidence, don't block.
+            # ``scaffold_filled`` (best-of-N keeps the winner's output) marks
+            # missing paths codegen back-filled with the offline scaffold.
+            _scaffold_filled = (prior.get("code") or {}).get("scaffold_filled")
             if code_degraded and proof.passed and degraded_reason_resolved(
-                    str((prior.get("code") or {}).get("degraded_reason", "")), project_dir):
+                    str((prior.get("code") or {}).get("degraded_reason", "")), project_dir,
+                    scaffold_sha256=(
+                        _scaffold_filled if isinstance(_scaffold_filled, Mapping) else None)):
                 code_degraded = False
                 manifest.extra["degraded_resolved"] = str(
                     (prior.get("code") or {}).get("degraded_reason", ""))[:500]

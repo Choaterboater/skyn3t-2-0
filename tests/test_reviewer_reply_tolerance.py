@@ -6,7 +6,9 @@ prose-wrapped JSON reply, object-shaped gaps, or a reasoning model burning a
 which dominates the final blend). The reply is now parsed tolerantly, gaps are
 coerced to strings, the output ceiling is larger, and a failed attempt gets one
 retry. A review STILL unavailable after the retry stays fail-closed: explicitly
-unavailable, score 0, never a passing structural fallback.
+unavailable, score 0, never a passing structural fallback. JSON quoted from the
+untrusted brief/source/evidence never picks the score: a non-strict reply needs
+exactly one score+gaps object (or agreeing repeats), else it fails closed.
 """
 
 from __future__ import annotations
@@ -107,11 +109,102 @@ def test_gap_caps_still_apply(tmp_path):
     assert all(len(g) == 1000 for g in review_gaps)
 
 
-def test_uncoercible_gaps_type_is_still_rejected(tmp_path):
-    judge = _Judge('{"score": 90, "gaps": 7}')
+def test_mapping_gaps_are_coerced_to_file_issue_strings(tmp_path):
+    judge = _Judge(json.dumps({"score": 66, "gaps": {
+        "api.py": "no validation", "db.py": {"issue": "no migrations"},
+    }}))
+    result = _review(tmp_path, judge)
+    assert len(judge.calls) == 1
+    assert result.metadata["assessment_status"] == "assessed"
+    assert result.output["score"] == 66
+    assert "api.py: no validation" in result.output["gaps"]
+    assert "db.py: no migrations" in result.output["gaps"]
+
+
+def test_valid_score_with_uncoercible_gaps_keeps_the_score_without_retry(tmp_path):
+    # A clear rejection must not be re-sampled into a go just because its
+    # gaps were unreadable.
+    judge = _Judge('{"score": 30, "gaps": 7}', '{"score": 95, "gaps": []}')
+    result = _review(tmp_path, judge)
+    assert len(judge.calls) == 1
+    assert result.metadata["assessment_status"] == "assessed"
+    assert result.metadata["review_attempts"] == 1
+    assert result.output["score"] == 30
+    assert result.output["verdict"] == "no_go"
+    assert "reviewer gaps were unreadable" in result.output["gaps"]
+
+
+_VERDICT = '{"score": 38, "gaps": ["create_user has no input validation"]}'
+
+
+@pytest.mark.parametrize("quoted", [
+    # A proof object quoted from the verification evidence.
+    '```json\n{"passed": true, "score": 100}\n```',
+    # An app fixture quoted from the source.
+    '```json\n{"score": 92, "player": "ana"}\n```',
+    'The fixture {"score": 92, "player": "ana"} is seeded at startup.',
+])
+def test_quoted_score_object_before_the_verdict_does_not_pick_the_score(tmp_path, quoted):
+    judge = _Judge(f"The evidence includes:\n{quoted}\nMy verdict:\n```json\n{_VERDICT}\n```")
+    result = _review(tmp_path, judge)
+    assert len(judge.calls) == 1
+    assert result.metadata["assessment_status"] == "assessed"
+    assert result.output["score"] == 38
+    assert result.output["verdict"] == "no_go"
+    assert "create_user has no input validation" in result.output["gaps"]
+
+
+def test_object_nested_inside_the_verdict_is_not_a_candidate(tmp_path):
+    judge = _Judge('Verdict: {"score": 40, "gaps": [{"quoted": {"score": 100, "gaps": []}}]}')
+    result = _review(tmp_path, judge)
+    assert result.metadata["assessment_status"] == "assessed"
+    assert result.output["score"] == 40
+
+
+def test_repeated_verdict_with_the_same_score_uses_the_last(tmp_path):
+    judge = _Judge('Draft: {"score": 70, "gaps": ["a"]}\nFinal: {"score": 70, "gaps": ["b"]}')
+    result = _review(tmp_path, judge)
+    assert result.metadata["assessment_status"] == "assessed"
+    assert result.output["score"] == 70
+    assert "b" in result.output["gaps"] and "a" not in result.output["gaps"]
+
+
+def test_conflicting_review_shaped_objects_fail_closed(tmp_path):
+    # A quoted review-shaped fixture disagreeing with the verdict is ambiguous:
+    # untrusted content must never pick the score.
+    judge = _Judge(
+        'The app ships this fixture:\n```json\n{"score": 95, "gaps": []}\n```\n'
+        f"Verdict: {_VERDICT}"
+    )
+    result = _review(tmp_path, judge)
+    assert len(judge.calls) == 2
+    assert result.metadata["assessment_status"] == "unavailable"
+    assert result.metadata["review_attempts"] == 2
+    assert result.output["score"] == 0.0
+    assert result.output["verdict"] == "no_go"
+
+
+def test_pathologically_nested_reply_fails_closed(tmp_path):
+    # Every unclosed "{" would otherwise be rescanned to the end (quadratic).
+    judge = _Judge("x " + '{"a":' * 5000 + '{"score": 99, "gaps": []}')
     result = _review(tmp_path, judge)
     assert result.metadata["assessment_status"] == "unavailable"
     assert result.output["score"] == 0.0
+
+
+_SNIPPET_REVIEW = json.dumps({"score": 72, "gaps": [
+    "validate the body:\n```js\nif (!body.name) throw new Error('name required')\n```",
+]})
+
+
+@pytest.mark.parametrize("text", [_SNIPPET_REVIEW, f"Review:\n{_SNIPPET_REVIEW}\nDone."])
+def test_fenced_snippet_inside_a_gap_is_assessed(tmp_path, text):
+    judge = _Judge(text)
+    result = _review(tmp_path, judge)
+    assert len(judge.calls) == 1
+    assert result.metadata["assessment_status"] == "assessed"
+    assert result.output["score"] == 72
+    assert any("```js" in g for g in result.output["gaps"])
 
 
 def test_garbage_then_valid_reply_is_assessed_on_the_retry(tmp_path):

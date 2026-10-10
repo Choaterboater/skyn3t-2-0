@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import tomllib
 from typing import Any
 
 import structlog
 
 from skyn3t.agents import _verify_common as vc
-from skyn3t.agents._common import MCP_RELIABILITY_CONTRACT, detect_stack, parse_json
+from skyn3t.agents._common import MCP_RELIABILITY_CONTRACT, detect_stack
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.model_router import Tier
@@ -33,11 +34,15 @@ GO_THRESHOLD = 60.0
 # Reasoning models (OpenRouter) can spend a small output ceiling on hidden
 # reasoning and return an empty/truncated reply before any JSON is emitted.
 _REVIEW_MAX_TOKENS = 4_000
-# A failed provider reply or an unparseable/invalid review gets one retry; a
-# review still unavailable after that stays explicitly unavailable (score 0).
+# A failed provider reply or a reply without one unambiguous valid score gets one
+# retry; a review still unavailable after that stays explicitly unavailable (score 0).
 _REVIEW_ATTEMPTS = 2
 _REVIEW_MAX_GAPS = 12
 _REVIEW_MAX_GAP_CHARS = 1000
+# Fenced blocks in a reply; the language tag (json/js/...) is skipped.
+_FENCE = re.compile(r"```[\w-]*\s*(.*?)```", re.DOTALL)
+_DECODER = json.JSONDecoder()
+_SCAN_BUDGET_PER_CHAR = 32
 
 
 def _content_file_count(root) -> int:
@@ -172,6 +177,9 @@ def _coerce_gaps(raw: Any) -> list[str]:
         return []
     if isinstance(raw, str):
         raw = [raw]
+    elif isinstance(raw, dict):
+        # A file -> issue mapping: {"api.py": "no validation"} -> "api.py: no validation".
+        raw = [": ".join(p for p in (str(k).strip(), _gap_text(v)) if p) for k, v in raw.items()]
     if not isinstance(raw, list):
         raise ValueError("invalid review gaps")
     gaps: list[str] = []
@@ -184,16 +192,76 @@ def _coerce_gaps(raw: Any) -> list[str]:
     return gaps
 
 
-def _parse_review(text: str) -> dict[str, Any]:
-    """Validate one live review reply (fences/prose tolerated); raises on
-    anything that is not a usable review."""
-    data = parse_json(text)
-    if not isinstance(data, dict) or isinstance(data.get("score"), bool):
-        raise ValueError("invalid review object")
-    val = float(data["score"])
+def _review_score(raw: Any) -> float:
+    """A finite, non-bool 0-100 review score; raises otherwise."""
+    if isinstance(raw, bool):
+        raise ValueError("invalid review score")
+    val = float(raw)
     if not math.isfinite(val) or not 0 <= val <= 100:
         raise ValueError("invalid review score")
-    return {"score": val, "gaps": _coerce_gaps(data.get("gaps", []))}
+    return val
+
+
+def _reply_objects(text: str) -> list[dict[str, Any]]:
+    """Every fenced block's JSON object and every top-level ``{...}`` object
+    in the reply, in reply order."""
+    found: list[tuple[int, dict[str, Any]]] = []
+    for block in _FENCE.finditer(text):
+        try:
+            data = json.loads(block.group(1))
+        except (ValueError, RecursionError):
+            continue
+        if isinstance(data, dict):
+            found.append((block.start(1), data))
+    # Failed decodes may rescan the tail; bound that so a pathologically nested
+    # reply costs linear time and is treated as unparseable.
+    budget = _SCAN_BUDGET_PER_CHAR * len(text)
+    pos = text.find("{")
+    while pos != -1:
+        try:
+            data, end = _DECODER.raw_decode(text, pos)
+        except (ValueError, RecursionError) as exc:
+            budget -= getattr(exc, "pos", len(text)) - pos
+            if budget < 0:
+                raise ValueError("review reply too complex to scan") from None
+            pos = text.find("{", pos + 1)
+            continue
+        found.append((pos, data))  # nested objects are skipped with their parent
+        pos = text.find("{", end)
+    found.sort(key=lambda item: item[0])
+    return [data for _, data in found]
+
+
+def _review_object(text: str) -> dict[str, Any]:
+    """The reply's review object. A strict-JSON reply is used as is; otherwise
+    exactly one ``score`` + ``gaps`` object (or repeats agreeing on the score)
+    must appear, so JSON quoted from the untrusted brief, source or evidence
+    can never pick the score."""
+    text = text or ""
+    try:
+        data = json.loads(text.strip())
+    except (ValueError, RecursionError):
+        data = None
+    if isinstance(data, dict):
+        return data
+    candidates = [c for c in _reply_objects(text) if "score" in c and "gaps" in c]
+    if not candidates or len({_review_score(c["score"]) for c in candidates}) != 1:
+        raise ValueError("no unambiguous review object")
+    return candidates[-1]
+
+
+def _parse_review(text: str) -> dict[str, Any]:
+    """Validate one live review reply (fences/prose tolerated). Raises only
+    when no valid score can be determined; unreadable gaps keep the score,
+    since re-sampling could flip a clear verdict."""
+    data = _review_object(text)
+    score = _review_score(data["score"])
+    try:
+        gaps = _coerce_gaps(data.get("gaps", []))
+    except ValueError:
+        log.warning("review.unreadable_gaps", gaps_type=type(data.get("gaps")).__name__)
+        gaps = ["reviewer gaps were unreadable"]
+    return {"score": score, "gaps": gaps}
 
 
 class ReviewerAgent(BaseAgent):

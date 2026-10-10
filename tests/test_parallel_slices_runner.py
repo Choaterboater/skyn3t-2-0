@@ -416,3 +416,84 @@ def test_local_cli_slices_are_only_pinned_by_explicit_mapping(tmp_path):
         slice_tier_models={"ui": "claude-explicit-ui"},
     )
     assert mapped._slice_model("ui", local_cli) == "claude-explicit-ui"
+
+
+# ---- tests slice runs AFTER the code it tests (bellwork-clone contract drift) ----
+# Root cause: the `tests` slice ran concurrently with, and blind to, the backend
+# slice, so it guessed the API (appendRequest vs appendDemoRequest, inverted
+# rate-limit flag, select labels vs values) and the fix loop never converged.
+
+
+def _source_for(rel: str) -> str:
+    if rel == "api/main.py":
+        return "def append_demo_request(data):\n    return {'ok': True}\n"
+    return f"// {rel}\n"
+
+
+def test_tests_slice_runs_after_sibling_slices_against_their_real_source(tmp_path):
+    r = _runner(tmp_path, parallel_code_slices=True)
+    main_wt = create_worktree(str(r.settings.projects_dir), "demo")
+    plan = _plan()
+    prior = {"architect": {"plan": {"files": _ARCH_FILES}}}
+    slices = r._maybe_slices(plan, prior)
+    assert "tests" in slices
+    finished: list[str] = []
+    tests_scope: dict = {}
+
+    async def fake_submit(spec, payload, cid):
+        sc = payload["slice_scope"]
+        wt = Path(payload["worktree_dir"])
+        if sc["name"] == "tests":
+            # Every sibling slice already finished before the tests slice started.
+            assert set(finished) == set(slices) - {"tests"}
+            # The real sibling code is on disk in the tests worktree...
+            assert (wt / "api/main.py").read_text(encoding="utf-8") == _source_for("api/main.py")
+            tests_scope.update(sc)
+        await asyncio.sleep(0)
+        for rel in sc["files"]:
+            p = wt / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(_source_for(rel), encoding="utf-8")
+        finished.append(sc["name"])
+        return TaskResult(task_id="x", success=True, output={"slice": sc["name"]})
+
+    r._submit_stage = fake_submit  # type: ignore[assignment]
+    result = asyncio.run(r._run_code_parallel_slices(
+        plan, _CODE_SPEC, str(r.settings.projects_dir / "demo"),
+        prior, [], {}, "cid", main_wt, [main_wt], slices))
+
+    assert result.success
+    assert finished[-1] == "tests"
+    # ...and its actual source is in the tests slice's prompt context, so the
+    # tests are written against real exports instead of guessed ones.
+    assert "def append_demo_request(data):" in tests_scope["manifest"]
+    assert "api/main.py" in tests_scope["upstream_files"]
+    assert "package.json" in tests_scope["upstream_files"]
+    assert "tests/test_users.py" not in tests_scope["upstream_files"]
+    # Final merge is unchanged: sibling code intact, tests delivered.
+    merged = Path(main_wt.dir)
+    assert (merged / "api/main.py").read_text(encoding="utf-8") == _source_for("api/main.py")
+    assert (merged / "tests/test_users.py").is_file()
+
+
+def test_non_test_slices_keep_the_blind_manifest_only(tmp_path):
+    r = _runner(tmp_path, parallel_code_slices=True)
+    main_wt = create_worktree(str(r.settings.projects_dir), "demo")
+    plan = _plan()
+    prior = {"architect": {"plan": {"files": _ARCH_FILES}}}
+    slices = r._maybe_slices(plan, prior)
+    scopes: dict = {}
+
+    async def fake_submit(spec, payload, cid):
+        sc = payload["slice_scope"]
+        scopes[sc["name"]] = dict(sc)
+        return TaskResult(task_id="x", success=True, output={"slice": sc["name"]})
+
+    r._submit_stage = fake_submit  # type: ignore[assignment]
+    asyncio.run(r._run_code_parallel_slices(
+        plan, _CODE_SPEC, str(r.settings.projects_dir / "demo"),
+        prior, [], {}, "cid", main_wt, [main_wt], slices))
+
+    manifests = {scopes[n]["manifest"] for n in slices if n != "tests"}
+    assert len(manifests) == 1
+    assert all("upstream_files" not in scopes[n] for n in slices if n != "tests")

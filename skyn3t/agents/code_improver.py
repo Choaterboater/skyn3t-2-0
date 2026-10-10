@@ -158,6 +158,14 @@ def _bounded_agentic_repo_map(value: Any) -> str:
 # "<importer> -> <spec>" — the exact format extract_error_gaps() in proof_run.py
 # emits for an unresolved local import (proof_run.py:739).
 _UNRESOLVED_IMPORT_RE = re.compile(r"UNRESOLVED IMPORT.*?:\s*(\S+)\s*->\s*(\S+)")
+# Product names that LOOK like a root-level .js file in error text — Node's crash
+# banner ends "Node.js v25.9.0", and stack/test output names Next.js etc. Taken
+# as a missing file, the fix-loop CREATED a file literally named `Node.js`.
+_TECH_NAME_PSEUDO_FILES = frozenset({
+    "node.js", "next.js", "nuxt.js", "vue.js", "react.js", "three.js", "express.js",
+    "d3.js", "chart.js", "socket.io.js", "alpine.js", "p5.js", "pixi.js", "ember.js",
+    "backbone.js", "angular.js", "deno.js", "bun.js", "babylon.js", "phaser.js",
+})
 
 # Structured sentence emitted by proof_run.extract_error_gaps().  The resolved
 # module path is authoritative; do not guess it from the importer's relative
@@ -1090,6 +1098,9 @@ class CodeImproverAgent(BaseAgent):
                 r"[\w./-]+\.(?:jsx|tsx|mjs|cjs|js|ts|json|py|css|html|toml|yaml|yml|ini|cfg|txt)\b",
                 text,
             ):
+                if (m.casefold() in _TECH_NAME_PSEUDO_FILES
+                        and not (worktree / m).exists()):
+                    continue
                 candidates.append(m)
             # A dependency/install/resolution failure must route to package.json
             # even when the gap text never names the file — otherwise the loop

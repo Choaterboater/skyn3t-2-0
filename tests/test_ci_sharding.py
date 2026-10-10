@@ -3,7 +3,7 @@ wall-clock under 10 minutes. Every test file must land in exactly one shard, the
 split must be deterministic, and shards must be roughly balanced."""
 from __future__ import annotations
 
-from _sharding import assign_shards, parse_shard
+from conftest import assign_shards, parse_shard
 
 
 def test_every_file_in_exactly_one_shard_and_deterministic():

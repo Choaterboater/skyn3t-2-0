@@ -105,8 +105,10 @@ def test_generated_entrypoint_check_accepts_js_stack_layouts(tmp_path, stack):
 
 
 def test_generated_entrypoint_check_still_fails_without_an_entrypoint(tmp_path):
-    # Config markers and convention basenames outside their route directories
-    # are not runnable entries.
+    # Config markers, and the path-restricted .js/.ts route-convention variants
+    # and Expo _layout.* outside their route directories, are not runnable
+    # entries. (page/layout/root/_index .jsx/.tsx are accepted anywhere — they
+    # come from the shared vc.ENTRYPOINT_NAMES; see the next test.)
     _write_tree(tmp_path, {
         "package.json": "{}",
         "next.config.mjs": "export default {}\n",

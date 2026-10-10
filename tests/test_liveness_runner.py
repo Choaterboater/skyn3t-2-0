@@ -6,6 +6,8 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from skyn3t.config.settings import Settings
 from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
@@ -152,7 +154,8 @@ def test_liveness_lab_visual_failure_caps_score_instead_of_halving(tmp_path, mon
     zeroes visual_health on a one-route SPA. Under lab that must not halve a
     decent build (91 -> 45.5 while still 'go'): it caps at
     degraded_proof_score_cap like every other non-blocking finding, and the
-    verdict is untouched."""
+    verdict is untouched. _shape_final_score still caps the final 'go' at
+    70 + 25*visual_health afterwards; only the halving is gone."""
     async def fake(*a, **k):
         return _visually_broken()
     monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
@@ -161,8 +164,11 @@ def test_liveness_lab_visual_failure_caps_score_instead_of_halving(tmp_path, mon
     score, verdict = asyncio.run(
         r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="nextjs"),
                         SimpleNamespace(passed=True), 91.0, "go"))
-    assert score == 74.0
+    assert score == 74.0                       # not 91 * 0.5 = 45.5
     assert man.score == 74.0
+    # End-to-end the shaping pass lands it at 70 (visual_health 0.0), not 74.
+    assert StudioRunner._shape_final_score(
+        man, SimpleNamespace(passed=True), score, verdict) == 70.0
     assert verdict == "go"
     assert man.extra["liveness_visual_score_policy"] == "finding_cap"
     # Consumers keep reading the same health keys in every posture.
@@ -229,6 +235,66 @@ def test_liveness_lab_dead_route_and_visual_failure_dampens_then_caps(tmp_path, 
     assert score == 74.0
     assert verdict == "go"
     assert man.extra["liveness_effective_health"] == 0.0
+
+
+def _ten_pages_one_visually_broken():
+    pages = [RouteResult(f"/p{i}", "GET", 200, True, "page") for i in range(10)]
+    pages[3].visual = {"matches": False, "issues": ["overflow"]}
+    return LivenessOutcome(passed=False, report=LivenessReport(
+        results=pages, total=10, ok=10, dead=0, dead_routes=[], health=1.0,
+        visual_total=10, visual_failed=1, visual_failed_routes=["/p3"],
+        visual_health=0.9))
+
+
+@pytest.mark.parametrize("stack", ["fastapi", "express", "node_express", "rag", "workflow"])
+@pytest.mark.parametrize("outcome, expected", [
+    (_ten_pages_one_visually_broken, 87.4),    # 92 * (0.5 + 0.5*min(1.0, 0.9))
+    (_visually_broken, 46.0),                  # 92 * (0.5 + 0.5*min(1.0, 0.0))
+])
+def test_liveness_non_ui_stack_visual_failure_keeps_multiplier_in_every_posture(
+        tmp_path, monkeypatch, stack, outcome, expected):
+    """Visual liveness runs on 'page' routes for every web stack, but only UI
+    stacks have a visual gate that records a finding. Elsewhere the lab finding
+    cap would penalise with no finding (and score lab BELOW release), so these
+    stacks keep the original min(route, visual) multiplier in every posture."""
+    async def fake(*a, **k):
+        return outcome()
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    results = {}
+    for posture in ("lab", "release"):
+        r = _runner(tmp_path, build_posture=posture)
+        man = BuildManifest(slug="x", brief="b", stack=stack)
+        results[posture] = asyncio.run(
+            r._run_liveness(man, str(tmp_path), SimpleNamespace(stack=stack),
+                            SimpleNamespace(passed=True), 92.0, "go"))
+        assert man.score == expected
+        assert man.extra["liveness_visual_score_policy"] == "health_multiplier"
+        assert not [f for f in man.extra.get("gate_findings", [])
+                    if f.get("gate") == "liveness"]
+    assert results["lab"] == results["release"] == (expected, "go")
+
+
+def test_liveness_lab_ui_partial_visual_failure_never_below_old_multiplier(
+        tmp_path, monkeypatch):
+    """One failing page out of ten (visual_health 0.9) used to cost 5%; the lab
+    finding cap must not turn that into a flat 74. Lab is never harsher than the
+    old multiplier: max(finding cap, multiplier) — and the finding is still
+    recorded without blocking."""
+    async def fake(*a, **k):
+        return _ten_pages_one_visually_broken()
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    r = _runner(tmp_path, build_posture="lab")
+    man = BuildManifest(slug="x", brief="b", stack="nextjs")
+    score, verdict = asyncio.run(
+        r._run_liveness(man, str(tmp_path), SimpleNamespace(stack="nextjs"),
+                        SimpleNamespace(passed=True), 92.0, "go"))
+    assert score == 87.4                       # 92 * (0.5 + 0.5*0.9), not 74
+    assert man.score == 87.4
+    assert verdict == "go"
+    assert man.extra["liveness_visual_score_policy"] == "health_multiplier"
+    finding = man.extra["gate_findings"][-1]
+    assert finding["gate"] == "liveness"
+    assert finding["blocked"] is False
 
 
 def test_liveness_lab_visual_failure_with_failed_proof_leaves_score(tmp_path, monkeypatch):

@@ -226,6 +226,18 @@ def degraded_baseline_sha256(reason: str, project_dir: str | Path) -> dict[str, 
     return {rel: _content_sha256(root / rel) for rel in _named_missing_paths(reason)}
 
 
+def degraded_planned_sha256(code_out: object, root: str | Path) -> dict[str, str | None]:
+    """``{rel: sha256 | None}`` of the planned paths a degraded code stage's
+    reason names; ``{}`` when the stage is not degraded."""
+    if not isinstance(code_out, dict) or not code_out.get("degraded"):
+        return {}
+    base = Path(root)
+    return {
+        rel: _content_sha256(base / rel)
+        for rel in _named_missing_paths(code_out.get("degraded_reason", ""), "planned")
+    }
+
+
 def degraded_reason_resolved(
     reason: str,
     project_dir: str | Path,
@@ -244,8 +256,9 @@ def degraded_reason_resolved(
     at each path: bytes still matching it were never repaired either, unless the
     path is pure config/manifest (_PURE_CONFIG_GLOBS). Monolithic/completion
     codegen back-fills "planned" paths from the scaffold AFTER writing the
-    reason, so a planned path without a baseline entry fails closed; slice
-    codegen leaves "owned" paths missing, so they need none."""
+    reason, so a planned path without a baseline entry fails closed. Slice
+    codegen leaves "owned" paths missing, so they keep "now exists non-empty =>
+    resolved" (plus the stand-in markers) and ignore the baseline."""
     root = Path(project_dir)
     baseline: Mapping[str, str | None] = baseline_sha256 or {}
     saw_missing = False
@@ -271,8 +284,8 @@ def degraded_reason_resolved(
             if _is_placeholder(rel, data):
                 return False
             base = baseline.get(rel)
-            if (base is not None and hashlib.sha256(data).hexdigest() == base
-                    and not _is_pure_config(rel)):
+            if (kind == "planned" and base is not None
+                    and hashlib.sha256(data).hexdigest() == base and not _is_pure_config(rel)):
                 return False
         saw_missing = True
     return saw_missing
@@ -3681,6 +3694,19 @@ class StudioRunner:
         except Exception:  # noqa: BLE001
             return {}
 
+    @staticmethod
+    def _degraded_unchanged(manifest, project_dir: str, code_out: object) -> list[str]:
+        """Planned paths of the code stage's degraded_reason still matching their
+        code_degraded baseline: a deterministic step about to run must move it."""
+        baseline = manifest.extra.get("degraded_baseline_sha256")
+        if not isinstance(baseline, dict) or not isinstance(code_out, dict):
+            return []
+        root = Path(project_dir)
+        return [
+            rel for rel in _named_missing_paths(code_out.get("degraded_reason", ""), "planned")
+            if baseline.get(rel) is not None and _content_sha256(root / rel) == baseline[rel]
+        ]
+
     def _fill_missing(self, project_dir: str, plan: BuildPlan, brief: str, missing: list[str]) -> int:
         """Deterministically create missing checklist files.
 
@@ -6664,6 +6690,9 @@ class StudioRunner:
         )
 
         prior: dict[str, Any] = {}
+        # Planned paths the code stage's debug improver rewrote: repair work,
+        # never part of the code_degraded baseline (degraded_reason_resolved).
+        degraded_debug_repaired: set[str] = set()
         # The main build worktree for non-code stages and final delivery.
         main_wt = create_worktree(str(projects_dir), slug)
         worktrees: list[Worktree] = [main_wt]
@@ -7055,6 +7084,10 @@ class StudioRunner:
                 await self._save_build(manifest)
 
                 # Per-stage autonomous debug + live preview snapshot (Phase A).
+                debug_watch = (
+                    degraded_planned_sha256(prior.get(spec.name), main_wt.dir)
+                    if spec.agent_type == "code" else {}
+                )
                 await self._debug_and_snapshot(
                     build_id,
                     spec,
@@ -7068,6 +7101,10 @@ class StudioRunner:
                     brief=brief,
                     slug=slug,
                 )
+                for rel, before in debug_watch.items():
+                    after = _content_sha256(Path(main_wt.dir) / rel)
+                    if after is not None and after != before:
+                        degraded_debug_repaired.add(rel)
 
                 # Approval gate (after stage completes).
                 if spec.gated:
@@ -7242,8 +7279,11 @@ class StudioRunner:
             # format, asset wiring, prerender). Popped at the verdict gate.
             code_out = prior.get("code") or {}
             if code_out.get("degraded"):
-                manifest.extra["degraded_baseline_sha256"] = degraded_baseline_sha256(
+                degraded_baseline = degraded_baseline_sha256(
                     str(code_out.get("degraded_reason", "")), project_dir)
+                for rel in degraded_debug_repaired & degraded_baseline.keys():
+                    degraded_baseline[rel] = None
+                manifest.extra["degraded_baseline_sha256"] = degraded_baseline
 
             # Objective proof against the delivered project (boots it AND runs
             # its own test suite when enabled). Offloaded so the synchronous
@@ -7290,7 +7330,11 @@ class StudioRunner:
             # _final_consistency_check (near the very end of the build) is
             # what actually runs last and can only ever DOWNGRADE the verdict.
             if not proof.passed and (getattr(proof, "detail", None) or {}).get("unresolved_imports"):
+                held = self._degraded_unchanged(manifest, project_dir, code_out)
                 recovery_repairs = self._deterministic_repairs(project_dir, plan)
+                for rel in held:
+                    manifest.extra["degraded_baseline_sha256"][rel] = _content_sha256(
+                        Path(project_dir) / rel)
                 if any(recovery_repairs.get(k) for k in
                        ("npm_deps_added", "npm_deps_sanitized", "next_config_peers",
                         "imports_scaffolded", "use_client_added",

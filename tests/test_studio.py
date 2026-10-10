@@ -1168,6 +1168,57 @@ def test_degraded_baseline_is_taken_before_the_first_proof(tmp_path, monkeypatch
             assert outcome.verdict == "no_go"
 
 
+def test_debug_improver_repair_of_a_planned_path_clears_the_degraded_gate(
+        tmp_path, monkeypatch):
+    """The code stage's debug pass (debug_stage -> code_improver) is repair work.
+    A planned path it rewrote never joins the deterministic baseline, so when the
+    first delivery proof then passes (no fix loop), the gate clears; the same
+    build without the debug rewrite keeps it."""
+    from types import SimpleNamespace
+
+    from skyn3t.studio import runner as runner_mod
+
+    state = {"rewrite": False}
+
+    async def fake_debug_stage(*, spec, worktree_dir, **kwargs):
+        if state["rewrite"] and spec.agent_type == "code":
+            (Path(worktree_dir) / "src" / "helpers.py").write_text(
+                "def helper(x):\n    return x * 2\n")
+        return SimpleNamespace(passed=True, degraded=False, attempts=1)
+
+    monkeypatch.setattr(runner_mod, "debug_stage", fake_debug_stage)
+
+    async def run(rewrite: bool):
+        state["rewrite"] = rewrite
+        settings = Settings(
+            projects_dir=tmp_path / f"Projects{int(rewrite)}",
+            data_dir=tmp_path / f"data{int(rewrite)}",
+            logs_dir=tmp_path / f"logs{int(rewrite)}", critic_enabled=False,
+            approval_gates=False, best_of_n=1)
+        bus = EventBus()
+        orch = Orchestrator(bus)
+        code = _ScaffoldBackfillCodeAgent("coder", "code", "stub", bus)
+        code.add_capability(AgentCapability("codegen"))
+        rev = _StubReviewer("rev", "reviewer", "stub", bus)
+        rev.add_capability(AgentCapability("review"))
+        await orch.register(code)
+        await orch.register(rev)
+        runner = StudioRunner(bus, orch, settings=settings, memory=None)
+        return await runner.start("Build a python tool", slug="debug-repair")
+
+    for rewrite in (False, True):
+        extra = asyncio.run(run(rewrite)).manifest["extra"]
+        assert extra["proof"]["passed"] is True
+        assert "fix_attempt_1" not in extra
+        assert "degraded_baseline_sha256" not in extra
+        if rewrite:
+            assert "degraded_resolved" in extra
+            assert "degraded_gate" not in extra
+        else:
+            assert "degraded_gate" in extra
+            assert "degraded_resolved" not in extra
+
+
 class _ImportStubCodeAgent(_DegradedCodeAgent):
     """The same substantial delivery, degraded ONLY over one "missing" planned
     module that another delivered file imports. The runner's pre-proof

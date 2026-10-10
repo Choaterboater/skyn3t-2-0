@@ -19,7 +19,7 @@ from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
 from skyn3t.studio.manifest import BuildManifest
 from skyn3t.studio.planner import BuildPlan
-from skyn3t.studio.proof_run import scaffold_missing_imports
+from skyn3t.studio.proof_run import _STYLESHEET_STUB_CONTENT, scaffold_missing_imports
 from skyn3t.studio.runner import (
     StudioRunner,
     degraded_baseline_sha256,
@@ -209,14 +209,62 @@ def test_planned_reason_without_baseline_fails_closed(tmp_path):
     assert degraded_reason_resolved(_REASON, tmp_path) is True
 
 
-def test_owned_path_unchanged_since_a_present_baseline_never_resolves(tmp_path):
-    """Slices keep missing paths missing, so an owned baseline is normally None;
-    when it does hold bytes, an untouched path was never repaired either."""
-    css = _write(tmp_path, "app/globals.css", ":root{--bg:#fff}\n")
+def test_owned_path_ignores_the_baseline(tmp_path):
+    """Slices never back-fill owned paths, so bytes present at the baseline were
+    written by a repair (e.g. the code stage's debug improver): an owned path
+    keeps "now exists non-empty => resolved", as before the baseline existed."""
+    _write(tmp_path, "app/globals.css", ":root{--bg:#fff}\n")
+    baseline = degraded_baseline_sha256(_REASON, tmp_path)
+    assert baseline["app/globals.css"] is not None
+    assert degraded_reason_resolved(_REASON, tmp_path, baseline_sha256=baseline) is True
+
+
+def test_owned_path_stand_in_still_never_resolves(tmp_path):
+    _write(tmp_path, "app/globals.css", _STYLESHEET_STUB_CONTENT)
     baseline = degraded_baseline_sha256(_REASON, tmp_path)
     assert degraded_reason_resolved(_REASON, tmp_path, baseline_sha256=baseline) is False
-    css.write_text(":root{--bg:#000}\n")
-    assert degraded_reason_resolved(_REASON, tmp_path, baseline_sha256=baseline) is True
+
+
+def test_planned_path_with_a_none_baseline_entry_counts_as_repaired(tmp_path):
+    """The runner sets a planned path's baseline to None when the code stage's
+    debug improver rewrote it: repair work, judged only by the stand-in markers."""
+    reason = "agentic build incomplete after 1 retry: missing 1 planned file(s): src/helpers.py"
+    _write(tmp_path, "src/helpers.py", "def helper(x):\n    return x * 2\n")
+    assert degraded_reason_resolved(
+        reason, tmp_path, baseline_sha256={"src/helpers.py": None}) is True
+    _write(tmp_path, "src/helpers.py", "// Auto-scaffolded by SkyN3t: stub\n")
+    assert degraded_reason_resolved(
+        reason, tmp_path, baseline_sha256={"src/helpers.py": None}) is False
+
+
+def test_degraded_planned_sha256_names_only_planned_paths_of_a_degraded_stage(tmp_path):
+    from skyn3t.studio.runner import degraded_planned_sha256
+
+    reason = ("agentic build incomplete after 1 retry: missing 2 planned file(s): a.py, b.py; "
+              "ui: completion slice 'ui' missed 1 owned file(s): c.css")
+    _write(tmp_path, "a.py", "x = 1\n")
+    out = degraded_planned_sha256({"degraded": True, "degraded_reason": reason}, tmp_path)
+    assert set(out) == {"a.py", "b.py"}
+    assert out["a.py"] is not None and out["b.py"] is None
+    assert degraded_planned_sha256({"degraded": False, "degraded_reason": reason}, tmp_path) == {}
+    assert degraded_planned_sha256(None, tmp_path) == {}
+
+
+def test_degraded_unchanged_lists_planned_paths_still_at_their_baseline(tmp_path):
+    from types import SimpleNamespace
+
+    from skyn3t.studio.runner import StudioRunner
+
+    reason = "agentic build incomplete after 1 retry: missing 2 planned file(s): a.py, b.py"
+    _write(tmp_path, "a.py", "x = 1\n")
+    _write(tmp_path, "b.py", "y = 1\n")
+    manifest = SimpleNamespace(extra={
+        "degraded_baseline_sha256": degraded_baseline_sha256(reason, tmp_path)})
+    _write(tmp_path, "b.py", "y = 2\n")
+    code_out = {"degraded": True, "degraded_reason": reason}
+    assert StudioRunner._degraded_unchanged(manifest, str(tmp_path), code_out) == ["a.py"]
+    assert StudioRunner._degraded_unchanged(
+        SimpleNamespace(extra={}), str(tmp_path), code_out) == []
 
 
 def test_scaffold_stylesheet_and_readme_are_not_exempt(tmp_path):
@@ -229,8 +277,9 @@ def test_scaffold_stylesheet_and_readme_are_not_exempt(tmp_path):
         reason = _planned(rel)
         baseline = degraded_baseline_sha256(reason, tmp_path)
         assert degraded_reason_resolved(reason, tmp_path, baseline_sha256=baseline) is False, rel
+        # Owned (slice) paths are never back-filled, so they ignore the baseline.
         assert degraded_reason_resolved(
-            _owned(rel), tmp_path, baseline_sha256=baseline) is False, rel
+            _owned(rel), tmp_path, baseline_sha256=baseline) is True, rel
 
 
 @pytest.mark.parametrize(("stack", "paths"), [

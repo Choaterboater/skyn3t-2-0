@@ -246,32 +246,66 @@ def _ten_pages_one_visually_broken():
         visual_health=0.9))
 
 
-@pytest.mark.parametrize("stack", ["fastapi", "express", "node_express", "rag", "workflow"])
-@pytest.mark.parametrize("outcome, expected", [
-    (_ten_pages_one_visually_broken, 87.4),    # 92 * (0.5 + 0.5*min(1.0, 0.9))
-    (_visually_broken, 46.0),                  # 92 * (0.5 + 0.5*min(1.0, 0.0))
+_NON_UI_WEB_STACKS = ["fastapi", "express", "node_express", "rag", "workflow"]
+
+
+@pytest.mark.parametrize("stack", _NON_UI_WEB_STACKS)
+@pytest.mark.parametrize("outcome, lab, release, lab_policy", [
+    # 92 * (0.5 + 0.5*min(1.0, 0.9)) = 87.4 beats the 74 cap in both postures.
+    (_ten_pages_one_visually_broken, 87.4, 87.4, "health_multiplier"),
+    # One console.error on a single-page app: lab caps at 74, release halves.
+    (_visually_broken, 74.0, 46.0, "finding_cap"),
 ])
-def test_liveness_non_ui_stack_visual_failure_keeps_multiplier_in_every_posture(
-        tmp_path, monkeypatch, stack, outcome, expected):
-    """Visual liveness runs on 'page' routes for every web stack, but only UI
-    stacks have a visual gate that records a finding. Elsewhere the lab finding
-    cap would penalise with no finding (and score lab BELOW release), so these
-    stacks keep the original min(route, visual) multiplier in every posture."""
+def test_liveness_non_ui_stack_visual_failure_follows_posture_without_finding(
+        tmp_path, monkeypatch, stack, outcome, lab, release, lab_policy):
+    """Visual liveness runs on 'page' routes for every web stack, so the same
+    non-blocking scoring rule applies everywhere: under lab a single
+    console.error on a one-page fastapi app must not halve the score (92 -> 46)
+    while the verdict stays go. Release (and lab with blocking_gates=liveness)
+    keeps the old multiplier exactly. The visual gate finding stays UI-only."""
     async def fake(*a, **k):
         return outcome()
     monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
-    results = {}
+    cases = [
+        ({"build_posture": "lab"}, lab, lab_policy),
+        ({"build_posture": "release"}, release, "health_multiplier"),
+        ({"build_posture": "lab", "blocking_gates": "liveness"},
+         release, "health_multiplier"),
+    ]
+    for over, score_expected, policy in cases:
+        r = _runner(tmp_path, **over)
+        man = BuildManifest(slug="x", brief="b", stack=stack)
+        result = asyncio.run(
+            r._run_liveness(man, str(tmp_path), SimpleNamespace(stack=stack),
+                            SimpleNamespace(passed=True), 92.0, "go"))
+        assert result == (score_expected, "go")
+        assert man.score == score_expected
+        assert man.extra["liveness_visual_score_policy"] == policy
+        assert not [f for f in man.extra.get("gate_findings", [])
+                    if f.get("gate") == "liveness"]
+        assert "liveness_gate" not in man.extra
+
+
+@pytest.mark.parametrize("stack", ["nextjs", "react", "static", *_NON_UI_WEB_STACKS])
+@pytest.mark.parametrize("outcome", [
+    _visually_broken, _ten_pages_one_visually_broken, _half_dead_and_visually_broken,
+])
+@pytest.mark.parametrize("start", [100.0, 92.0, 74.0, 60.0])
+def test_liveness_lab_score_never_below_release(
+        tmp_path, monkeypatch, stack, outcome, start):
+    """Lab is the more lenient posture: whatever the stack, a visual failure
+    must never leave a lab build scored below the same build under release."""
+    async def fake(*a, **k):
+        return outcome()
+    monkeypatch.setattr(runner_mod, "liveness_self_improve", fake)
+    scores = {}
     for posture in ("lab", "release"):
         r = _runner(tmp_path, build_posture=posture)
         man = BuildManifest(slug="x", brief="b", stack=stack)
-        results[posture] = asyncio.run(
+        scores[posture], _verdict = asyncio.run(
             r._run_liveness(man, str(tmp_path), SimpleNamespace(stack=stack),
-                            SimpleNamespace(passed=True), 92.0, "go"))
-        assert man.score == expected
-        assert man.extra["liveness_visual_score_policy"] == "health_multiplier"
-        assert not [f for f in man.extra.get("gate_findings", [])
-                    if f.get("gate") == "liveness"]
-    assert results["lab"] == results["release"] == (expected, "go")
+                            SimpleNamespace(passed=True), start, "go"))
+    assert scores["lab"] >= scores["release"]
 
 
 def test_liveness_lab_ui_partial_visual_failure_never_below_old_multiplier(

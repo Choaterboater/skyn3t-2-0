@@ -2621,19 +2621,19 @@ class StudioRunner:
         # Dampen by route health, but only when proof PASSED — a proof-failed build
         # is already halved by _honest_score, so this would otherwise double-count.
         # Dead HTTP routes dampen in every posture. Visual health joins the
-        # multiplier wherever liveness BLOCKS (release / blocking_gates) and on
-        # stacks with no visual gate below (fastapi/express/rag/...), exactly as
-        # before. Under lab on a UI stack, a visual failure is a recorded
-        # heuristic finding: it takes the _score_after_finding cap like every
-        # other non-blocking finding, but never scores below the old multiplier
-        # (a partial failure on a multi-route app stays at e.g. 87.4, not 74).
+        # multiplier wherever liveness BLOCKS (release / blocking_gates), exactly
+        # as before. Wherever it does not block (lab), a visual failure is a
+        # heuristic — on EVERY stack, since visual liveness probes the page
+        # routes of fastapi/express/rag/... too: it takes the
+        # _score_after_finding cap like every other non-blocking finding, but
+        # never scores below the old multiplier (a partial failure on a
+        # multi-route app stays at e.g. 87.4, not 74), so lab is never harsher
+        # than release. Only the visual gate finding below stays UI-only.
         # _shape_final_score still caps a 'go' at 70 + 25*visual_health later.
         resolved_posture = (
             posture if posture is not None else GatePosture.from_settings(self.settings)
         )
-        visual_finding_cap = (
-            plan.stack in _UI_WEB_STACKS and not resolved_posture.blocks("liveness")
-        )
+        visual_finding_cap = not resolved_posture.blocks("liveness")
         visual_failed_any = bool(visual_total) and (visual_failed > 0 or visual_health < 1.0)
         score_policy = "finding_cap" if visual_finding_cap else "health_multiplier"
         if proof.passed and report.total:

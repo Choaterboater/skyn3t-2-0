@@ -210,6 +210,13 @@ def validate_source(path: str, content: str) -> tuple[bool, str]:
                 return False, f"TOML error: {exc}"
         elif p.endswith((".js", ".jsx", ".ts", ".tsx")):
             ok, err = _balanced(content)
+            # _balanced false-positives on regex literals (/[&<>"']/) and nested
+            # template literals, which rejected every rewrite of an ordinary
+            # vanilla-JS frontend. When Node can parse a plain .js file, trust it.
+            # Either check passing accepts, so this only removes false rejections
+            # (JSX in .js still passes _balanced exactly as before).
+            if not ok and p.endswith(".js") and _node_parses(content):
+                ok, err = True, ""
             if not ok:
                 return ok, err
         elif p.endswith((".html", ".htm")):
@@ -246,6 +253,36 @@ def validate_source(path: str, content: str) -> tuple[bool, str]:
     except Exception:  # noqa: BLE001 - validation must never raise
         return True, ""
     return True, ""
+
+
+def _node_parses(content: str) -> bool:
+    """True when ``node --check`` accepts the source as an ES module or as a
+    CommonJS script. False when Node is missing, times out, or rejects both
+    forms, so callers keep the best-effort verdict. Never raises."""
+    import os
+    import shutil
+    import subprocess
+    import tempfile
+
+    node = shutil.which("node")
+    if node is None:
+        return False
+    for suffix in (".mjs", ".cjs"):
+        fd, tmp = tempfile.mkstemp(suffix=suffix)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(content)
+            res = subprocess.run([node, "--check", tmp], capture_output=True, timeout=15)
+            if res.returncode == 0:
+                return True
+        except (OSError, subprocess.SubprocessError):
+            return False
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return False
 
 
 def _balanced(content: str) -> tuple[bool, str]:

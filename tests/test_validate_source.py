@@ -100,3 +100,38 @@ def test_openai_import_is_never_flagged_as_native():
     # compliant LLM app, so it must always pass the native-provider guard.
     ok, _ = validate_source("svc.py", "import openai\n\n\ndef ask(q):\n    return q\n")
     assert ok
+
+
+# _balanced() false-positives on regex literals and nested template literals;
+# when Node is available a parseable .js file must not be rejected. Real-world
+# case: StoreInv's public/app.js was refused on every improve as "Unclosed '['".
+import shutil
+
+import pytest
+
+_NEEDS_NODE = pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+
+_VANILLA_FRONTEND_JS = (
+    "const esc = (s) => String(s ?? '').replace(/[&<>\"']/g, (c) => ({ '&': '&amp;' }[c] || c));\n"
+    "function card(p) {\n"
+    "  return `<p>${p.url ? `<a href=\"${esc(p.url)}\">${esc(p.name)}</a>` : esc(p.name)}</p>`;\n"
+    "}\n"
+)
+
+
+@_NEEDS_NODE
+def test_js_regex_and_nested_template_literals_pass_when_node_parses():
+    ok, err = validate_source("public/app.js", _VANILLA_FRONTEND_JS)
+    assert ok, err
+
+
+@_NEEDS_NODE
+def test_js_real_syntax_error_still_fails_with_node_available():
+    ok, _ = validate_source("public/app.js", "function f( {\n  return 1;\n")
+    assert not ok
+
+
+def test_jsx_in_js_still_passes_balance_check_without_node_parse():
+    # Node cannot parse JSX, so acceptance must still come from _balanced.
+    ok, err = validate_source("src/App.js", "export default function App() { return <div>{1}</div>; }\n")
+    assert ok, err

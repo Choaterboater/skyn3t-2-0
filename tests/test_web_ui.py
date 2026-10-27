@@ -7,6 +7,7 @@ because it is a pure JavaScript predicate used by the React route.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 
 from skyn3t.config.settings import REPO_ROOT
@@ -156,8 +157,31 @@ def test_dashboard_third_party_notices_cover_runtime_packages() -> None:
     notices = (UI_DIR / "public" / "THIRD_PARTY_NOTICES.txt").read_text(
         encoding="utf-8"
     )
+    lock = json.loads((UI_DIR / "package-lock.json").read_text(encoding="utf-8"))
+    # These dependencies contain declarations only, so the runtime notice
+    # generator intentionally excludes them even when they are not dev-only.
+    declaration_only = {"csstype"}
+    expected = set()
+    for package_path, entry in lock["packages"].items():
+        if not package_path.startswith("node_modules/"):
+            continue
+        if entry.get("dev") or entry.get("optional"):
+            continue
+        name = package_path.rsplit("node_modules/", 1)[1]
+        if name.startswith("@types/") or name in declaration_only:
+            continue
+        expected.add(f"{name}@{entry['version']}")
+
+    # Compare complete section identities, including versions, so missing,
+    # stale, duplicate, and unexpected package notices all fail independently
+    # of a particular dependency graph's package count.
+    identities = re.findall(r"^={79}\n([^\n]+)\nLicense: ", notices, re.MULTILINE)
+    assert expected
+    assert set(identities) == expected
+    assert len(identities) == len(expected)
+    counts = re.findall(r"^Packages: (\d+)$", notices, re.MULTILINE)
+    assert counts == [str(len(expected))]
     for marker in (
-        "Packages: 18",
         "@react-three/fiber",
         "@tanstack/react-query",
         "react-router",

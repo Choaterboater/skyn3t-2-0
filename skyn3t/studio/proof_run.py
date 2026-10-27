@@ -43,6 +43,7 @@ from skyn3t.npm_utils import (
     npm_install_args,
     npm_install_current,
     npm_install_fingerprint,
+    npm_metadata_refresh_args,
 )
 from skyn3t.persisted_write import (
     PERSISTED_WRITE_RECEIPT_MAX_BYTES,
@@ -5706,15 +5707,34 @@ def _prepare_node_dependencies(
     if _node_install_current(pdir, container=use_container_names):
         return (True, True, f"{manager} install skipped (dependencies current)")
 
+    install_args = (
+        _existing_node_install_args(pdir, manager, npm_cmd) if existing_project
+        else _node_npm_install_args(npm_cmd, "install", container=use_container_names)
+    )
     inst = _run_proof_command(
         cmd_ctx,
-        _existing_node_install_args(pdir, manager, npm_cmd) if existing_project
-        else _node_npm_install_args(npm_cmd, "install", container=use_container_names),
+        install_args,
         cwd=pdir,
         timeout=max(1, int(timeout)),
         env=env,
         network=True,
     )
+    # ETARGET can reflect stale cached registry metadata. Refresh once via
+    # the same context so sandbox, network policy, cache and script guards stay
+    # intact. Explicit CLI preference overrides npm_config_prefer_offline=true.
+    output = (inst.stdout or "") + (inst.stderr or "")
+    if (
+        manager == "npm" and not inst.timed_out and inst.returncode not in (0, 127)
+        and any(marker in output for marker in ("ETARGET", "notarget", "ETARGETNOTFOUND"))
+    ):
+        retry_args = npm_metadata_refresh_args(
+            install_args, cache_dir=env.get("npm_config_cache")
+            or str(pdir / "node_modules" / ".skyn3t-npm-cache"),
+        )
+        inst = _run_proof_command(
+            cmd_ctx, retry_args, cwd=pdir,
+            timeout=max(1, int(timeout)), env=env, network=True,
+        )
     if inst.timed_out:
         _discard_node_modules(pdir)
         return (True, False, f"{manager} install timed out after {timeout}s")

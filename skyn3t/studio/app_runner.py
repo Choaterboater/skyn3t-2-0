@@ -36,6 +36,7 @@ from skyn3t.npm_utils import (
     npm_env,
     npm_install_args,
     npm_install_current,
+    npm_metadata_refresh_args,
 )
 from skyn3t.security.secrets import SecretsStore, filter_env, is_secret_name, scrub_text
 
@@ -462,7 +463,7 @@ def _npm_run_once(cmd: list[str], cwd: str, timeout: float) -> tuple[int | None,
 def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tuple[bool, dict]:
     """Run an npm install/ci command, capturing output. Never raises.
 
-    Retries ONCE without ``--prefer-offline`` on a stale-metadata failure.
+    Retries ONCE with ``--prefer-online`` on a stale-metadata failure.
     Measured on a real build: a delivered app declaring ``tailwindcss ^4.1.11``
     failed three consecutive proof runs with::
 
@@ -482,15 +483,19 @@ def _default_npm_run(cmd: list[str], cwd: str, *, timeout: float = 300.0) -> tup
     if code != 0 and "--prefer-offline" in cmd and any(
         marker in out for marker in _NPM_STALE_METADATA_MARKERS
     ):
-        retry = [arg for arg in cmd if arg != "--prefer-offline"]
+        retry = npm_metadata_refresh_args(
+            cmd, cache_dir=npm_env().get("npm_config_cache")
+            or str(Path(cwd) / "node_modules" / ".skyn3t-npm-cache"),
+        )
         r_code, r_out, r_err = _npm_run_once(retry, cwd, timeout)
-        if r_code is not None:
-            code, out = r_code, r_out
-            if code == 0:
-                return True, {
-                    "log_tail": scrub_text(out[-2000:]),
-                    "stale_metadata_retry": True,
-                }
+        if r_code is None:
+            return False, {"error": scrub_text(r_err)}
+        code, out = r_code, r_out
+        if code == 0:
+            return True, {
+                "log_tail": scrub_text(out[-2000:]),
+                "stale_metadata_retry": True,
+            }
     tail = scrub_text(out[-2000:])
     if code != 0:
         return False, {"error": f"npm exited {code}", "log_tail": tail}

@@ -8,21 +8,20 @@ from pathlib import Path
 import pytest
 
 from skyn3t.config.settings import Settings
-from skyn3t.persistence.candidate_archive import CandidateArchive, CandidateRecovery
+from skyn3t.persistence.candidate_archive import CandidateRecovery
 from skyn3t.studio.manifest import BuildManifest
 
 
 @pytest.fixture
-def retained(tmp_path):
+def retained(tmp_path, trusted_candidate_receipt):
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", projects_dir=tmp_path / "Projects")
     project = settings.projects_dir / "original"
     project.mkdir(parents=True)
     (project / "main.py").write_text("value = 1\n")
     (project / "unchanged.txt").write_text("preserve me\n")
-    archive = CandidateArchive(project, settings)
-    (project / "main.py").write_text("value = 2\n")
-    receipt = archive.save({}, {"main.py": None, "../unsafe.py": None})
-    (project / "main.py").write_text("value = 1\n")
+    receipt = trusted_candidate_receipt(
+        settings, project, {"main.py": "value = 2\n"}, omitted={"invalid_path": 1},
+    )
     CandidateRecovery.register(settings, project, receipt)
     return settings, project, receipt, Path(receipt["path"]).stem
 
@@ -116,17 +115,14 @@ def test_untrusted_archive_paths_never_become_source(retained, relative):
         CandidateRecovery(settings, project, [receipt]).inspect(archive_id)
 
 
-def test_recovery_copies_neither_private_base_files_nor_old_verdict(tmp_path):
+def test_recovery_copies_neither_private_base_files_nor_old_verdict(tmp_path, trusted_candidate_receipt):
     settings = Settings(_env_file=None, data_dir=tmp_path / "state", projects_dir=tmp_path / "Projects")
     project = settings.projects_dir / "original"
     project.mkdir(parents=True)
     (project / "main.py").write_text("value = 1\n")
     (project / ".env").write_text("LOCAL_CONFIG=private\n")
     BuildManifest(slug="original", brief="old", status="completed", stack="python").save(project)
-    archive = CandidateArchive(project, settings)
-    (project / "main.py").write_text("value = 2\n")
-    receipt = archive.save({}, {"main.py": None})
-    (project / "main.py").write_text("value = 1\n")
+    receipt = trusted_candidate_receipt(settings, project, {"main.py": "value = 2\n"})
     service = CandidateRecovery(settings, project, [receipt])
     result = service.recover(Path(receipt["path"]).stem, slug="recovered")
     assert not (Path(result["project_dir"]) / ".env").exists()
@@ -154,3 +150,68 @@ def test_source_change_during_copy_publishes_nothing(retained, monkeypatch):
         CandidateRecovery(settings, project).recover(archive_id, slug="recovered")
     assert not (settings.projects_dir / "recovered").exists()
     assert (project / "unchanged.txt").read_text() == "concurrent edit\n"
+
+
+def test_recovery_preserves_crlf_bytes_and_their_authenticated_hash(tmp_path, trusted_candidate_receipt):
+    settings = Settings(_env_file=None, data_dir=tmp_path / "state", projects_dir=tmp_path / "Projects")
+    project = settings.projects_dir / "original"
+    project.mkdir(parents=True)
+    (project / "main.py").write_bytes(b"value = 1\r\n")
+    raw = b"value = 2\r\n# keep CRLF\r\n"
+    receipt = trusted_candidate_receipt(settings, project, {"main.py": raw.decode("utf-8")})
+    CandidateRecovery.register(settings, project, receipt)
+    service = CandidateRecovery(settings, project)
+    archive_id = Path(receipt["path"]).stem
+    detail = service.inspect(archive_id)
+    assert detail["files"]["main.py"]["sha256"] == hashlib.sha256(raw).hexdigest()
+    result = service.recover(archive_id, slug="recovered")
+    assert (Path(result["project_dir"]) / "main.py").read_bytes() == raw
+    assert (project / "main.py").read_bytes() == b"value = 1\r\n"
+
+
+@pytest.mark.parametrize("concurrent_destination", [False, True])
+def test_windows_publication_never_reserves_or_replaces_another_project(
+    retained, monkeypatch, concurrent_destination,
+):
+    import os
+
+    from skyn3t.persistence import candidate_archive
+
+    settings, project, receipt, archive_id = retained
+    target = settings.projects_dir / "recovered"
+    rename = os.rename
+    published = []
+
+    def windows_rename(source, destination):
+        assert destination == target
+        assert not destination.exists(), "Windows cannot rename over a reserved directory"
+        if concurrent_destination:
+            destination.mkdir()
+            (destination / "owner.txt").write_bytes(b"another request")
+        if destination.exists():
+            raise FileExistsError("Windows rename refuses an existing destination")
+        rename(source, destination)
+        published.append(destination)
+
+    class WindowsOS:
+        name = "nt"
+        rename = staticmethod(windows_rename)
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    monkeypatch.setattr(candidate_archive, "os", WindowsOS())
+    recovery = CandidateRecovery(settings, project)
+    if concurrent_destination:
+        with pytest.raises(FileExistsError):
+            recovery.recover(archive_id, slug="recovered")
+        assert (target / "owner.txt").read_bytes() == b"another request"
+        assert published == []
+    else:
+        result = recovery.recover(archive_id, slug="recovered")
+        assert result["status"] == "imported"
+        assert published == [target]
+        assert (target / "main.py").read_bytes() == b"value = 2\n"
+    assert (project / "main.py").read_text() == "value = 1\n"
+    assert Path(receipt["path"]).is_file()
+    assert not list(settings.projects_dir.glob(".recovery-*"))

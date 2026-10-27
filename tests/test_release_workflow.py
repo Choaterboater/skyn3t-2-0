@@ -12,7 +12,7 @@ ACTION_SHAS = {
     "actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
     "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
     "actions/setup-node": "48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
-    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "actions/upload-artifact": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
     "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
     "actions/attest": "a1948c3f048ba23858d222213b7c278aabede763",
     "pypa/gh-action-pypi-publish": "cef221092ed1bacb1cc03d23a2d87d1d172e277b",
@@ -85,7 +85,7 @@ def test_release_build_proves_quality_and_byte_reproducibility() -> None:
 
     upload = next(step for step in build["steps"] if "upload-artifact@" in step.get("uses", ""))
     assert upload["uses"] == (
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
     )
     assert upload["with"]["archive"] == "true"
     assert upload["with"]["compression-level"] == "0"

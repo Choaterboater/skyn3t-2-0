@@ -55,7 +55,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, TypeGuard
 
 from skyn3t.security.secrets import filter_env, mask_secrets
@@ -398,7 +398,7 @@ def _portability_issues(root: Path, files: list[str]) -> list[str]:
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 parts = set(node.value.replace("\\", "/").split("/"))
                 if {"site-packages", "dist-packages"} & parts and (
-                    Path(node.value).is_absolute() or PureWindowsPath(node.value).is_absolute()
+                    PurePosixPath(node.value).is_absolute() or PureWindowsPath(node.value).anchor
                 ):
                     issues.append(f"{relative} embeds a machine-specific dependency path")
             elif (

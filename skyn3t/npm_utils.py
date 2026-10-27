@@ -14,6 +14,7 @@ import re
 import shutil
 import stat
 from pathlib import Path
+from uuid import uuid4
 
 import structlog
 
@@ -73,6 +74,29 @@ def npm_install_args(npm_cmd: str, action: str = "install") -> list[str]:
     if cache:
         args += ["--cache", cache]
     return args
+
+
+def npm_metadata_refresh_args(cmd: list[str], *, cache_dir: str) -> list[str]:
+    """Retry against isolated metadata without clearing the shared npm cache.
+
+    A stale ETag can survive prefer-online revalidation. A unique child cache
+    forces an unconditional registry fetch, preserving the effective host or
+    container cache root. The child is retained: deleting it from the host is
+    unsafe when the command actually ran in a container.
+    """
+    retry: list[str] = []
+    arguments = iter(cmd)
+    for arg in arguments:
+        if arg == "--cache":
+            cache_dir = next(arguments, cache_dir)
+        elif arg.startswith("--cache="):
+            cache_dir = arg.split("=", 1)[1]
+        elif arg not in {"--prefer-offline", "--prefer-online"}:
+            retry.append(arg)
+    # Both npm and Node accept forward slashes on Windows; avoid interpreting
+    # a container's /work root with the host platform's pathlib implementation.
+    isolated = cache_dir.rstrip("/\\") + "/.skyn3t-metadata-refresh-" + uuid4().hex
+    return [*retry, "--prefer-online", "--cache", isolated]
 
 
 def npm_install_fingerprint(project_dir: str | Path) -> str:

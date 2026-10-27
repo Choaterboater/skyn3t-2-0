@@ -2895,22 +2895,19 @@ async def test_learning_api_reports_unavailable_without_fabricating_persistence(
         assert persona["defaults"] is True
         assert persona["available"] is False
 
-async def test_candidate_recovery_api_requires_trusted_association_and_acknowledgment(tmp_path):
+async def test_candidate_recovery_api_requires_trusted_association_and_acknowledgment(tmp_path, trusted_candidate_receipt):
     from pathlib import Path
 
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
 
-    from skyn3t.persistence.candidate_archive import CandidateArchive, CandidateRecovery
+    from skyn3t.persistence.candidate_archive import CandidateRecovery
 
     settings = Settings(data_dir=tmp_path / "data", projects_dir=tmp_path / "projects", auth_token="secret")
     project = settings.projects_dir / "original"
     project.mkdir(parents=True)
     (project / "main.py").write_text("value = 1\n")
-    archive = CandidateArchive(project, settings)
-    (project / "main.py").write_text("value = 2\n")
-    receipt = archive.save({"main.py": "value = 1\n"}, {"main.py": "value = 2\n"})
-    (project / "main.py").write_text("value = 1\n")
+    receipt = trusted_candidate_receipt(settings, project, {"main.py": "value = 2\n"})
     archive_id = Path(receipt["path"]).stem
     state = _state(settings=settings)
     app = FastAPI()

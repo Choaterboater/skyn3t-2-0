@@ -23,6 +23,7 @@ import json
 import math
 import os
 import re
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -1105,11 +1106,14 @@ class SkillLibrary:
                 stream.write(raw)
                 stream.flush()
                 os.fsync(stream.fileno())
-            descriptor = os.open(path, os.O_RDONLY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            # The Windows CRT cannot open directories. The record itself is
+            # already flushed above; retain the extra directory sync on POSIX.
+            if sys.platform != "win32":
+                descriptor = os.open(path, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
         return json.loads(json.dumps(record))
 
     def _capability_checks(self, skill: Skill) -> dict[str, bool]:

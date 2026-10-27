@@ -1,0 +1,33 @@
+name: Startup diagnostic
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/startup-diagnostic.yml
+permissions:
+  contents: read
+jobs:
+  macos-startup:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - uses: actions/setup-python@v6.3.0
+        with:
+          python-version: '3.12'
+      - run: pip install -e '.[dev]'
+      - name: Diagnose loopback name lookup
+        run: |
+          python -u - <<'PY'
+          import faulthandler, socket, time
+          faulthandler.dump_traceback_later(10, repeat=True)
+          for address in ('127.0.0.1', socket.gethostname()):
+              start = time.monotonic()
+              print('lookup starting', repr(address), flush=True)
+              print('lookup result', socket.getfqdn(address), time.monotonic() - start, flush=True)
+          faulthandler.cancel_dump_traceback_later()
+          PY
+      - name: Reproduce startup checks with assertion context
+        env:
+          SKYN3T_LLM_BACKEND: stub
+        run: python -m pytest -q --showlocals tests/test_app_runner.py tests/test_cli_serve.py tests/test_rag_check.py tests/test_workflow_check.py

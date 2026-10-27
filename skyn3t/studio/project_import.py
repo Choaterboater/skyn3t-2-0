@@ -164,7 +164,10 @@ def _inventory(root: Path) -> tuple[dict[str, tuple[int, ...]], list[dict[str, s
                 if entry.is_dir(follow_symlinks=False):
                     pending.append(path)
                     continue
-                info = entry.stat(follow_symlinks=False)
+                # DirEntry.stat on Windows reports zero file/device ids. Use
+                # the same filesystem stat family as the opened descriptor so
+                # unchanged files do not look like concurrent replacements.
+                info = path.stat(follow_symlinks=False)
                 if not stat.S_ISREG(info.st_mode):
                     raise ValueError(f"Non-regular source file: {rel!r}")
                 total_bytes += info.st_size

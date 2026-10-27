@@ -29,3 +29,25 @@ assert.equal(useConfig().VITE_TITLE, 'Operator title');
 '''], cwd=tmp_path, text=True, capture_output=True, timeout=15,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("keys", [[], ["VITE_TITLE"]])
+def test_packaged_config_passes_strict_javascript_type_check(tmp_path, keys):
+    """Svelte's checkJs must accept the accessor consumed by its settings UI."""
+    compiler = shutil.which('tsc')
+    if not compiler:
+        pytest.skip('TypeScript compiler is required to check generated JavaScript')
+    config = tmp_path / 'config.js'
+    config.write_text(_config_js(keys))
+    globals_file = tmp_path / 'globals.d.ts'
+    globals_file.write_text(
+        'interface ImportMeta { env: Record<string, string>; }\n'
+        'declare const process: { env: Record<string, string> };\n'
+    )
+    result = subprocess.run(
+        [compiler, '--allowJs', '--checkJs', '--strict', '--noEmit',
+         '--target', 'ES2020', '--module', 'esnext', '--skipLibCheck',
+         str(config), str(globals_file)],
+        text=True, capture_output=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

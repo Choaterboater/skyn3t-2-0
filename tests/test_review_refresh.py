@@ -14,13 +14,24 @@ import asyncio
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from skyn3t.config.settings import Settings
 from skyn3t.core.agent import AgentCapability, BaseAgent, TaskRequest, TaskResult
 from skyn3t.core.events import EventBus
 from skyn3t.core.orchestrator import Orchestrator
+from skyn3t.security.sandbox import SandboxRunner
 from skyn3t.studio import runner as runner_mod
 from skyn3t.studio.runner import StudioRunner
 from skyn3t.worktree import SOURCE_TREE_DIGEST_ALGORITHM
+
+
+@pytest.fixture(autouse=True)
+def _no_docker_for_synthetic_review(monkeypatch):
+    def unexpected_probe(self):
+        raise AssertionError("synthetic review proof must use the inline test backend")
+
+    monkeypatch.setattr(SandboxRunner, "docker_available", unexpected_probe)
 
 
 def _settings(tmp_path):
@@ -28,6 +39,9 @@ def _settings(tmp_path):
         projects_dir=tmp_path / "Projects",
         data_dir=tmp_path / "data",
         logs_dir=tmp_path / "logs",
+        # These repository-owned fixtures exercise reviewer state and real
+        # proof, independently of a hosted runner's Docker image availability.
+        execution_backend="inline",
         critic_enabled=False,
         approval_gates=False,
         best_of_n=1,

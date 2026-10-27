@@ -37,7 +37,8 @@ def test_static_site_uses_http_server(tmp_path):
     (tmp_path / "index.html").write_text("<h1>hi</h1>")
     spec = build_run_spec(tmp_path, "static", port=9001)
     assert spec.kind == "static"
-    assert "http.server" in spec.cmd and "9001" in spec.cmd
+    assert spec.cmd[1] == str(_app_runner.Path(_app_runner.__file__).with_name("loopback_server.py"))
+    assert "9001" in spec.cmd
     assert spec.cmd[-2:] == ["--bind", "127.0.0.1"] or "127.0.0.1" in spec.cmd
 
 
@@ -153,7 +154,15 @@ def test_start_python_api_with_missing_root_uses_docs_preview(tmp_path):
     (tmp_path / "main.py").write_text(
         """\
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import TCPServer
 import os
+
+
+class FixtureHTTPServer(HTTPServer):
+    def server_bind(self):
+        # Numeric loopback fixtures need no external reverse-DNS lookup.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -166,7 +175,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404)
 
 
-HTTPServer(('127.0.0.1', int(os.environ['PORT'])), Handler).serve_forever()
+FixtureHTTPServer(('127.0.0.1', int(os.environ['PORT'])), Handler).serve_forever()
 """,
         encoding="utf-8",
     )

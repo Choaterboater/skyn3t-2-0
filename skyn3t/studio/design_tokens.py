@@ -624,7 +624,7 @@ def write_design_md(root: str | Path, brief: str, design_summary: str = "", *,
             return False
     path.write_text(
         render_design_md(brief, design_summary, design_seed_index=design_seed_index),
-        encoding="utf-8",
+        encoding="utf-8", newline="",
     )
     return True
 

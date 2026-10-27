@@ -1173,10 +1173,12 @@ class CodeImproverAgent(BaseAgent):
         candidates: list[str] = []
         for g in gaps:
             text = g if isinstance(g, str) else str(g)
-            # Compiler/pytest diagnostics use absolute paths, including project
-            # roots with spaces. Strip only this root before tokenizing paths.
+            # Diagnostics can mix Windows separators and file:// URL slashes.
+            # Normalize both the diagnostic and the known project root before
+            # removing that root, so spaced roots retain nested target paths.
+            text = text.replace("\\", "/")
             for root in dict.fromkeys((str(worktree.absolute()), str(worktree.resolve()))):
-                text = text.replace(root + os.sep, "")
+                text = text.replace(root.replace("\\", "/").rstrip("/") + "/", "")
             named_export = _NAMED_EXPORT_MISMATCH_RE.search(text)
             if named_export:
                 candidates.append(named_export.group(1))

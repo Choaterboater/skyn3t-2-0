@@ -305,3 +305,44 @@ def _isolate_data_dir(tmp_path, monkeypatch):
     settings_mod.get_settings.cache_clear()
     yield
     settings_mod.get_settings.cache_clear()
+
+
+@pytest.fixture
+def trusted_candidate_receipt():
+    """Build a producer-format receipt to test recovery without producing edits.
+
+    Retention deliberately needs POSIX no-follow descriptor access. Consumer
+    tests instead supply a trusted archive and still exercise the real external
+    digest, provenance, source binding, association, and path validators.
+    """
+    import hashlib
+    import uuid
+
+    from skyn3t.persistence.checkpoint import CheckpointManager
+    from skyn3t.worktree import source_tree_snapshot
+
+    def retain(settings, project, contents, *, omitted=None):
+        snapshot = source_tree_snapshot(project)
+        assert snapshot["valid"], snapshot
+        omitted = dict(omitted or {})
+        state = {
+            "status": "unverified", "delivered": False, "proof_passed": False,
+            "scope": "changed_text_files_only", "complete_backup": False,
+            "base_source_sha256": snapshot["sha256"],
+            "files": {
+                rel: {"content": content, "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+                for rel, content in contents.items()
+            },
+            "omitted": omitted,
+        }
+        directory = settings.data_dir.absolute() / ".skyn3t-recovery" / "improve_candidates"
+        path = CheckpointManager(settings=settings, _dir=directory).save(
+            f"candidate-{uuid.uuid4().hex}", state=state,
+        )
+        return {
+            "status": "unverified", "path": str(path), "files_saved": len(contents),
+            "omitted": omitted, "archive_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "base_source_sha256": snapshot["sha256"],
+        }
+
+    return retain

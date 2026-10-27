@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import httpx
@@ -302,3 +303,20 @@ async def test_persistence_failure_is_exposed_without_mislabeling_live_data(monk
     assert scout._peek_page("storage unavailable") == 2
     assert not scout._state_path.exists()
     logger.warning.assert_called_once()
+
+
+async def test_valid_empty_github_response_does_not_fabricate_offline_seeds(monkeypatch, tmp_path):
+    scout = RepoScout(settings=SimpleNamespace(data_dir=tmp_path))
+    monkeypatch.setattr("skyn3t.cortex.repo_scout._HAS_HTTPX", True)
+    requests = _github_response(monkeypatch, {"items": [], "total_count": 0})
+
+    proposals, receipt = await scout.scout_with_receipt("web framework")
+
+    assert proposals == []
+    assert receipt.source == "github"
+    assert receipt.outcome == "live"
+    assert receipt.reason == "ok"
+    assert receipt.items_count == receipt.total_count == 0
+    assert receipt.page == 1
+    assert scout._peek_page("web framework") == 2
+    assert len(requests) == 1

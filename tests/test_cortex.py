@@ -465,12 +465,23 @@ async def test_handler_stage_memory():
 
 
 # ---- repo scout ------------------------------------------------------------
-async def test_repo_scout_offline():
+async def test_repo_scout_offline(monkeypatch):
+    # Stub LLM settings do not disable RepoScout's optional HTTP transport.
+    monkeypatch.setattr("skyn3t.cortex.repo_scout._HAS_HTTPX", False)
     scout = RepoScout(settings=_settings())
+
+    async def unexpected_search(*_args, **_kwargs):
+        pytest.fail("offline scout test must not attempt GitHub research")
+
+    monkeypatch.setattr(scout, "_search_github_page", unexpected_search)
     props = await scout.scout("web framework")
     assert props
     assert all(p.type == ProposalType.INGEST for p in props)
     assert all(p.safe is False for p in props)
+    assert all(p.payload["offline"] is True for p in props)
+    assert all(p.payload["scout_outcome"] == "offline" for p in props)
+    assert all(p.payload["scout_reason"] == "no_httpx" for p in props)
+    assert scout._peek_page("web framework") == 1
 
 
 async def test_repo_scout_run_warns_honestly_when_unauthenticated():

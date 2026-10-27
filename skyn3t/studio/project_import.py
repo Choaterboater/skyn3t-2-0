@@ -23,6 +23,8 @@ from skyn3t.worktree import (
     source_tree_snapshot,
 )
 
+_IS_WINDOWS = os.name == "nt"
+
 MAX_IMPORT_FILES = 20_000
 MAX_IMPORT_BYTES = 268_435_456
 MAX_IMPORT_ENTRIES = 40_000
@@ -122,9 +124,16 @@ def project_source_summary(manifest: dict[str, Any]) -> dict[str, Any]:
 
 
 def _identity(info: os.stat_result) -> tuple[int, ...]:
+    # CPython 3.12 Windows path stat keeps legacy ctime=creation time, but
+    # fstat reports the actual change time. Compare birth time across those
+    # APIs; the descriptor's change clock is checked separately while copying.
+    identity_time = (
+        getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+        if _IS_WINDOWS else info.st_ctime_ns
+    )
     return (
         info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
-        info.st_ctime_ns, stat.S_IMODE(info.st_mode),
+        identity_time, stat.S_IMODE(info.st_mode),
     )
 
 
@@ -231,7 +240,12 @@ def import_project(
                             raise ValueError("Source changed during import")
                         writer.write(block)
                         remaining -= len(block)
-                    if reader.read(1) or _identity(os.fstat(reader.fileno())) != expected:
+                    extra_byte = reader.read(1)
+                    after = os.fstat(reader.fileno())
+                    if (
+                        extra_byte or _identity(after) != expected
+                        or after.st_ctime_ns != before.st_ctime_ns
+                    ):
                         raise ValueError("Source changed during import")
                 # Preserve normal mode bits (including executable scripts), never setuid/setgid.
                 destination.chmod(stat.S_IMODE(before.st_mode) & 0o777)
@@ -274,10 +288,16 @@ def import_project(
             files=list(files), extra={"source": provenance},
         )
         manifest.save(candidate)
-        # Reserve exclusively: even concurrent imports/builds cannot be overwritten.
-        target.mkdir()
-        reserved = True
-        os.replace(candidate, target)
+        if _IS_WINDOWS:
+            # Win32 rename refuses an existing destination atomically, even an
+            # empty directory. Reserving target first makes publication fail;
+            # removing a reservation before replace would permit overwrites.
+            os.rename(candidate, target)
+        else:
+            # POSIX rename may replace an empty directory, so reserve it first.
+            target.mkdir()
+            reserved = True
+            os.replace(candidate, target)
         published = True
         return {
             "slug": name, "project_dir": str(target), "stack": selected_stack,

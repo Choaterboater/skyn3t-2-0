@@ -3831,6 +3831,12 @@ class LLMClient:
                 try:
                     body = p.read_bytes().decode("utf-8")
                     old, new = args["old_text"], args["new_text"]
+                    # read_file presents logical lines with LF separators. Match
+                    # those snippets against a consistently CRLF file without
+                    # normalizing the file or changing untouched bytes.
+                    if "\r\n" in body and body.count("\n") == body.count("\r\n"):
+                        old = old.replace("\r\n", "\n").replace("\n", "\r\n")
+                        new = new.replace("\r\n", "\n").replace("\n", "\r\n")
                     matches = body.count(old)
                     if matches == 0:
                         return "ERROR: old_text not found; read the current relevant lines", 0, True

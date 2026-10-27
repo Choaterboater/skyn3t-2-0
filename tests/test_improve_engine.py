@@ -300,8 +300,17 @@ def test_mcp_improve_requires_fresh_behavioral_verification(tmp_path, monkeypatc
         assert _project_bytes(project) == original
 
 
-def test_failed_mcp_candidate_is_retained_unverified_without_changing_original(tmp_path, monkeypatch):
+@pytest.mark.parametrize("force_unavailable", [False, True])
+def test_failed_mcp_candidate_reports_safe_retention_without_changing_original(tmp_path, monkeypatch, force_unavailable):
     import json
+    import os
+
+    if force_unavailable:
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+    safe_access = (
+        all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK"))
+        and os.open in os.supports_dir_fd
+    )
 
     from skyn3t.config.settings import Settings
     from skyn3t.studio.mcp_check import McpVerdict
@@ -331,9 +340,14 @@ def test_failed_mcp_candidate_is_retained_unverified_without_changing_original(t
     assert outcome.detail["delivery_blocked"] == "mcp_verification_failed"
     assert _project_bytes(project) == original
     retained = outcome.detail["candidate_retention"]
-    assert retained["status"] == "unverified"
-    archive = json.loads(Path(retained["path"]).read_text())
-    assert archive["state"]["files"]["main.py"]["content"] == "print('improved')\n"
+    if safe_access:
+        assert retained["status"] == "unverified"
+        archive = json.loads(Path(retained["path"]).read_text())
+        assert archive["state"]["files"]["main.py"]["content"] == "print('improved')\n"
+    else:
+        assert retained == {"status": "unavailable", "reason": "safe_file_access_unavailable"}
+        archives = settings.data_dir / ".skyn3t-recovery" / "improve_candidates"
+        assert not archives.exists()
 
 
 def test_live_vite_cache_created_during_delivery_does_not_trigger_rollback(tmp_path, monkeypatch):

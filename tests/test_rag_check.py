@@ -30,7 +30,14 @@ from skyn3t.studio.rag_check import RagVerdict, check_rag
 _GOOD_SERVER = '''
 import json, os
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import TCPServer
 from urllib.parse import urlparse, parse_qs
+
+class FixtureHTTPServer(HTTPServer):
+    def server_bind(self):
+        # Numeric loopback fixtures need no external reverse-DNS lookup.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 DOCS = ["seed document about nothing in particular"]
 
@@ -90,7 +97,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"answer": answer, "sources": [], "llm_used": False})
         return self._send(404, {"detail": "not found"})
 
-HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
+FixtureHTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
 '''
 
 # Retrieval is broken: every /query returns an empty results list.

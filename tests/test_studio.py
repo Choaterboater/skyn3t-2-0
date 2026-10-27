@@ -1087,8 +1087,14 @@ def test_degraded_baseline_is_taken_before_the_first_proof(tmp_path, monkeypatch
     fix loop really rewrote the module clears it."""
     import hashlib
 
+    from skyn3t.security.sandbox import SandboxRunner
     from skyn3t.studio import runner as runner_mod
     from skyn3t.studio.proof_run import ProofResult
+
+    def unexpected_docker_probe(self):
+        raise AssertionError("synthetic baseline proof must use its inline test backend")
+
+    monkeypatch.setattr(SandboxRunner, "docker_available", unexpected_docker_probe)
 
     events: list[str] = []
     snapshots: list[tuple[dict, bytes]] = []
@@ -1128,7 +1134,9 @@ def test_degraded_baseline_is_taken_before_the_first_proof(tmp_path, monkeypatch
             projects_dir=tmp_path / f"Projects{int(repaired)}",
             data_dir=tmp_path / f"data{int(repaired)}",
             logs_dir=tmp_path / f"logs{int(repaired)}", critic_enabled=False,
-            approval_gates=False, best_of_n=1)
+            # This fixture proves baseline/repair ordering with repository-owned
+            # code, not Docker image availability or networked build isolation.
+            execution_backend="inline", approval_gates=False, best_of_n=1)
         bus = EventBus()
         orch = Orchestrator(bus)
         code = _ScaffoldBackfillCodeAgent("coder", "code", "stub", bus)
@@ -1162,7 +1170,7 @@ def test_degraded_baseline_is_taken_before_the_first_proof(tmp_path, monkeypatch
             assert "degraded_resolved" in extra
             assert "degraded_gate" not in extra
         else:
-            assert extra["proof"]["passed"] is True
+            assert extra["proof"]["passed"] is True, extra["proof"]
             assert "degraded_gate" in extra
             assert "degraded_resolved" not in extra
             assert outcome.verdict == "no_go"

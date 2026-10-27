@@ -479,7 +479,7 @@ class TestAuthorAgent(BaseAgent):
                     ),
                     encoding="utf-8",
                 )
-                written.append(str(target.relative_to(root)))
+                written.append(target.relative_to(root).as_posix())
             except OSError as exc:
                 self.metadata["write_error"] = str(exc)
 

@@ -4571,6 +4571,8 @@ def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
     lesson, systematized). Pure logic in ``cli_core.py``; zero runtime deps."""
     title = (brief.strip() or app_name).split("\n")[0][:120]
     doc_title = title.replace("\\", " ").replace('"""', "'''")
+    distribution = _mcp_server_name(app_name)
+    package = "copilot_" + distribution.replace("-", "_")
     return {
         "cli_core.py": (
             '"""Pure copilot core: typed events, scenario playback, guarded tools.\n\n'
@@ -4702,7 +4704,10 @@ def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
             "import json\n"
             "import sys\n"
             "from pathlib import Path\n\n"
-            "import cli_core\n\n"
+            "if __package__:\n"
+            "    from . import cli_core\n"
+            "else:\n"
+            "    import cli_core\n\n"
             "ROOT = Path(__file__).resolve().parent\n\n\n"
             "def _print_event(event: dict, output_format: str) -> None:\n"
             "    if output_format == \"json\":\n"
@@ -4902,12 +4907,24 @@ def _python_cli_agent(app_name: str, brief: str) -> dict[str, str]:
             "    assert cli_core.validate_event(42)\n"
         ),
         "pyproject.toml": (
+            "[build-system]\n"
+            'requires = ["setuptools>=68", "wheel"]\n'
+            'build-backend = "setuptools.build_meta"\n\n'
             "[project]\n"
             f'name = "{_mcp_server_name(app_name)}"\n'
             'version = "0.1.0"\n'
             f'description = "{_json_escape(title)}"\n'
             'requires-python = ">=3.10"\n'
             "dependencies = []  # stdlib only — the bundled scenarios need no provider\n"
+            "\n[project.scripts]\n"
+            f'{distribution} = "{package}.main:main"\n'
+            "\n[tool.setuptools]\n"
+            f'packages = ["{package}"]\n'
+            "include-package-data = false\n"
+            "\n[tool.setuptools.package-dir]\n"
+            f'{package} = "."\n'
+            "\n[tool.setuptools.package-data]\n"
+            f'{package} = ["scenarios.json"]\n'
         ),
         ".gitignore": "__pycache__/\n*.pyc\n.venv/\n",
         "README.md": compose_readme(

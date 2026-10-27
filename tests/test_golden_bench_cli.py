@@ -77,7 +77,7 @@ def test_scheduled_job_is_keyless_deterministic_and_always_uploads() -> None:
         if str(step.get("uses", "")).startswith("actions/upload-artifact@")
     )
     assert upload["if"] == "always()"
-    assert upload["uses"] == "actions/upload-artifact@v7.0.1"
+    assert upload["uses"] == "actions/upload-artifact@v7.0.2"
     assert upload["with"]["path"] == "artifacts/golden/"
 
     enforce = next(step for step in run_job["steps"] if step.get("name") == "Enforce golden result")

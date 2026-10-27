@@ -4098,6 +4098,7 @@ def proof_run(
     execution_backend: str = "auto",
     stack: str = "",
     run_tests: bool = False,
+    tests_blocking: bool = False,
     test_timeout: int = 90,
     run_build: bool = False,
     build_timeout: int = 300,
@@ -4459,7 +4460,10 @@ def proof_run(
                     # is. Under lab posture record and still feed the fix loop
                     # (detail is unchanged, so error_gaps() is identical) rather
                     # than failing a delivery over a bad generated assertion.
-                    if lab_posture:
+                    # ``tests_blocking`` overrides this: an Improve run validates
+                    # against the project's own pre-existing suite (the human
+                    # spec, not a guessed assertion), so a failure must block.
+                    if lab_posture and not tests_blocking:
                         advisory_failures.append("tests")
                     else:
                         passed = False
@@ -4515,8 +4519,10 @@ def proof_run(
                 detail["node_tests_summary"] = t_sum
                 if not t_ok:
                     # Same reasoning as the generated-test step above: a failing
-                    # LLM-authored test is a repair signal, not a failed delivery.
-                    if lab_posture:
+                    # LLM-authored test is a repair signal, not a failed delivery
+                    # — unless ``tests_blocking`` says this run validates against
+                    # the project's own pre-existing suite, which must block.
+                    if lab_posture and not tests_blocking:
                         advisory_failures.append("node_tests")
                     else:
                         passed = False

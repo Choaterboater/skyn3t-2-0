@@ -1025,7 +1025,13 @@ class ImproveEngine:
             proof = await _proof_run_without_blocking(
                 wt.dir, stack=stack,
                 execution_backend=getattr(self.settings, "execution_backend", "auto"),
-                run_tests=bool(getattr(self.settings, "run_generated_tests", False)),
+                # An Improve run targets an EXISTING project whose test suite is
+                # its spec — not LLM-generated assertions. Always run it, and make
+                # a failure block delivery, so a change can never be certified
+                # "proof passed" while the project's own tests fail. Both are
+                # overridable via settings for callers that opt out.
+                run_tests=bool(getattr(self.settings, "improve_run_tests", True)),
+                tests_blocking=bool(getattr(self.settings, "improve_tests_blocking", True)),
                 test_timeout=int(getattr(self.settings, "generated_test_timeout", 90)),
                 run_build=bool(getattr(self.settings, "run_generated_build", False)),
                 build_timeout=int(getattr(self.settings, "generated_build_timeout", 300)),

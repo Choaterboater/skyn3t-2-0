@@ -18,7 +18,8 @@ def test_terminal_agent_wheel_runs_outside_source(tmp_path: Path) -> None:
     for relative, content in files.items():
         target = source / relative
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
+        target.write_text(content, encoding="utf-8", newline="\n")
+        assert target.read_bytes() == content.encode("utf-8")
     wheels = tmp_path / "wheels"
     build = subprocess.run(
         [

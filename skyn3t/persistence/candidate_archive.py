@@ -30,7 +30,12 @@ _OWN_RECEIPT = re.compile(r"candidate-[0-9a-f]{32}\.json")
 
 
 class CandidateArchive:
-    """Bind retained text to a pre-generation source digest."""
+    """Bind retained text to a pre-generation source digest.
+
+    Production requires descriptor-relative no-follow access. Unsupported
+    platforms report ``unavailable`` rather than retain through weaker reads;
+    recovery of existing authenticated receipts is a separate capability.
+    """
 
     def __init__(self, root: Path, settings: Settings) -> None:
         self.root = root.resolve()
@@ -458,9 +463,16 @@ class CandidateRecovery:
             manifest.save(candidate)
             if _inventory(self.project) != (inventory, skipped) or self._snapshot().get("sha256") != detail["base_source_sha256"]:
                 raise ValueError("Original source changed before publication; nothing was published")
-            target.mkdir()  # Exclusive reservation: duplicate requests never replace another project.
-            reserved = True
-            os.rename(candidate, target)
+            if os.name == "nt":
+                # Windows rename publishes a directory only to an absent name;
+                # pre-creating a reservation would make every rename fail.
+                os.rename(candidate, target)
+            else:
+                # POSIX rename may replace an empty directory, so reserve ours
+                # exclusively before publishing and clean up only that reservation.
+                target.mkdir()
+                reserved = True
+                os.rename(candidate, target)
             published = True
             return {
                 "slug": slug, "project_dir": str(target), "status": "imported", "unverified": True,

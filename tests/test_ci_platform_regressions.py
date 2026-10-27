@@ -45,10 +45,17 @@ def test_import_uses_file_identity_not_cached_directory_entry_ids(tmp_path, monk
         def __init__(self, path):
             self.scan = original_scandir(path)
             self.model_windows = not isinstance(path, int) and Path(path) == source
-        def __enter__(self):
-            return (Entry(entry) if self.model_windows else entry for entry in self.scan)
-        def __exit__(self, *args):
+        def __iter__(self):
+            return self
+        def __next__(self):
+            entry = next(self.scan)
+            return Entry(entry) if self.model_windows else entry
+        def close(self):
             self.scan.close()
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            self.close()
 
     monkeypatch.setattr(os, "scandir", Scan)
     result = import_project(source, tmp_path / "Projects")

@@ -506,10 +506,31 @@ def test_http_integration_without_exercisable_calls_is_unavailable(tmp_path):
     assert "not exercised" in verdict.reason
 
 
-@pytest.mark.parametrize("client", ["httpx_async", "requests", "urllib"])
-def test_supported_http_clients_report_injected_failures(tmp_path, client):
+@pytest.mark.parametrize("client", ["httpx_async", pytest.param("httpx_async_socketpair_fallback", marks=pytest.mark.requires_loopback), "requests", "urllib"])
+def test_supported_http_clients_report_injected_failures(tmp_path, client, monkeypatch):
     source = _HTTP_SERVER.replace("FAILURE_RESULT", '{"success": False, "error": "upstream_failed"}')
-    if client == "httpx_async":
+    if client == "httpx_async_socketpair_fallback":
+        import skyn3t.studio.mcp_check as gate
+
+        # Exercise CPython's Windows socketpair path on every host. The wrapper
+        # changes the trusted harness startup, never the generated server.
+        wrapper = tmp_path.parent / (tmp_path.name + "_probe.py")
+        harness = Path(gate.__file__).with_name("mcp_http_probe.py")
+        wrapper.write_text(
+            "import runpy, socket\n"
+            "socket.socketpair = socket._fallback_socketpair\n"
+            f"runpy.run_path({str(harness)!r}, run_name='__main__')\n",
+            encoding="utf-8",
+        )
+        original_popen = gate.subprocess.Popen
+
+        def run_fallback_probe(command, *args, **kwargs):
+            if len(command) > 2 and command[2] == str(harness):
+                command = [*command[:2], str(wrapper), *command[3:]]
+            return original_popen(command, *args, **kwargs)
+
+        monkeypatch.setattr(gate.subprocess, "Popen", run_fallback_probe)
+    if client.startswith("httpx_async"):
         setup = '''
 import asyncio
 async def _request(*args, **kwargs):
@@ -632,3 +653,90 @@ def test_failure_semantics_cover_sdk_wrappers_and_conflicting_error_flags(succes
         "structuredContent": {"result": {"success": success, "error": "upstream failed"}},
     }}
     assert _failure_reported(response) is not success
+
+
+@pytest.mark.parametrize("dependency_path", [
+    "/opt/developer/site-packages", "/usr/local/lib/python3.12/dist-packages",
+    r"C:\developer\venv\Lib\site-packages", r"C:venv\Lib\site-packages",
+    r"\\server\share\venv\Lib\site-packages", r"\venv\Lib\site-packages",
+])
+def test_dependency_portability_is_lexical_across_host_platforms(tmp_path, monkeypatch, dependency_path):
+    from pathlib import PureWindowsPath
+
+    import skyn3t.studio.mcp_check as gate
+
+    class WindowsHostPath(type(Path())):
+        def is_absolute(self):
+            return PureWindowsPath(str(self)).is_absolute()
+
+    (tmp_path / "server.py").write_text(f"DEPENDENCIES = {dependency_path!r}\n", encoding="utf-8")
+    monkeypatch.setattr(gate, "Path", WindowsHostPath)
+    issues = gate._portability_issues(tmp_path, ["server.py"])
+    assert issues == ["server.py embeds a machine-specific dependency path"]
+
+
+def test_socketpair_connect_allowance_matches_only_its_socket_and_listener():
+    from skyn3t.studio.mcp_http_probe import _is_socketpair_connection
+
+    client, other = object(), object()
+    address = ("127.0.0.1", 12345)
+    allowed = {client: address}
+    assert _is_socketpair_connection("socket.connect", (client, address), allowed)
+    assert not _is_socketpair_connection("socket.connect", (other, address), allowed)
+    assert not _is_socketpair_connection("socket.connect", (client, ("127.0.0.1", 12346)), allowed)
+    assert not _is_socketpair_connection("socket.connect", (client, ("198.51.100.1", 12345)), allowed)
+    assert not _is_socketpair_connection("socket.sendto", (client, address), allowed)
+    assert not _is_socketpair_connection("socket.connect", (client, address), {})
+
+
+def test_socketpair_connect_failure_revokes_allowance_and_closes_socket(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from skyn3t.studio import mcp_http_probe as probe
+
+    allowed = {}
+    client = MagicMock()
+    listener = MagicMock()
+    listener.__enter__.return_value = listener
+    listener.getsockname.return_value = ("127.0.0.1", 12345)
+
+    def reject_connection(address):
+        assert allowed == {client: address}
+        raise OSError("fixture connection failure")
+
+    client.connect.side_effect = reject_connection
+    monkeypatch.setattr(probe.socket, "socket", MagicMock(side_effect=[client, listener]))
+    with pytest.raises(OSError, match="fixture connection failure"):
+        probe._local_socketpair(allowed)
+    assert allowed == {}
+    client.close.assert_called_once()
+    listener.__exit__.assert_called_once()
+
+
+def test_project_relative_dependencies_remain_portable(tmp_path):
+    from skyn3t.studio.mcp_check import _portability_issues
+
+    (tmp_path / "server.py").write_text(
+        'DEPENDENCIES = "vendor/site-packages"\n', encoding="utf-8",
+    )
+    assert _portability_issues(tmp_path, ["server.py"]) == []
+
+
+def test_socketpair_rejects_unexpected_peer_and_closes_both_sockets(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from skyn3t.studio import mcp_http_probe as probe
+
+    allowed = {}
+    client, listener, peer = MagicMock(), MagicMock(), MagicMock()
+    listener.__enter__.return_value = listener
+    listener.getsockname.return_value = ("127.0.0.1", 12345)
+    listener.accept.return_value = (peer, ("127.0.0.1", 54321))
+    peer.getsockname.return_value = ("127.0.0.1", 12345)
+    client.getpeername.return_value = ("127.0.0.1", 99999)
+    monkeypatch.setattr(probe.socket, "socket", MagicMock(side_effect=[client, listener]))
+    with pytest.raises(ConnectionError, match="Unexpected peer connection"):
+        probe._local_socketpair(allowed)
+    assert allowed == {}
+    client.close.assert_called_once()
+    peer.close.assert_called_once()

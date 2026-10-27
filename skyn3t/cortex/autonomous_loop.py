@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from time import time
+from time import monotonic, time
 from typing import Any
 
 from skyn3t.config.settings import Settings, get_settings
@@ -96,16 +96,16 @@ class BuildHeartbeat:
 
     def touch(self, correlation_id: str | None) -> None:
         if correlation_id:
-            self._last_progress[correlation_id] = time()
+            self._last_progress[correlation_id] = monotonic()
 
     def start(self, correlation_id: str) -> None:
-        self._last_progress[correlation_id] = time()
+        self._last_progress[correlation_id] = monotonic()
 
     def stalled(self, correlation_id: str, max_idle_seconds: float) -> bool:
         last = self._last_progress.get(correlation_id)
         if last is None:
             return False
-        return (time() - last) > max_idle_seconds
+        return (monotonic() - last) > max_idle_seconds
 
     def drop(self, correlation_id: str) -> None:
         self._last_progress.pop(correlation_id, None)

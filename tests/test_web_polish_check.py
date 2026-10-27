@@ -365,3 +365,23 @@ def test_uninvited_playful_and_grid_still_warn(tmp_path):
     verdict = check_web_polish(tmp_path, "static")
     assert any("decorative emoji" in w for w in verdict["warnings"])
     assert any("identical repeated card grid" in w for w in verdict["warnings"])
+
+
+def test_svelte_generated_css_does_not_require_source_import(tmp_path):
+    generated = tmp_path / '.svelte-kit/output/client/_app/immutable/assets/page.css'
+    generated.parent.mkdir(parents=True)
+    generated.write_text('body { color: black; }')
+    route = tmp_path / 'src/routes/+page.svelte'
+    route.parent.mkdir(parents=True)
+    route.write_text(
+        '<main><h1>Dashboard</h1><button>Save</button></main>'
+        '<style>main { display: grid; gap: 24px; padding: 32px; color: black; }</style>'
+    )
+    result = check_web_polish(tmp_path, 'sveltekit')
+    assert result['ok'], result['issues']
+    assert not any(path.startswith('.svelte-kit/') for path in result['checked'])
+    # Authored, unreferenced styles remain a release failure.
+    (tmp_path / 'src/unused.css').write_text('body { color: red; }')
+    result = check_web_polish(tmp_path, 'sveltekit')
+    assert not result['ok']
+    assert 'stylesheets exist but no CSS import or stylesheet link was found' in result['issues']

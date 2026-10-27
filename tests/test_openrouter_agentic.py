@@ -105,10 +105,16 @@ def _client():
     return LLMClient(Settings(llm_backend="openrouter", openrouter_api_key="x"))
 
 
-def test_existing_large_file_can_be_located_and_edited_without_rewriting(tmp_path, monkeypatch):
-    original = "".join(f"item_{i} = {i}\n" for i in range(3000))
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
+def test_existing_large_file_can_be_located_and_edited_without_rewriting(
+    tmp_path, monkeypatch, line_ending,
+):
+    original = "# café — keep the original bytes\n" + "".join(
+        f"item_{i} = {i}\n" for i in range(3000)
+    )
     path = tmp_path / "large.py"
-    path.write_text(original)
+    path.write_bytes(original.replace("\n", line_ending).encode("utf-8"))
+    original_mode = path.stat().st_mode
     provider = _RecordingClient([
         _tool_turn("read_file", {"path": "large.py"}),
         _tool_turn("read_file", {"path": "large.py", "search": "item_2500 ="}),
@@ -127,22 +133,25 @@ def test_existing_large_file_can_be_located_and_edited_without_rewriting(tmp_pat
     located_read = provider.requests[2]["messages"][-1]["content"]
     assert len(first_read) < 16_500
     assert "next_start_line=201" in first_read
-    assert "2501: item_2500 = 2500" in located_read
+    assert "2502: item_2500 = 2500" in located_read
     assert result["ok"]
     assert result["files_written"] == result["write_tool_calls"] == 1
-    assert path.read_text() == original.replace("item_2500 = 2500\n", "item_2500 = 42\n")
+    expected = original.replace("item_2500 = 2500\n", "item_2500 = 42\n")
+    assert path.read_bytes() == expected.replace("\n", line_ending).encode("utf-8")
+    assert path.stat().st_mode == original_mode
 
 
+@pytest.mark.parametrize("line_ending", ["\n", "\r\n"])
 @pytest.mark.parametrize("old,new,error", [
     ("missing", "changed", "not found"),
     ("value", "changed", "ambiguous"),
     ("value = 1", "value = 1", "unchanged"),
 ])
 def test_exact_edit_rejects_stale_or_ambiguous_text_without_false_progress(
-    tmp_path, monkeypatch, old, new, error,
+    tmp_path, monkeypatch, old, new, error, line_ending,
 ):
-    original = "value = 1\nother_value = 2\n"
-    (tmp_path / "app.py").write_text(original)
+    original = "value = 1\nother_value = 2\n".replace("\n", line_ending).encode("utf-8")
+    (tmp_path / "app.py").write_bytes(original)
     provider = _RecordingClient([
         _tool_turn("edit_file", {"path": "app.py", "old_text": old, "new_text": new}),
         _tool_turn("finish", {}),
@@ -153,7 +162,7 @@ def test_exact_edit_rejects_stale_or_ambiguous_text_without_false_progress(
     ))
     assert error in provider.requests[1]["messages"][-1]["content"].lower()
     assert result["files_written"] == 0
-    assert (tmp_path / "app.py").read_text() == original
+    assert (tmp_path / "app.py").read_bytes() == original
 
 
 @pytest.mark.parametrize("arguments", [

@@ -52,8 +52,10 @@ def _config_js(client_keys: list[ConfigKey]) -> str:
 // via the Settings screen AND via .env.
 const STORAGE_KEY = 'skyn3t.config';
 
+/** @type {{Array<{{name: string, kind: string, description: string, scope: string, required: boolean, default: string}}>}} */
 export const CONFIG_KEYS = {_keys_json(client_keys)};
 
+/** @returns {{Record<string, string>}} */
 function stored() {{
   try {{
     if (typeof localStorage !== 'undefined') {{
@@ -63,6 +65,7 @@ function stored() {{
   return {{}};
 }}
 
+/** @param {{string}} name */
 function fromEnv(name) {{
   try {{
     if (typeof import.meta !== 'undefined' && import.meta.env) {{
@@ -77,6 +80,10 @@ function fromEnv(name) {{
   return undefined;
 }}
 
+/**
+ * @param {{string}} name
+ * @param {{string}} [fallback]
+ */
 export function getConfig(name, fallback) {{
   const s = stored();
   if (s && s[name] !== undefined && s[name] !== '') return s[name];
@@ -87,6 +94,7 @@ export function getConfig(name, fallback) {{
   return def ? def.default : '';
 }}
 
+/** @param {{Record<string, string>}} values */
 export function setConfig(values) {{
   try {{
     if (typeof localStorage !== 'undefined') {{
@@ -99,6 +107,7 @@ export function setConfig(values) {{
 }}
 
 export function useConfig() {{
+  /** @type {{Record<string, string>}} */
   const out = {{}};
   for (const k of CONFIG_KEYS) out[k.name] = getConfig(k.name);
   return out;

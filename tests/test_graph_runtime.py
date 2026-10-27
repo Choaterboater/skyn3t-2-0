@@ -447,17 +447,33 @@ async def test_executor_serializes_overlapping_write_sets_but_not_disjoint_ones(
     active: set[str] = set()
     forbidden_overlaps: list[frozenset[str]] = []
     max_active = 0
+    max_conflicting_active = 0
+    source_started = asyncio.Event()
+    tests_started = asyncio.Event()
+    source_finished = asyncio.Event()
 
     async def write(context: NodeContext):
-        nonlocal max_active
+        nonlocal max_active, max_conflicting_active
         pair = frozenset({context.node.id, "source"})
-        if context.node.id == "component" and "source" in active:
+        if context.node.id == "component" and not source_finished.is_set():
             forbidden_overlaps.append(pair)
         if context.node.id == "source" and "component" in active:
             forbidden_overlaps.append(frozenset({"source", "component"}))
         active.add(context.node.id)
         max_active = max(max_active, len(active))
-        await asyncio.sleep(0.03)
+        max_conflicting_active = max(
+            max_conflicting_active, len(active & {"source", "component"})
+        )
+        # Durable attempt writes can delay either handler on a busy runner.
+        # Keep disjoint writers alive until both have entered, rather than
+        # assuming their start times fall within a fixed sleep interval.
+        if context.node.id == "source":
+            source_started.set()
+            await asyncio.wait_for(tests_started.wait(), timeout=5)
+            source_finished.set()
+        elif context.node.id == "tests":
+            tests_started.set()
+            await asyncio.wait_for(source_started.wait(), timeout=5)
         active.remove(context.node.id)
         return context.node.id
 
@@ -469,6 +485,7 @@ async def test_executor_serializes_overlapping_write_sets_but_not_disjoint_ones(
     assert run.status is NodeStatus.SUCCEEDED
     assert forbidden_overlaps == []
     assert max_active == 2
+    assert max_conflicting_active == 1
     await store.close()
 
 

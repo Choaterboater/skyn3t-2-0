@@ -3753,7 +3753,7 @@ class StudioRunner:
                 continue
             try:
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(content, encoding="utf-8")
+                target.write_text(content, encoding="utf-8", newline="")
                 written += 1
             except OSError:
                 pass

@@ -615,7 +615,9 @@ async def test_loop_blocks_on_in_flight_reservation_before_spend_recorded():
     assert allowed2 is True
 
 
-async def test_heartbeat_stall_aborts():
+async def test_heartbeat_stall_aborts(monkeypatch):
+    elapsed = [100.0]
+    monkeypatch.setattr("skyn3t.cortex.autonomous_loop.monotonic", lambda: elapsed[0])
     bus = EventBus()
     s = _settings(autonomous_builds=True)
     loop = AutonomousLoop(
@@ -629,8 +631,8 @@ async def test_heartbeat_stall_aborts():
 
     task = asyncio.create_task(never_finishes())
     loop._active[cid] = task
-    # idle threshold is 0 -> immediately considered stalled.
-    await asyncio.sleep(0.01)
+    # Advance elapsed time deterministically, independent of OS timer resolution.
+    elapsed[0] += 1.0
     aborted = await loop.check_stalls()
     assert cid in aborted
     # Let the cancellation propagate to the cancelled task.
@@ -746,3 +748,15 @@ async def test_reflection_loop_closes_tuning_loop():
         {"slug": "app2", "stack": "fastapi", "score": 95.0, "verdict": "go"},
     )
     assert agent.config["reflective_retry"] is False
+
+
+def test_heartbeat_elapsed_time_ignores_wall_clock_adjustment(monkeypatch):
+    elapsed = [100.0]
+    monkeypatch.setattr("skyn3t.cortex.autonomous_loop.monotonic", lambda: elapsed[0])
+    monkeypatch.setattr("skyn3t.cortex.autonomous_loop.time", lambda: -10000.0)
+    heartbeat = BuildHeartbeat()
+    heartbeat.start("build")
+    elapsed[0] += 20.0
+    assert heartbeat.stalled("build", 10.0)
+    heartbeat.touch("build")
+    assert not heartbeat.stalled("build", 10.0)

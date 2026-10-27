@@ -13,7 +13,7 @@ ACTION_SHAS = {
     "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
     "actions/setup-node": "48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-    "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "actions/download-artifact": "9000827ccba6bdab643e8b6fd33ac0654aef8333",
     "actions/attest": "a1948c3f048ba23858d222213b7c278aabede763",
     "pypa/gh-action-pypi-publish": "cef221092ed1bacb1cc03d23a2d87d1d172e277b",
 }

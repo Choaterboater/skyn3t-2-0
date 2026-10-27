@@ -57,6 +57,7 @@ def test_a_stale_metadata_failure_retries_without_prefer_offline(monkeypatch):
     assert len(seen) == 2
     assert "--prefer-offline" in seen[0]
     assert "--prefer-offline" not in seen[1], "the retry must force a metadata refresh"
+    assert "--prefer-online" in seen[1], "override npm_config_prefer_offline=true too"
     # Every other argument is preserved.
     assert "--ignore-scripts" in seen[1] and "--no-audit" in seen[1]
 
@@ -117,3 +118,49 @@ def test_a_timeout_is_reported_and_not_retried(monkeypatch):
     assert ok is False
     assert "timed out" in detail["error"]
     assert len(seen) == 1
+
+
+def test_retry_timeout_replaces_original_stale_error(monkeypatch):
+    seen = _stub_runs(monkeypatch, [
+        (1, _ETARGET, ""),
+        (None, "", "npm install timed out after 300s"),
+    ])
+    ok, detail = app_runner._default_npm_run(_OFFLINE_CMD, "/app")
+    assert ok is False
+    assert "timed out" in detail["error"]
+    assert len(seen) == 2
+
+
+def test_retry_uses_unique_cache_without_losing_flags(monkeypatch, tmp_path):
+    command = [*_OFFLINE_CMD, "--cache", str(tmp_path / "shared")]
+    seen = _stub_runs(monkeypatch, [(1, _ETARGET, ""), (0, "ok", "")])
+    ok, _ = app_runner._default_npm_run(command, str(tmp_path))
+    assert ok
+    retry = seen[1]
+    cache = retry[retry.index("--cache") + 1]
+    assert cache.startswith(str(tmp_path / "shared") + "/.skyn3t-metadata-refresh-")
+    assert retry[:-3] == [arg for arg in _OFFLINE_CMD if arg != "--prefer-offline"]
+    assert retry[-3] == "--prefer-online"
+    assert not (tmp_path / "shared").exists(), "argument construction must not clear or alter cache"
+
+
+def test_refresh_cache_is_unique_and_respects_equals_cache_option(tmp_path):
+    command = [*_OFFLINE_CMD, "--cache=" + str(tmp_path / "shared"), "--package-lock=false"]
+    first = app_runner.npm_metadata_refresh_args(command, cache_dir="/unused")
+    second = app_runner.npm_metadata_refresh_args(command, cache_dir="/unused")
+    assert first[:-1] == second[:-1]
+    assert first[-1] != second[-1]
+    assert first[-1].startswith(str(tmp_path / "shared") + "/.skyn3t-metadata-refresh-")
+    assert "--package-lock=false" in first
+    assert "--ignore-scripts" in first
+    assert not any(arg.startswith("--cache=") for arg in first)
+
+
+def test_missing_cache_environment_falls_back_inside_dependencies(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_runner, "npm_env", lambda: {})
+    seen = _stub_runs(monkeypatch, [(1, _ETARGET, ""), (0, "ok", "")])
+    ok, _ = app_runner._default_npm_run(_OFFLINE_CMD, str(tmp_path))
+    assert ok
+    assert seen[1][-1].startswith(
+        str(tmp_path / "node_modules" / ".skyn3t-npm-cache") + "/.skyn3t-metadata-refresh-"
+    )

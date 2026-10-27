@@ -11,7 +11,7 @@ GUIDE_PATH = ROOT / "docs" / "RELEASING.md"
 ACTION_SHAS = {
     "actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
     "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
-    "actions/setup-node": "48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+    "actions/setup-node": "949feb2413d6458794dcd2491c4babbbce0c15c1",
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
     "actions/attest": "a1948c3f048ba23858d222213b7c278aabede763",

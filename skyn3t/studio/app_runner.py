@@ -341,7 +341,10 @@ def build_run_spec(
     def _static_spec() -> RunSpec:
         run_port = _port()
         return RunSpec(
-            [_python_bin(pdir), "-m", "http.server", str(run_port), "--bind", "127.0.0.1"],
+            [
+                _python_bin(pdir), str(Path(__file__).with_name("loopback_server.py")),
+                str(run_port), "--bind", "127.0.0.1",
+            ],
             str(pdir),
             _serve_env(),
             "static",

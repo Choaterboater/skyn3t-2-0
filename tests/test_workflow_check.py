@@ -21,7 +21,14 @@ from skyn3t.studio.workflow_check import check_workflow
 _GOOD_SERVER = '''
 import json, os
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from socketserver import TCPServer
 from urllib.parse import urlparse
+
+class FixtureHTTPServer(HTTPServer):
+    def server_bind(self):
+        # Numeric loopback fixtures need no external reverse-DNS lookup.
+        TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
 RUNS = []
 
@@ -69,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
         RUNS.append(record)
         return self._send(200, {**record, "brief": "the brief", "delivery": delivery})
 
-HTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
+FixtureHTTPServer(("127.0.0.1", int(os.environ["PORT"])), Handler).serve_forever()
 '''
 
 # Live trigger without config CRASHES instead of skipping delivery.

@@ -15,7 +15,7 @@ ACTION_SHAS = {
     "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
     "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
     "actions/attest": "a1948c3f048ba23858d222213b7c278aabede763",
-    "pypa/gh-action-pypi-publish": "cef221092ed1bacb1cc03d23a2d87d1d172e277b",
+    "pypa/gh-action-pypi-publish": "7245906fb61fa33a13554f9d5fb856fe61758086",
 }
 
 
@@ -108,7 +108,7 @@ def test_release_attests_before_github_and_optional_pypi_publish() -> None:
         step for step in jobs["pypi"]["steps"] if step.get("uses", "").startswith("pypa/")
     )
     assert pypi_action["uses"] == (
-        "pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b"
+        "pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086"
     )
     assert "secrets." not in WORKFLOW_PATH.read_text(encoding="utf-8")
     release_script = _script(jobs["github-release"])

@@ -149,14 +149,23 @@ async def test_free_only_no_vision_model_drops_image(monkeypatch):
     assert not cap.body["model"].startswith("openai/gpt-4o-mini")
 
 
-async def test_free_only_off_uses_default_vision_model(monkeypatch):
-    # Opted out of free_only + no vision_model: the paid default vision model is
-    # used and the image IS sent.
+@pytest.mark.parametrize(
+    ("routed_model", "expected_model"),
+    [
+        ("deepseek/deepseek-chat", "openai/gpt-4o-mini"),
+        ("google/gemini-4-carbon:batch", "google/gemini-4-carbon:batch"),
+    ],
+)
+async def test_free_only_off_resolves_vision_model(monkeypatch, routed_model, expected_model):
+    # With no vision_model configured, a text-only route needs the paid vision
+    # fallback, while an already vision-capable route is retained. Freeze routing
+    # so the live catalog cannot change which branch this test exercises.
     cap = _Capture()
     cap.install(monkeypatch)
     c = _client("openrouter", openrouter_api_key="sk-or-test", free_only=False)
+    monkeypatch.setattr(c.router, "resolve", lambda *_a, **_kw: routed_model)
     await c.complete("describe", tier=Tier.UI, images=[_DATA_URL])
-    assert cap.body["model"] == "openai/gpt-4o-mini"
+    assert cap.body["model"] == expected_model
     content = cap.body["messages"][-1]["content"]
     assert any(p.get("type") == "image_url" for p in content)
 
